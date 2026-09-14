@@ -1,0 +1,13 @@
+import prism
+import strings
+
+pub func main(arguments: str[]) -> i32!:
+    if arguments.length != 4:
+        print("usage: codec INPUT OUTPUT text|binary|compressed|package")
+        return 2
+    let document = try prism.Document.load(arguments[1])
+    defer document.release()
+    let mode = arguments[3]
+    let encoding = prism.Encoding.text if mode == "text" else (prism.Encoding.package if mode == "package" else prism.Encoding.binary)
+    try document.value().save(arguments[2], encoding, mode == "compressed")
+    return 0

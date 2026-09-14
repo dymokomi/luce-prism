@@ -1,0 +1,245 @@
+import prism
+import memory
+import ownership
+import interop
+import files
+
+func rejected(bytes: const u8[]) -> !:
+    let result: interop.Reference[prism.Document]? = prism.Document.decode(bytes) catch failure:
+        assert(failure.code == prism.invalid or failure.code == prism.limit_exceeded or failure.code == prism.unsupported)
+        recover none
+    if let document = result:
+        document.release()
+        assert(false)
+
+func paths():
+    assert(prism.valid_path("/world/[2]/node.value"))
+    assert(prism.valid_path("/"))
+    assert(not prism.valid_path("/world/"))
+    assert(not prism.valid_path("/world.foo/bar"))
+    assert(not prism.valid_path("/world..foo"))
+    assert(not prism.valid_path("/../world"))
+    assert(not prism.valid_path("/world/[x]"))
+    assert(prism.is_descendant("/world/a.value", "/world"))
+    assert(not prism.is_descendant("/worldwide/a", "/world"))
+    assert(prism.parent_path("/world/node.value") == "/world")
+
+func values() -> !:
+    let integer = try prism.Value.integer(-9223372036854775807 - 1)
+    defer integer.release()
+    assert(try integer.value().integer_at() == -9223372036854775807 - 1)
+    let unsigned = try prism.Value.unsigned(18446744073709551615)
+    defer unsigned.release()
+    assert(try unsigned.value().unsigned_at() == 18446744073709551615)
+    let grid = try prism.Value.numbers([2, 2], [1.0, 2.0, 3.0, 4.0], prism.DType.float16)
+    defer grid.release()
+    assert(grid.value().rank() == 2 and try grid.value().dimension(1) == 2)
+    assert(try grid.value().number_at(3) == 4.0)
+    let names = try prism.Value.strings([2], ["alpha", "beta"])
+    defer names.release()
+    assert(try names.value().text_at(1) == "beta")
+    let empty = try prism.Value.array(prism.DType.uint8, [0, 3], b"")
+    defer empty.release()
+    assert(empty.value().count() == 0 and empty.value().rank() == 2)
+    let invalid_value: interop.Reference[prism.Value]? = prism.Value.numbers([3], [1.0]) catch failure:
+        assert(failure.code == prism.invalid)
+        recover none
+    if let unexpected = invalid_value:
+        unexpected.release()
+        assert(false)
+
+func roundtrips() -> !:
+    let text = try prism.Document.load("tests/fixtures/core.prisma")
+    defer text.release()
+    let expected = try text.value().encode()
+    defer expected.release()
+    let fixture = try files.read("tests/fixtures/core.prism")
+    defer free(fixture)
+    assert(equal(expected.value().bytes(), fixture))
+    for path in ["tests/fixtures/core.prism", "tests/fixtures/core-compressed.prism"]:
+        let parsed = try prism.Document.load(path)
+        defer parsed.release()
+        let actual = try parsed.value().encode()
+        defer actual.release()
+        assert(equal(actual.value().bytes(), fixture))
+        let source = try parsed.value().encode(prism.Encoding.text)
+        defer source.release()
+        let again = try prism.Document.parse(try source.value().text())
+        defer again.release()
+        let binary = try again.value().encode()
+        defer binary.release()
+        assert(equal(binary.value().bytes(), fixture))
+    let packed = try text.value().encode(prism.Encoding.binary, true)
+    defer packed.release()
+    assert(packed.value().size() < expected.value().size())
+    let inflated = try prism.Document.decode(packed.value().bytes())
+    defer inflated.release()
+    let same = try inflated.value().encode()
+    defer same.release()
+    assert(equal(same.value().bytes(), fixture))
+    let resolved = try text.value().eval("/world/target.input", 5.0)
+    defer resolved.release()
+    assert(try resolved.value().number_at() == 10.0)
+    let archive = try prism.Document.load("tests/fixtures/core-package.prism")
+    defer archive.release()
+    assert(archive.value().asset_count() == 1)
+    let asset = try archive.value().asset("/world/source")
+    defer asset.release()
+    assert(equal(asset.value().bytes(), b"\0\xff\x01"))
+    let encoded_archive = try archive.value().encode(prism.Encoding.package)
+    defer encoded_archive.release()
+    let original_archive = try files.read("tests/fixtures/core-package.prism")
+    defer free(original_archive)
+    assert(equal(encoded_archive.value().bytes(), original_archive))
+    # A plain document encode cannot silently discard package assets.
+    let lost_assets: interop.Reference[prism.Blob]? = archive.value().encode() catch failure:
+        assert(failure.code == prism.invalid)
+        recover none
+    if let unexpected = lost_assets:
+        unexpected.release()
+        assert(false)
+
+func mutations() -> !:
+    var document = prism.Document()
+    defer document.close()
+    try document.add("/a", "group")
+    try document.add("/a/node", "node")
+    try document.add("/b", "group")
+    try document.add("/out", "node")
+    let value = try prism.Value.integer(4)
+    try document.set("/a/node", "value", value)
+    value.release()
+    try document.connect("/a/node.value", "/out.input")
+    try document.set_asset("/a/node", b"asset")
+    try document.rename("/a/node", "/b/node")
+    assert(document.contains("/b/node") and not document.contains("/a/node"))
+    assert(try document.source("/out.input") == "/b/node.value")
+    let asset = try document.asset("/b/node")
+    defer asset.release()
+    assert(try asset.value().text() == "asset")
+    let retained = try document.get("/b/node", "value")
+    defer retained.release()
+    let encoded = try document.encode(prism.Encoding.package)
+    defer encoded.release()
+    let decoded = try prism.Document.decode(encoded.value().bytes())
+    defer decoded.release()
+    assert(decoded.value().contains("/b/node"))
+    try document.remove("/b")
+    assert(not document.contains("/b/node") and document.connection_count() == 0 and document.asset_count() == 0)
+    assert(try retained.value().integer_at() == 4)
+    let one = try prism.Value.number(0.0)
+    defer one.release()
+    let two = try prism.Value.number(10.0)
+    defer two.release()
+    try document.set("/out", "x", one)
+    try document.set_sample("/out", "x", 0.0, one)
+    try document.set_sample("/out", "x", 10.0, two)
+    let middle = try document.resolve("/out", "x", 2.5)
+    defer middle.release()
+    assert(try middle.value().number_at() == 2.5)
+    try document.connect("/out.y", "/out.x")
+    try document.connect("/out.x", "/out.y")
+    let cycle: interop.Reference[prism.Value]? = document.eval("/out.x") catch failure:
+        assert(failure.code == prism.invalid)
+        recover none
+    if let unexpected = cycle:
+        unexpected.release()
+        assert(false)
+
+func malformed() -> !:
+    for source in ["", "#prisma 9.0\n", "#prisma 4.0\ndef x {", "#prisma 4.0\ndef x { uint8 p = 256 }", "#prisma 4.0\ndef x { int32[2,2] p = [[1,2],[3]] }", "#prisma 4.0\ndef x { str p = \"bad }", "#prisma 4.0\ndef x { float64[4294967295,4294967295,2] p = [] }", "#prisma 4.0\ndef x { str p = true }"]:
+        try rejected(source.bytes)
+    let bytes = try files.read("tests/fixtures/core.prism")
+    defer free(bytes)
+    # Every truncated prefix before required sections must fail (trailing sections
+    # are optional, so test only up to half of this crate).
+    for end in 0..<bytes.length // 2:
+        try rejected(bytes[..<end])
+    try rejected(b"PRSMC\0\x04\0\x02\0")
+    try rejected(b"PRSMC\0\x04\0\x01\0\xff\xff\xff\xff\xff\xff\xff\xff")
+    try rejected(b"PRSMC\0\x04\0\0\0\xff\xff\xff\xff")
+    try rejected(b"PRSMZ\0\x04\0\0\0\0\0\0\0")
+
+struct Tracker: memory.Allocator:
+    var upstream: memory.Allocator
+    var live: usize
+    var remaining: usize?
+
+    pub mutating func allocate(size: usize, alignment: usize) -> u8[]?:
+        if let remaining = self.remaining:
+            if remaining == 0:
+                return none
+            self.remaining = remaining - 1
+        let block = self.upstream.allocate(size, alignment) else return none
+        self.live += 1
+        return block
+
+    pub mutating func resize(block: u8[], size: usize) -> bool:
+        return self.upstream.resize(block, size)
+
+    pub mutating func release(block: u8[]):
+        assert(self.live > 0)
+        self.live -= 1
+        self.upstream.release(block)
+
+func allocations(tracker: Tracker*) -> !:
+    let input = "#prisma 4.0\ndef node \"a\" { float64 x = 1 float64 x.timeSamples = {0: 1, 2: 3} str label = \"owned\" }\n"
+    var successes: usize = 0
+    for stage in 0..<(usize)240:
+        tracker.remaining = stage
+        let document: interop.Reference[prism.Document]? = prism.Document.parse(input) catch failure:
+            assert(failure.code == memory.exhausted)
+            recover none
+        if let value = document:
+            value.release()
+            successes += 1
+        tracker.remaining = none
+        ownership.collect()
+        assert(tracker.live == 0)
+    assert(successes > 0 and successes < 240)
+
+func restore(allocator: memory.Allocator):
+    memory.heap = allocator
+
+pub func main(arguments: str[]) -> i32!:
+    paths()
+    try text_edges()
+    try values()
+    try roundtrips()
+    try mutations()
+    try malformed()
+    ownership.collect()
+    var tracker = Tracker(upstream = memory.heap)
+    defer restore(tracker.upstream)
+    memory.heap = &tracker
+    try allocations(&tracker)
+    print("PASS Prism values, C++ fixtures, encodings, animation, mutation, malformed input and allocation failures")
+    return 0
+
+func equal(a: const u8[], b: const u8[]) -> bool:
+    if a.length != b.length:
+        return false
+    for i in 0..<a.length:
+        if a[i] != b[i]:
+            return false
+    return true
+
+func text_edges() -> !:
+    assert(not prism.valid_path("/a\0b"))
+    assert(prism.detect(b"\xff\xfe\xff\xff\xff\xff") == prism.Encoding.unknown)
+    let doc = try prism.Document.parse("#prisma 4.0\ndef x { str[] tokens = [\"]\", \"}\", \"(\"] bool[2] flags = [true, false] }")
+    defer doc.release()
+    let tokens = try doc.value().get("/[0]", "tokens")
+    defer tokens.release()
+    assert(tokens.value().count() == 3)
+    assert(try tokens.value().text_at(0) == "]")
+    let encoded = try doc.value().encode(prism.Encoding.text)
+    defer encoded.release()
+    let decoded = try prism.Document.parse(try encoded.value().text())
+    defer decoded.release()
+    let binary = try doc.value().encode()
+    defer binary.release()
+    let other = try decoded.value().encode()
+    defer other.release()
+    assert(equal(binary.value().bytes(), other.value().bytes()))
+    try rejected("#prisma 4.0\ndef x { int32[1] a = \"[\" 1 \"]\" }".bytes)

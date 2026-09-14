@@ -1,0 +1,6 @@
+[package]
+name = "luce_prism"
+source = "src"
+
+[exports]
+prism = "luce_prism.prism"

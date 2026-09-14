@@ -1,0 +1,64 @@
+# luce-prism
+
+Prism's native data container, written in **Luce Base** and usable from **Luce**.
+A document holds path-addressed elements, typed multidimensional values, metadata,
+animation and connections. Documents, images, vectors, scenes and bundles can share
+this substrate without the container depending on their renderers or codecs.
+
+This first port implements the format/storage layer of
+`kinogaki-core`, including v4 `.prism`
+crates, legacy LZSS compression, `.prisma` text and asset packages. The C++ core is
+a compatibility oracle for tests; it is **not a runtime or build dependency**.
+See [the feature map](docs/PORT.md) for the boundary of this initial implementation.
+
+```toml
+# Your application's luce.toml
+[dependencies]
+luce_prism = "../luce-prism"
+```
+
+```luce
+from prism import Document, Value, DType, Encoding
+
+pub func main(arguments: list[str]) -> int!:
+    let document = Document()
+    document.add("/world", "group")
+    document.add("/world/object", "object")
+    document.set("/world/object", "name", Value.text("Example"))
+    document.set("/world/object", "position",
+                 Value.numbers([3], [1.0, 2.0, 3.0], DType.float32))
+    document.save("example.prism", Encoding.binary, true)
+    let loaded = Document.load("example.prism")
+    print(loaded.get("/world/object", "name").text_at())
+    return 0
+```
+
+The dependency exports `prism`. Shapes are row-major; an empty shape denotes a
+scalar and a zero dimension denotes an empty array. Dimensions are checked against
+the format's uint32 range. `Value.array` accepts little-endian numeric payloads;
+`Value.numbers` and `Value.strings` provide convenient typed construction.
+
+`Document.set` copies its input, and `get`/`resolve` return independent values.
+Luce manages the public objects automatically. Base callers explicitly `release`
+returned references and `close` directly constructed documents. See
+[API and ownership](docs/API.md) and [format details](docs/FORMAT.md).
+
+```sh
+./test.sh
+# Or select already-built compilers without changing sibling checkouts:
+./test.sh --base /path/to/luce-base --luce /path/to/luce
+```
+
+Build sibling compilers at the commits in `bootstrap/BASE` and `bootstrap/LUCE`.
+The gate runs Base and Luce consumers at native optimization levels 0–3 and both
+C comparison modes. It includes checked-in C++ fixtures, compressed and package
+round trips, malformed input, path edits and injected allocation failures. Builds
+and test outputs use temporary directories. See [validation](docs/VALIDATION.md).
+
+This package has no GPU, threading, UI or foreign-format dependencies. Image
+codecs belong in `luce-image`; content schemas and adapters can target Prism's typed
+properties. Composition execution, query engines, registered node evaluation and
+foreign codecs remain future work. Bézier keys and handles round-trip; evaluating
+a Bézier interval currently reports `unsupported`.
+
+Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE).

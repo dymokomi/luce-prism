@@ -1,0 +1,14 @@
+from prism import Document, Value, DType, Encoding
+
+pub func main(arguments: list[str]) -> int!:
+    let document = Document()
+    document.add("/world", "group")
+    document.add("/world/object", "object")
+    document.set("/world/object", "name", Value.text("Example"))
+    document.set("/world/object", "position",
+                 Value.numbers([3], [1.0, 2.0, 3.0], DType.float32))
+    let output = document.encode(Encoding.text)
+    print(output.text())
+    let loaded = Document.decode(document.encode(Encoding.binary, true).bytes())
+    assert(loaded.get("/world/object", "position").number_at(2) == 3.0)
+    return 0

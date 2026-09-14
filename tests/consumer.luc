@@ -1,0 +1,21 @@
+from prism import Document, Value, Encoding, DType
+
+pub func main(arguments: list[str]) -> int!:
+    let document = Document()
+    document.add("/scene", "group")
+    document.set("/scene", "answer", Value.integer(42))
+    document.set("/scene", "name", Value.text("Luce Prism"))
+    document.set("/scene", "position", Value.numbers([3], [1.0, 2.0, 3.0], DType.float32))
+    let encoded = document.encode(Encoding.binary, true)
+    let decoded = Document.decode(encoded.bytes())
+    assert(decoded.get("/scene", "answer").integer_at() == 42)
+    assert(decoded.get("/scene", "name").text_at() == "Luce Prism")
+    assert(decoded.get("/scene", "position").number_at(2) == 3.0)
+    let text = decoded.encode(Encoding.text).text()
+    assert(Document.parse(text).element_count() == 1)
+    decoded.rename("/scene", "/world")
+    assert(decoded.contains("/world"))
+    decoded.remove("/world")
+    assert(decoded.element_count() == 0)
+    print("PASS high-level Luce Prism consumer")
+    return 0

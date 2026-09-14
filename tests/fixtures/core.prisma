@@ -1,0 +1,50 @@
+#prisma 4.0
+def group "world" {
+    string author = "Prism"
+    def node "source" {
+        bool enabled = true
+        char letter = 'A'
+        int8 small = -128
+        int16 medium = -32768
+        int32 count = -2147483648
+        int64 minimum = -9223372036854775808
+        uint8 byte = 255
+        uint16 word = 65535
+        uint32 unsigned = 4294967295
+        uint64 maximum = 18446744073709551615
+        float16 half = 0.5
+        float32 single = 1.25
+        float64 out = 0
+        float64 out.timeSamples = {0: 0, 10: 20}
+        str label = "Hello\nPrism"
+        str[2] names = ["one", "two"]
+        int32[2,3] grid = [[1, 2, 3], [4, 5, 6]]
+        float2 position = (1.5, -2)
+        float2[] points = [(1, 2), (3, 4)]
+        float[] weights = [0.25, 0.75]
+        matrix transform = (1, 0, 0, 1, 0, 0)
+        vec4f orientation = [0, 0, 0, 1]
+        float32[0] empty = []
+        float curve = 0
+        float curve.timeSamples = {
+            0: 1 (interp = bezier, handle = free, right = [2, 3]),
+            10: 4 (interp = held, handle = aligned, left = [-2, -3]),
+        }
+    }
+    over node "target" {
+        float64 input = -1
+        connect input = </world/source.out>
+        reference "library.prism" "/template"
+        unset removed
+        unset string "old.key"
+    }
+    def document "article" {
+        def paragraph {
+            str text = "A document and a scene share one substrate."
+        }
+    }
+}
+delete "/obsolete"
+disconnect "/world/target.old"
+reorder "/world" = ["/world/article", "/world/target", "/world/source"]
+connect </world/*.value> = </world/source.out>

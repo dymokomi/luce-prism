@@ -1,0 +1,8 @@
+luce-prism
+Copyright 2026 Dy Mokomi
+
+Prism's format and adapted algorithms originate in Kinogaki Core:
+Kinogaki
+Copyright 2026 Kinogaki LLC
+Licensed under the Apache License, Version 2.0.
+This is a Luce Base reimplementation; the C++ implementation is not bundled.

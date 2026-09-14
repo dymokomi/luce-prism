@@ -1,0 +1,49 @@
+name: Windows x64
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      CC: gcc
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: luce-prism
+      - name: Read dependency pins
+        id: pins
+        shell: pwsh
+        run: |
+          "base=$(Get-Content luce-prism/bootstrap/BASE)" >> $env:GITHUB_OUTPUT
+          "luce=$(Get-Content luce-prism/bootstrap/LUCE)" >> $env:GITHUB_OUTPUT
+      - uses: actions/checkout@v7
+        with:
+          repository: dymokomi/luce-base
+          ref: ${{ steps.pins.outputs.base }}
+          path: luce-base
+      - uses: actions/checkout@v7
+        with:
+          repository: dymokomi/luce
+          ref: ${{ steps.pins.outputs.luce }}
+          path: luce
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-python
+      - name: Build Base
+        working-directory: luce-base
+        shell: msys2 {0}
+        run: python tools/build_windows.py
+      - name: Build Luce
+        working-directory: luce
+        shell: msys2 {0}
+        run: python tools/build_windows.py
+      - name: Run Windows contracts
+        working-directory: luce-prism
+        shell: msys2 {0}
+        run: python tests/run.py
