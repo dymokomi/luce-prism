@@ -1,5 +1,6 @@
 // Optional independent oracle, linked only by tests against the old C++ core.
 #include <kinogaki/Serialize.h>
+#include <kinogaki/Compose.h>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -9,9 +10,10 @@ int main(int argc, char** argv) {
     std::ifstream input(argv[1], std::ios::binary);
     std::string bytes((std::istreambuf_iterator<char>(input)), {});
     kinogaki::ParseError error;
-    auto doc = kinogaki::deserialize(bytes, &error);
-    if (!doc) { std::cerr << error.line << ':' << error.column << ' ' << error.message << '\n'; return 1; }
     std::string mode = argv[3], output;
+    auto doc = mode == "compose" ? kinogaki::composeFile(argv[1])
+                                 : kinogaki::deserialize(bytes, &error);
+    if (!doc) { std::cerr << error.line << ':' << error.column << ' ' << error.message << '\n'; return 1; }
     if (mode == "text") output = kinogaki::serialize(*doc);
     else if (mode == "package") {
         kinogaki::AssetStore assets;

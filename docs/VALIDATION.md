@@ -27,6 +27,9 @@ optimization levels 0–3, `--backend=c`, and `--backend=c --release`. It verifi
   These checks do not assert non-finite floating-point preservation.
 - Typed pixel construction and byte extraction through high-level Luce in every
   encoding, and text→compressed-binary media preservation.
+- The high-level external-media example writes ASCII inline bytes and a reference
+  to a separate compressed binary document, loads that document explicitly, and
+  verifies that re-encoding the page preserves its unexpanded reference.
 - Text→binary→text→binary stability, keyframe handles and all v4 layer records.
 - Concrete connection resolution, linear samples, cycle errors, rename/reparent
   path fixes, removal, and retained independent values after mutation.
@@ -43,11 +46,14 @@ text/binary/compressed output, and to produce new encodings for the Luce decoder
 All paths are checked against canonical binary documents. A generated image
 document also exchanges RGBA pixels, the PNG fixture and all 256 byte values with
 the C++ implementation in both directions.
+It also calls the legacy composer on the external-media example and checks the
+composed pixels, opaque payload and inline preview against a canonical document.
+This checks reference-format compatibility; Luce does not yet provide composition.
 
 CI is configured for macOS, Linux and Windows with exact compiler pins. ARM64
-macOS has executed the full media gate locally. The initial hosted macOS/Linux
-[correctness run](https://github.com/dymokomi/luce-prism/actions/runs/34895899061)
-passed. The initial Windows build failed on an unresolved `_snprintf_l` symbol
+macOS has executed the full media and external-reference gate locally. The hosted
+macOS/Linux [media correctness run](https://github.com/dymokomi/luce-prism/actions/runs/34897436376)
+passed. The Windows build failed on an unresolved `_snprintf_l` symbol
 from the Base standard library; see the separate
 [language follow-up](LUCE-BASE-ISSUES.md#windows-ucrt64-stringsformat_f64-fails-to-link-in-native-mode).
 Consult the repository's Actions page for subsequent hosted results. No GPU,

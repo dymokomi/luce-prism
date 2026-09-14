@@ -39,6 +39,8 @@ from a string Value contains length prefixes, not concatenated text.
   `type_at`, `element_count`, `property_count`, `property_name` inspect records.
 - `set_metadata`/`metadata` handle non-animatable strings. Reference arcs use
   reserved `reference` and `referencePath` metadata, also read from text directives.
+  These can point from ASCII documents to binary `.prism` files. Fetching and
+  reading the target is currently explicit; see [external media](REFERENCES.md).
 - `set_sample` inserts/replaces a finite-time key. `sample_count` inspects the set;
   `resolve(path, name, time=0)` clamps to endpoints and resolves held/linear keys.
   Only equal-shaped float values interpolate linearly. Other values hold.
@@ -69,6 +71,8 @@ from a string Value contains length prefixes, not concatenated text.
 compressed=false)` returns an owned `Blob`. `save(path, encoding=binary,
 compressed=false)` writes it. `Encoding` has `text`, `binary`, `package`, `unknown`.
 Compression applies to binary crates, including the inner crate in a package.
+These operations read one authored document. They preserve external reference
+metadata without loading or composing the referenced files.
 
 A `Blob` supplies `bytes`, `size` and fallible UTF-8 `text`. `save` is an ordinary
 create/truncate/write operation, **not atomic replacement or durable sync**. Use a

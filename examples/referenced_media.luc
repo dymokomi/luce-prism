@@ -1,0 +1,47 @@
+from prism import Document, Value, DType, Encoding
+
+# Pass an existing output directory. This writes page.prisma and media.prism there.
+# The example uses a sibling filename; a host with a general filesystem resolver
+# should resolve each reference relative to its referring document's directory.
+pub func main(arguments: list[str]) -> int!:
+    if arguments.length != 1:
+        print("usage: referenced-media OUTPUT_DIRECTORY")
+        return 2
+    let directory = arguments[0]
+    let page_file = directory + "/page.prisma"
+    let page = Document.parse("#prisma 4.0\ndef document \"page\" { def image \"hero\" { uint8[1,1,4] preview = [[[255,0,0,255]]] reference \"media.prism\" \"/image\" } }")
+    page.save(page_file, Encoding.text)
+
+    # Opening the ASCII file works before the external file exists. Inline data
+    # is immediately available, while the external reference stays authored.
+    let opened = Document.load(page_file)
+    assert(opened.get("/page/hero", "preview").bytes() == b"\xff\x00\x00\xff")
+    assert(opened.property_count("/page/hero") == 1)
+    assert(opened.metadata("/page/hero", "reference") == "media.prism")
+    assert(opened.metadata("/page/hero", "referencePath") == "/image")
+
+    let pixels = b"\xff\x00\x00\xff\x00\xff\x00\x80"
+    let opaque = b"\x00\xff\x80\x22\x0a"
+    let media = Document()
+    media.add("/image", "image")
+    media.set("/image", "pixels", Value.array(DType.uint8, [1, 2, 4], pixels))
+    media.set("/image", "payload", Value.array(DType.uint8, [5], opaque))
+    media.save(directory + "/media.prism", Encoding.binary, true)
+
+    # Resolve this known sibling reference only when its content is requested.
+    let file = opened.metadata("/page/hero", "reference")
+    let target = opened.metadata("/page/hero", "referencePath")
+    let external = Document.load(directory + "/" + file)
+    assert(external.get(target, "pixels").bytes() == pixels)
+    assert(external.get(target, "payload").bytes() == opaque)
+
+    # Re-encoding the authored document preserves both its inline bytes and its
+    # reference. Loading the external file has not baked its payload into the page.
+    for encoding in [Encoding.text, Encoding.binary, Encoding.package]:
+        let copy = Document.decode(opened.encode(encoding).bytes())
+        assert(copy.get("/page/hero", "preview").bytes() == b"\xff\x00\x00\xff")
+        assert(copy.property_count("/page/hero") == 1)
+        assert(copy.metadata("/page/hero", "reference") == file)
+        assert(copy.metadata("/page/hero", "referencePath") == target)
+    print("PASS ASCII inline bytes and an explicitly loaded external binary Prism document")
+    return 0

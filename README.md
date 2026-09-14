@@ -64,6 +64,24 @@ byte values exactly, including NUL and bytes that are not valid UTF-8. Typed
 The separate `set_asset` API uses legacy package attachments and requires
 `Encoding.package`.
 
+An ASCII document can also refer to another `.prism` file while retaining inline
+data of its own:
+
+```prisma
+#prisma 4.0
+def image "hero" {
+    uint8[1,1,4] preview = [[[255, 0, 0, 255]]]
+    reference "media.prism" "/image"
+}
+```
+
+Here the preview is embedded in the ASCII file, and `/image` in `media.prism` can
+hold the full pixels or other binary content. The reference is retained across
+encodings. Current `load`/`parse` read the authored document; callers explicitly
+load external files when needed. See [external media](docs/REFERENCES.md) and the
+[tested Luce example](examples/referenced_media.luc) for writing and reading both
+files together.
+
 ```sh
 ./test.sh
 # Or select already-built compilers without changing sibling checkouts:

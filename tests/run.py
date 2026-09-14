@@ -31,12 +31,17 @@ def main():
     env = dict(os.environ, LUCE_BASE=str(args.base.resolve()))
     with tempfile.TemporaryDirectory(prefix='luce-prism-test-') as temporary:
         scratch = Path(temporary)
-        for flags in modes:
+        for index, flags in enumerate(modes):
             print('Testing', ' '.join(flags), flush=True)
             for compiler, source in [(args.base, 'main.lucb'), (args.base, 'media.lucb'), (args.luce, 'consumer.luc')]:
                 binary = scratch / ('consumer' + SUFFIX)
                 run([compiler.resolve(), 'build', ROOT / 'tests' / source, *flags, '-o', binary], env=env)
                 run([binary], env=env)
+            example = scratch / ('referenced-media' + SUFFIX)
+            output = scratch / f'referenced media {index}'
+            output.mkdir()
+            run([args.luce.resolve(), 'build', ROOT / 'examples/referenced_media.luc', *flags, '-o', example], env=env)
+            run([example, output], env=env)
         if args.oracle:
             codec = scratch / ('codec' + SUFFIX)
             run([args.base.resolve(), 'build', ROOT / 'tests/codec.lucb', '--native', '-o', codec], env=env)
@@ -65,6 +70,18 @@ def main():
                     run([codec, encoded, decoded, 'binary'])
                     assert decoded.read_bytes() == source.read_bytes(), f'Luce rejected or changed {source.name}: {mode}'
             print('PASS independent C++ cross-encoding oracle, including pixels and embedded PNG bytes', flush=True)
+            composed, expected = scratch / 'composed.prism', scratch / 'expected.prism'
+            expected_text = scratch / 'expected.prisma'
+            expected_text.write_text(
+                '#prisma 4.0\ndef document "page" { def image "hero" {\n'
+                'uint8[1,1,4] preview = [[[255,0,0,255]]]\n'
+                'uint8[1,2,4] pixels = [[[255,0,0,255],[0,255,0,128]]]\n'
+                'uint8[5] payload = [0,255,128,34,10]\n'
+                '} }\n', encoding='ascii')
+            run([args.oracle.resolve(), output / 'page.prisma', composed, 'compose'])
+            run([codec, expected_text, expected, 'binary'])
+            assert composed.read_bytes() == expected.read_bytes(), 'C++ reference composition changed the media'
+            print('PASS C++ resolves the authored ASCII reference to the external binary payload', flush=True)
     print('PASS all Prism compiler modes', flush=True)
 
 
