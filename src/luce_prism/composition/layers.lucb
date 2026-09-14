@@ -1,9 +1,10 @@
 ## Sparse layers, deterministic sibling ordering and exact authored diffs.
 from luce_prism.model import DocumentData, Element
 from luce_prism.animation import equal_properties
+from luce_prism.comparison import equal_assets
 from luce_prism.storage import Buffer, List, add_name, close_names, equal_names, find_pair, has_name, remove_pair, set_pair, text_copy
 from luce_prism.path import element_path, is_descendant, parent_path
-from luce_prism.types import limit_exceeded, max_depth
+from luce_prism.types import limit_exceeded, max_depth, unsupported
 
 func emit_order(source: const DocumentData*, output: DocumentData*, parent: str, depth: usize) -> !:
     if depth > max_depth:
@@ -87,6 +88,10 @@ pub func overlay(base: const DocumentData*, layers: const DocumentData[]) -> Doc
     return output
 
 pub func diff(base: const DocumentData*, target: const DocumentData*) -> DocumentData!:
+    # Legacy layers have no asset-store delta records. Never return a diff that
+    # looks successful while losing an attachment edit during event-log replay.
+    if not equal_assets(base, target):
+        error(unsupported, "legacy Prism diffs require unchanged package assets; use typed byte properties for editable media")
     var output = DocumentData()
     errdefer output.close()
     for element in base.elements.span():

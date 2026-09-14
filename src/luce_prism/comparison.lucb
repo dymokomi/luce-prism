@@ -23,8 +23,18 @@ pub func equal_elements(a: const Element*, b: const Element*) -> bool:
             return false
     return true
 
+pub func equal_assets(a: const DocumentData*, b: const DocumentData*) -> bool:
+    if a.assets.count != b.assets.count:
+        return false
+    for i in 0..<a.assets.count:
+        let x = &a.assets.items[i]
+        let y = &b.assets.items[i]
+        if x.path.view() != y.path.view() or x.mime.view() != y.mime.view() or not equal_bytes(x.bytes.bytes(), y.bytes.bytes()):
+            return false
+    return true
+
 pub func equal_documents(a: const DocumentData*, b: const DocumentData*) -> bool:
-    if a.elements.count != b.elements.count or a.reorders.count != b.reorders.count or a.assets.count != b.assets.count:
+    if a.elements.count != b.elements.count or a.reorders.count != b.reorders.count or not equal_assets(a, b):
         return false
     if not equal_pairs(&a.connections, &b.connections) or not equal_pairs(&a.globs, &b.globs) or not equal_names(&a.deletions, &b.deletions) or not equal_names(&a.disconnections, &b.disconnections):
         return false
@@ -33,10 +43,5 @@ pub func equal_documents(a: const DocumentData*, b: const DocumentData*) -> bool
             return false
     for i in 0..<a.reorders.count:
         if a.reorders.items[i].parent.view() != b.reorders.items[i].parent.view() or not equal_names(&a.reorders.items[i].children, &b.reorders.items[i].children):
-            return false
-    for i in 0..<a.assets.count:
-        let x = &a.assets.items[i]
-        let y = &b.assets.items[i]
-        if x.path.view() != y.path.view() or x.mime.view() != y.mime.view() or not equal_bytes(x.bytes.bytes(), y.bytes.bytes()):
             return false
     return true

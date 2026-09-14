@@ -24,6 +24,10 @@ C++ classes, global token table, or C ABI.
 - Package assets live with `Document`. Unified decoding retains them. Plain
   text/crate encoding rejects an asset-bearing document instead of losing the
   sidecar; typed byte properties are the representation for inline ASCII data.
+  Legacy diff records do not encode separate asset-store edits. `diff`, merge,
+  and event-log commits reject changed package assets instead of silently
+  dropping them. Editable images/binary payloads stored in typed properties
+  participate fully in these operations; unchanged attachments are retained.
 - Immutable results are owned; string/byte views in Base borrow their owner.
   Mutating source documents inside active query callbacks is rejected. Callback
   contexts expire after baking. Closing a projection/cache from its callback is

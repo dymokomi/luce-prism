@@ -75,7 +75,9 @@ from a string Value contains length prefixes, not concatenated text.
   supplied by a referenced document; local element existence is not required.
   A document with these attachments requires `Encoding.package`; plain text or
   binary encoding returns an error. Use typed properties for payloads that must
-  travel through both plain text and binary crates.
+  travel through both plain text and binary crates. Legacy `diff`/merge/event-log
+  records require unchanged package attachments; asset changes report
+  `unsupported`. Use typed byte properties for media edited through layers.
 
 ## I/O
 

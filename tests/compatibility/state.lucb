@@ -255,6 +255,7 @@ func wildcard_priority_and_root_assets() -> !:
     same_bytes(root.value().bytes(), b"root\0bytes")
 
 pub func run() -> !:
+    try asset_diffs_do_not_silently_drop_changes()
     try copy_is_isolated_across_every_mutator()
     try mutating_a_copy_leaves_the_original_intact()
     try equality_and_ids_hold_across_copy()
@@ -274,3 +275,39 @@ pub func run() -> !:
     try aggregates_skip_null()
     try wildcard_priority_and_root_assets()
     print("PASS 18 copy, reference, deterministic serialization, codec parity and null cases")
+
+func asset_diffs_do_not_silently_drop_changes() -> !:
+    let base = try prism.Document.parse("#prisma 4.0\ndef image \"image\" { uint8[2] pixels = [0,255] }")
+    defer base.release()
+    try base.value().set_asset("/image", b"attachment")
+    let target = try base.value().copy()
+    defer target.release()
+    let pixels = try prism.Value.array(prism.DType.uint8, [2], b"a\0")
+    defer pixels.release()
+    try target.value().set("/image", "pixels", pixels)
+    let delta = try base.value().diff(target)
+    defer delta.release()
+    let replayed = try base.value().overlay(delta)
+    defer replayed.release()
+    assert(try replayed.value().equals(target))
+    var log = try prism.EventLog(base)
+    defer log.close()
+    for operation in 0..<3:
+        let changed = try base.value().copy()
+        defer changed.release()
+        if operation == 0:
+            try changed.value().set_asset("/image", b"changed")
+        elif operation == 1:
+            changed.value().remove_asset("/image")
+        else:
+            try changed.value().set_asset("/other", b"added")
+        var failed = false
+        discard(log.commit(changed) catch failure:
+            assert(failure.code == prism.unsupported)
+            failed = true
+            recover 0
+        )
+        assert(failed and log.head_offset() == 0 and log.layer_count() == 0)
+        let head = try log.head()
+        defer head.release()
+        assert(try head.value().equals(base))
