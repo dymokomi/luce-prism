@@ -33,7 +33,7 @@ def main():
         scratch = Path(temporary)
         for flags in modes:
             print('Testing', ' '.join(flags), flush=True)
-            for compiler, source in [(args.base, 'main.lucb'), (args.luce, 'consumer.luc')]:
+            for compiler, source in [(args.base, 'main.lucb'), (args.base, 'media.lucb'), (args.luce, 'consumer.luc')]:
                 binary = scratch / ('consumer' + SUFFIX)
                 run([compiler.resolve(), 'build', ROOT / 'tests' / source, *flags, '-o', binary], env=env)
                 run([binary], env=env)
@@ -44,15 +44,27 @@ def main():
             generated = scratch / 'generated.prism'
             run([args.oracle.resolve(), ROOT / 'tests/fixtures/core.prisma', generated, 'binary'])
             assert generated.read_bytes() == fixture.read_bytes(), 'C++ fixture provenance changed'
-            for mode in ('text', 'binary', 'compressed'):
-                encoded, decoded = scratch / 'encoded', scratch / 'decoded'
-                run([codec, fixture, encoded, mode])
-                run([args.oracle.resolve(), encoded, decoded, 'binary'])
-                assert decoded.read_bytes() == fixture.read_bytes(), f'C++ rejected or changed {mode}'
-                run([args.oracle.resolve(), fixture, encoded, mode])
-                run([codec, encoded, decoded, 'binary'])
-                assert decoded.read_bytes() == fixture.read_bytes(), f'Luce rejected or changed {mode}'
-            print('PASS independent C++ cross-encoding oracle', flush=True)
+            media_text, media_binary = scratch / 'media.prisma', scratch / 'media.prism'
+            png = (ROOT / 'tests/fixtures/rgba.png').read_bytes()
+            media_text.write_text(
+                '#prisma 4.0\ndef image "image" {\n'
+                'uint8[2,2,4] pixels = [[[255,0,0,255],[0,255,0,128]],[[0,0,255,64],[255,255,255,0]]]\n'
+                f'uint8[{len(png)}] png = [{",".join(map(str, png))}]\n'
+                f'uint8[256] opaque = [{",".join(map(str, range(256)))}]\n'
+                'string mime = "image/png"\n}\n', encoding='ascii')
+            run([args.oracle.resolve(), media_text, media_binary, 'binary'])
+            run([codec, media_text, generated, 'binary'])
+            assert generated.read_bytes() == media_binary.read_bytes(), 'C++ and Luce image bytes differ'
+            for source in (fixture, media_binary):
+                for mode in ('text', 'binary', 'compressed'):
+                    encoded, decoded = scratch / 'encoded', scratch / 'decoded'
+                    run([codec, source, encoded, mode])
+                    run([args.oracle.resolve(), encoded, decoded, 'binary'])
+                    assert decoded.read_bytes() == source.read_bytes(), f'C++ rejected or changed {source.name}: {mode}'
+                    run([args.oracle.resolve(), source, encoded, mode])
+                    run([codec, encoded, decoded, 'binary'])
+                    assert decoded.read_bytes() == source.read_bytes(), f'Luce rejected or changed {source.name}: {mode}'
+            print('PASS independent C++ cross-encoding oracle, including pixels and embedded PNG bytes', flush=True)
     print('PASS all Prism compiler modes', flush=True)
 
 

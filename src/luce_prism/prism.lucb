@@ -1658,27 +1658,32 @@ func compress_bytes(bytes: const u8[]) -> Buffer!:
     return output
 
 
-struct Token:
-    var text: Buffer
-    var kind: u8
-    var line: usize
-    var column: usize
-
+# One-token lookahead. Numeric/punctuation tokens borrow the input; only escaped
+# strings allocate. Returned names remain valid until Parser.close, including
+# while later tokens are consumed, so nested parse calls can retain a name.
 struct Parser:
-    var tokens: List[Token]
-    var index: usize
+    var source: const u8[]
+    var position: usize
+    var token_start: usize
+    var token: str = ""
+    var token_kind: u8
+    var decoded: List[Buffer]
+    var string_budget: usize = max_bytes
 
     func peek() -> str:
-        return self.tokens.items[self.index].text.view()
+        return self.token
 
     func kind() -> u8:
-        return self.tokens.items[self.index].kind
+        return self.token_kind
+
+    func remaining() -> usize:
+        return self.source.length - self.token_start
 
     mutating func take() -> str!:
-        if self.index + 1 >= self.tokens.count:
+        if self.kind() == 0:
             try self.fail("unexpected end of input")
         let text = self.peek()
-        self.index += 1
+        try self.advance()
         return text
 
     func at(text: str) -> bool:
@@ -1688,14 +1693,14 @@ struct Parser:
             return self.kind() == text.bytes[0]
         return self.kind() == 1
 
-    mutating func accept(text: str) -> bool:
+    mutating func accept(text: str) -> bool!:
         if not self.at(text):
             return false
-        self.index += 1
+        try self.advance()
         return true
 
     mutating func expect(text: str) -> !:
-        if not self.accept(text):
+        if not (try self.accept(text)):
             try self.fail("unexpected token")
 
     func fail(message: str) -> !:
@@ -1716,64 +1721,76 @@ struct Parser:
             try self.fail("expected a <path>")
         return try self.take()
 
-    mutating func close():
-        for i in 0..<self.tokens.count:
-            self.tokens.items[i].text.close()
-        self.tokens.close()
-
-func punctuation(byte: u8) -> bool:
-    return byte == '{' or byte == '}' or byte == '[' or byte == ']' or byte == '(' or byte == ')' or byte == '=' or byte == ',' or byte == ':'
-
-func tokenize(bytes: const u8[]) -> Parser!:
-    var parser: Parser
-    errdefer parser.close()
-    var pos: usize = 0
-    var line: usize = 1
-    var column: usize = 1
-    var budget: usize = max_bytes
-    while pos < bytes.length:
-        let byte = bytes[pos]
-        if byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n':
-            if byte == '\n':
-                line += 1
-                column = 0
-            column += 1
-            pos += 1
-            continue
-        if byte == '#':
-            while pos < bytes.length and bytes[pos] != '\n':
+    mutating func advance() -> !:
+        let bytes = self.source
+        var pos = self.position
+        while pos < bytes.length:
+            let byte = bytes[pos]
+            if byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n':
                 pos += 1
-                column += 1
-            continue
-        var token = Token(line = line, column = column)
-        errdefer token.text.close()
-        let start = pos
+            elif byte == '#':
+                while pos < bytes.length and bytes[pos] != '\n':
+                    pos += 1
+            else:
+                break
+        self.token_start = pos
+        self.token = ""
+        self.token_kind = 0
+        if pos == bytes.length:
+            self.position = pos
+            return
+        let byte = bytes[pos]
         if byte == '"' or byte == '\'' or byte == '<':
             let end: u8 = '>' if byte == '<' else byte
-            token.kind = 4 if byte == '<' else (2 if byte == '"' else 3)
+            self.token_kind = 4 if byte == '<' else (2 if byte == '"' else 3)
             pos += 1
+            let start = pos
+            var escaped = false
             var closed = false
             while pos < bytes.length:
-                var current = bytes[pos]
-                pos += 1
+                let current = bytes[pos]
                 if current == end:
                     closed = true
                     break
+                pos += 1
                 if current == '\\' and byte != '<':
                     if pos == bytes.length:
                         break
-                    current = bytes[pos]
+                    escaped = true
                     pos += 1
-                    current = '\n' if current == 'n' else ('\t' if current == 't' else current)
-                try token.text.byte(current)
-            if not closed or (token.kind == 3 and token.text.used != 1):
-                error(invalid, "unterminated Prism literal or invalid byte character")
+            if not closed:
+                error(invalid, "unterminated Prism literal")
+            let raw = bytes[start..<pos]
+            if escaped:
+                var decoded: Buffer
+                errdefer decoded.close()
+                var i: usize = 0
+                while i < raw.length:
+                    var current = raw[i]
+                    i += 1
+                    if current == '\\':
+                        current = raw[i]
+                        i += 1
+                        current = '\n' if current == 'n' else ('\t' if current == 't' else current)
+                    try decoded.byte(current)
+                let cost = decoded.used + 128
+                if cost > self.string_budget:
+                    error(limit_exceeded, "Prism decoded string budget exceeded")
+                try self.decoded.push(decoded)
+                self.string_budget -= cost
+                self.token = decoded.view()
+            else:
+                self.token = (str)raw
+            if self.token_kind == 3 and self.token.length != 1:
+                error(invalid, "invalid Prism byte character")
+            pos += 1
         elif punctuation(byte):
-            token.kind = byte
-            try token.text.byte(byte)
+            self.token_kind = byte
+            self.token = (str)bytes[pos..<pos + 1]
             pos += 1
         else:
-            token.kind = 1
+            self.token_kind = 1
+            let start = pos
             while pos < bytes.length:
                 let current = bytes[pos]
                 if current <= 32 or punctuation(current) or current == '"' or current == '\'' or current == '<' or current == '#' or current == '>':
@@ -1781,18 +1798,19 @@ func tokenize(bytes: const u8[]) -> Parser!:
                 pos += 1
             if pos == start:
                 error(invalid, "invalid Prism text byte")
-            try token.text.put(bytes[start..<pos])
-        for current in bytes[start..<pos]:
-            if current == '\n':
-                line += 1
-                column = 0
-            column += 1
-        let cost = token.text.used + 128
-        if cost > budget:
-            error(limit_exceeded, "Prism text token budget exceeded")
-        budget -= cost
-        try parser.tokens.push(token)
-    try parser.tokens.push(Token(line = line, column = column))
+            self.token = (str)bytes[start..<pos]
+        self.position = pos
+
+    mutating func close():
+        close_names(&self.decoded)
+
+func punctuation(byte: u8) -> bool:
+    return byte == '{' or byte == '}' or byte == '[' or byte == ']' or byte == '(' or byte == ')' or byte == '=' or byte == ',' or byte == ':'
+
+func tokenize(bytes: const u8[]) -> Parser!:
+    var parser = Parser(source = bytes)
+    errdefer parser.close()
+    try parser.advance()
     return parser
 
 struct TypeSpec:
@@ -1904,7 +1922,7 @@ func parse_nested(parser: Parser*, value: ValueData*, depth: usize) -> !:
         if i + 1 < count:
             try parser.expect(",")
         else:
-            discard(parser.accept(","))
+            discard(try parser.accept(","))
     try parser.expect("]")
 
 func parse_tuple(parser: Parser*, value: ValueData*, count: usize) -> !:
@@ -1914,7 +1932,7 @@ func parse_tuple(parser: Parser*, value: ValueData*, count: usize) -> !:
         if i + 1 < count:
             try parser.expect(",")
         else:
-            discard(parser.accept(","))
+            discard(try parser.accept(","))
     try parser.expect(")")
 
 func parse_value(parser: Parser*, spec: const TypeSpec*) -> ValueData!:
@@ -1931,15 +1949,15 @@ func parse_value(parser: Parser*, spec: const TypeSpec*) -> ValueData!:
             else:
                 try parse_leaf(parser, &value)
             count += 1
-            if not parser.accept(","):
+            if not (try parser.accept(",")):
                 break
         try parser.expect("]")
         value.shape.items[0] = count
     elif spec.tuple_width > 0:
         try parse_tuple(parser, &value, spec.tuple_width)
     elif value.shape.count > 0:
-        if value.count() > parser.tokens.count - parser.index:
-            error(invalid, "Prism shape exceeds remaining value tokens")
+        if value.count() > parser.remaining():
+            error(invalid, "Prism shape exceeds remaining source bytes")
         try parse_nested(parser, &value, 0)
     else:
         try parse_leaf(parser, &value)
@@ -1952,7 +1970,7 @@ func parse_handles(parser: Parser*, values: List[f64]*) -> !:
         if not math.is_finite(number):
             try parser.fail("non-finite handle")
         try values.push(number)
-        if not parser.accept(","):
+        if not (try parser.accept(",")):
             break
     try parser.expect("]")
     if values.count % 2 != 0:
@@ -1962,10 +1980,10 @@ func parse_property(parser: Parser*, document: Document*, path: str) -> !:
     let type_name = try parser.name()
     var spec = try type_spec(type_name)
     defer spec.close()
-    if parser.accept("["):
+    if try parser.accept("["):
         if spec.label != "":
             try parser.fail("catalog aliases have fixed shapes")
-        if parser.accept("]"):
+        if try parser.accept("]"):
             spec.dynamic = true
             var shape: List[u32]
             errdefer shape.close()
@@ -1982,7 +2000,7 @@ func parse_property(parser: Parser*, document: Document*, path: str) -> !:
                 if dimension > 4294967295 or spec.shape.count >= 16:
                     try parser.fail("invalid Prism rank or dimension")
                 try spec.shape.push((u32)dimension)
-                if not parser.accept(","):
+                if not (try parser.accept(",")):
                     break
             try parser.expect("]")
     let quoted_name = parser.kind() == 2
@@ -1991,7 +2009,7 @@ func parse_property(parser: Parser*, document: Document*, path: str) -> !:
     if not quoted_name and strings.ends_with(name, ".timeSamples"):
         animated = true
         name = (str)name.bytes[..<name.length - 12]
-    elif parser.accept(".timeSamples"):
+    elif try parser.accept(".timeSamples"):
         animated = true
     try parser.expect("=")
     if not animated:
@@ -2021,7 +2039,7 @@ func parse_property(parser: Parser*, document: Document*, path: str) -> !:
             try parser.fail("non-finite keyframe time")
         try parser.expect(":")
         sample.value = try parse_value(parser, &spec)
-        if parser.accept("("):
+        if try parser.accept("("):
             while not parser.at(")"):
                 let key = try parser.name()
                 try parser.expect("=")
@@ -2041,11 +2059,11 @@ func parse_property(parser: Parser*, document: Document*, path: str) -> !:
                     try parse_handles(parser, &sample.right)
                 else:
                     try parser.fail("unknown keyframe option")
-                if not parser.accept(","):
+                if not (try parser.accept(",")):
                     break
             try parser.expect(")")
         try insert_sample(prop, sample)
-        if not parser.accept(","):
+        if not (try parser.accept(",")):
             break
     try parser.expect("}")
 
@@ -2106,7 +2124,7 @@ func parse_directive(parser: Parser*, document: Document*, path: str, depth: usi
         defer children.close()
         while not parser.at("]"):
             try children.push(try parser.quoted())
-            if not parser.accept(","):
+            if not (try parser.accept(",")):
                 break
         try parser.expect("]")
         try document.reorder(parent, children.span())
@@ -2138,7 +2156,7 @@ func parse_directive(parser: Parser*, document: Document*, path: str, depth: usi
             try document.set_metadata(path, "referencePath", try parser.quoted())
     elif directive == "unset":
         discard(try parser.take())
-        let metadata = parser.accept("string")
+        let metadata = try parser.accept("string")
         try document.mark_unset(path, try parser.name(), metadata)
     elif path == "/":
         try parser.fail("expected a document directive")

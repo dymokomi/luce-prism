@@ -14,6 +14,13 @@ rank is at most 16. Numeric array payloads contain exactly product(shape) × dty
 width bytes, in row-major, little-endian order. String payloads use length-prefixed
 UTF-8 records internally; use `strings` for construction.
 
+For encoded image files or arbitrary binary content, use
+`Value.array(DType.uint8, [length], payload)`. For raw pixels, use a shape such as
+`[height, width, 4]`. These values work with `Encoding.text` and `Encoding.binary`,
+including binary compression; retrieve the original data through `bytes()`.
+Prism does not decode the embedded file or assign a color space to pixel arrays.
+Callers can author MIME type, color space and other schema details as metadata.
+
 Inspection: `dtype`, `rank`, `dimension(index)`, `count`, `bytes`, `number_at`,
 `integer_at`, `unsigned_at`, and `text_at`. Component access checks bounds.
 `number_at` coerces numeric components; `integer_at` requires a signed integer.
@@ -51,6 +58,9 @@ from a string Value contains length prefixes, not concatenated text.
 - `set_asset(path, bytes, mime="application/octet-stream")`, `asset`, `asset_mime`,
   `asset_count` manage package assets. Assets may have paths whose content is
   supplied by a referenced document; local element existence is not required.
+  A document with these attachments requires `Encoding.package`; plain text or
+  binary encoding returns an error. Use typed properties for payloads that must
+  travel through both plain text and binary crates.
 
 ## I/O
 
@@ -86,6 +96,10 @@ Error strings are static; source line/column diagnostics are a future API.
 
 Input/output buffers and expanded compressed data are limited to 256 MiB. Tables
 and arrays of records have a 1,048,576-entry ceiling; text nesting is limited to
-128 and paths to 4096 bytes. String-table expansion and token memory have separate
-256 MiB budgets. These are per-buffer/collection limits, not a process-wide memory
-quota. Decode is whole-file and callers should apply their own admission limits.
+128 and paths to 4096 bytes. String-table expansion and decoded escaped strings
+have separate 256 MiB budgets. The text parser borrows numeric tokens from the
+input with one-token lookahead; image components do not consume table entries or
+allocate individual token buffers. These are per-buffer/collection limits, not a
+process-wide memory quota. Decode is whole-file and callers should apply their own
+admission limits. Decimal text can be substantially larger than its binary payload
+and must still fit the input/output buffer limit.

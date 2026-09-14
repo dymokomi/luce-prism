@@ -37,6 +37,25 @@ payload. Rank zero is one scalar; a zero dimension gives no components. The
 float16 code was appended to preserve the existing codes. Catalog aliases label
 existing dtype/shape combinations; they do not introduce new wire dtypes.
 
+### Images and binary content in text mode
+
+Raw pixels and encoded files are ordinary typed values in both encodings. For
+example, a red RGBA pixel is `uint8[1,1,4] pixels = [[[255, 0, 0, 255]]]`, and
+opaque bytes can be written as `uint8[4] payload = [0, 255, 128, 10]`. The binary
+crate stores those same four component bytes after the type and shape. No base64,
+string escaping or image codec is involved. A PNG file stored as `uint8[N]` keeps
+its entire encoded file, including headers and compressed image bytes.
+
+"ASCII mode" refers to the numeric text representation; `.prisma` itself permits
+UTF-8 strings and metadata. Numeric payload bytes are never interpreted as UTF-8.
+Text files expand the numeric payload and remain subject to the 256 MiB buffer
+limit. Numeric tokens are consumed with one-token lookahead, avoiding a separate
+allocation or record entry for each component and comma.
+
+Legacy package assets are distinct wire records in `PRSMZ`. This port retains
+that format: `set_asset` requires package encoding. Typed byte properties provide
+embedded binary content in plain `.prisma` text and `PRSMC` binary crates.
+
 ## Crates and packages
 
 A crate begins with 6 magic bytes, `u16 version`, `u16 flags`, then a deterministic

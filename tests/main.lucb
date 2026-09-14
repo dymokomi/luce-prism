@@ -183,7 +183,7 @@ struct Tracker: memory.Allocator:
         self.upstream.release(block)
 
 func allocations(tracker: Tracker*) -> !:
-    let input = "#prisma 4.0\ndef node \"a\" { float64 x = 1 float64 x.timeSamples = {0: 1, 2: 3} str label = \"owned\" }\n"
+    let input = "#prisma 4.0\ndef node \"a\" { float64 x = 1 float64 x.timeSamples = {0: 1, 2: 3} str \"escaped\\tname\" = \"owned\\nvalue\" }\n"
     var successes: usize = 0
     for stage in 0..<(usize)240:
         tracker.remaining = stage
@@ -243,3 +243,12 @@ func text_edges() -> !:
     defer other.release()
     assert(equal(binary.value().bytes(), other.value().bytes()))
     try rejected("#prisma 4.0\ndef x { int32[1] a = \"[\" 1 \"]\" }".bytes)
+    # Names must stay valid across lookahead and later escaped-string allocations.
+    let escaped = try prism.Document.parse("#prisma 4.0\ndef \"node\\ttype\" \"a\" { str \"key\\tname\" = \"first\\nvalue\" str other = \"next\\tvalue\" }")
+    defer escaped.release()
+    assert(try escaped.value().type_at("/a") == "node\ttype")
+    let named = try escaped.value().get("/a", "key\tname")
+    defer named.release()
+    assert(try named.value().text_at() == "first\nvalue")
+    try rejected("#prisma 4.0\ndef x { str p = \"value\" > }".bytes)
+    try rejected("#prisma 4.0\ndef x { str p = \"value\" } \"unterminated".bytes)

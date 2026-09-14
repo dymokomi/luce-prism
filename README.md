@@ -43,6 +43,27 @@ Luce manages the public objects automatically. Base callers explicitly `release`
 returned references and `close` directly constructed documents. See
 [API and ownership](docs/API.md) and [format details](docs/FORMAT.md).
 
+Images and opaque binary data can be embedded in **either binary or ASCII text
+mode** as typed properties. Use `uint8[height,width,channels]` for byte pixels or
+`uint8[length]` for an encoded PNG, JPEG or any other byte buffer. For example,
+inside a Luce function:
+
+```luce
+let document = Document()
+document.add("/image", "image")
+let pixels = b"\xff\x00\x00\xff\x00\xff\x00\x80"
+document.set("/image", "pixels", Value.array(DType.uint8, [1, 2, 4], pixels))
+document.save("image.prisma", Encoding.text)
+document.save("image.prism", Encoding.binary, true)
+```
+
+Text uses decimal arrays; binary stores the payload bytes. Both preserve all 256
+byte values exactly, including NUL and bytes that are not valid UTF-8. Typed
+`uint16` and `float16`/`float32` arrays support higher-precision pixels. See the
+[floating-point caveats](docs/FORMAT.md#compatibility-caveats) for non-finite values.
+The separate `set_asset` API uses legacy package attachments and requires
+`Encoding.package`.
+
 ```sh
 ./test.sh
 # Or select already-built compilers without changing sibling checkouts:
@@ -53,7 +74,9 @@ Build sibling compilers at the commits in `bootstrap/BASE` and `bootstrap/LUCE`.
 The gate runs Base and Luce consumers at native optimization levels 0–3 and both
 C comparison modes. It includes checked-in C++ fixtures, compressed and package
 round trips, malformed input, path edits and injected allocation failures. Builds
-and test outputs use temporary directories. See [validation](docs/VALIDATION.md).
+and test outputs use temporary directories. Media tests compare payload bytes for
+a 512×512 RGBA image, an embedded PNG, 16-bit channels and finite floating-point
+arrays in every encoding. See [validation](docs/VALIDATION.md).
 
 This package has no GPU, threading, UI or foreign-format dependencies. Image
 codecs belong in `luce-image`; content schemas and adapters can target Prism's typed

@@ -1,0 +1,112 @@
+import prism
+import memory
+import interop
+import files
+
+func equal(a: const u8[], b: const u8[]) -> bool:
+    if a.length != b.length:
+        return false
+    for i in 0..<a.length:
+        if a[i] != b[i]:
+            return false
+    return true
+
+func same_value(document: prism.Document*, name: str, expected: interop.Reference[prism.Value]) -> !:
+    let actual = try document.get("/image", name)
+    defer actual.release()
+    assert(actual.value().dtype() == expected.value().dtype())
+    assert(actual.value().rank() == expected.value().rank())
+    for i in 0..<expected.value().rank():
+        assert(try actual.value().dimension(i) == try expected.value().dimension(i))
+    assert(equal(actual.value().bytes(), expected.value().bytes()))
+
+func media() -> !:
+    # Every possible byte, including NUL, delimiters and invalid UTF-8, repeats
+    # across a realistic RGBA image. Payload bytes are never interpreted as text.
+    let pixels = try alloc u8[512 * 512 * 4]
+    defer free(pixels)
+    for i in 0..<pixels.length:
+        pixels[i] = (u8)i
+    let rgba = try prism.Value.array(prism.DType.uint8, [512, 512, 4], pixels)
+    defer rgba.release()
+    let png_bytes = try files.read("tests/fixtures/rgba.png")
+    defer free(png_bytes)
+    let png = try prism.Value.array(prism.DType.uint8, [(i64)png_bytes.length], png_bytes)
+    defer png.release()
+    let empty = try prism.Value.array(prism.DType.uint8, [0], b"")
+    defer empty.release()
+    # Full unsigned 16-bit range, representative of a 16-bit image channel.
+    let words = try alloc u8[65536 * 2]
+    defer free(words)
+    for i in 0..<(usize)65536:
+        words[i * 2] = (u8)i
+        words[i * 2 + 1] = (u8)(i >> 8)
+    let channel = try prism.Value.array(prism.DType.uint16, [256, 256], words)
+    defer channel.release()
+    # All finite half patterns, including signed zero and every subnormal.
+    let half_bytes = try alloc u8[63488 * 2]
+    defer free(half_bytes)
+    var position: usize = 0
+    for bits in 0..<(u32)65536:
+        if (bits & 31744) != 31744:
+            half_bytes[position] = (u8)bits
+            half_bytes[position + 1] = (u8)(bits >> 8)
+            position += 2
+    assert(position == half_bytes.length)
+    let half = try prism.Value.array(prism.DType.float16, [248, 256], half_bytes)
+    defer half.release()
+    let float_bits: u32[12] = [0, 2147483648, 1, 8388607, 8388608, 1065353216, 1065353217, 1078530011, 2139095039, 3212836864, 4286578687, 2147483649]
+    var float_bytes: u8[48]
+    for i in 0..<float_bits.length:
+        memory.write[u32](&float_bytes[i * 4], float_bits[i])
+    let hdr = try prism.Value.array(prism.DType.float32, [2, 2, 3], float_bytes)
+    defer hdr.release()
+    let double_bits: u64[8] = [0, 9223372036854775808, 1, 4503599627370495, 4503599627370496, 4607182418800017409, 9218868437227405311, 18442240474082181119]
+    var double_bytes: u8[64]
+    for i in 0..<double_bits.length:
+        memory.write[u64](&double_bytes[i * 8], double_bits[i])
+    let precise = try prism.Value.array(prism.DType.float64, [2, 4], double_bytes)
+    defer precise.release()
+    var document = prism.Document()
+    defer document.close()
+    try document.add("/image", "image")
+    try document.set("/image", "pixels", rgba)
+    try document.set("/image", "png", png)
+    try document.set("/image", "empty", empty)
+    try document.set("/image", "channel16", channel)
+    try document.set("/image", "half", half)
+    try document.set("/image", "hdr", hdr)
+    try document.set("/image", "precise", precise)
+    try document.set_metadata("/image", "mime", "image/png")
+    let encodings: prism.Encoding[4] = [prism.Encoding.text, prism.Encoding.binary, prism.Encoding.binary, prism.Encoding.package]
+    for i in 0..<encodings.length:
+        let encoding = encodings[i]
+        let encoded = try document.encode(encoding, i == 2)
+        defer encoded.release()
+        if encoding == prism.Encoding.text:
+            for byte in encoded.value().bytes():
+                assert(byte == 10 or (byte >= 32 and byte < 127))
+        let decoded = try prism.Document.decode(encoded.value().bytes())
+        defer decoded.release()
+        try same_value(decoded.value(), "pixels", rgba)
+        try same_value(decoded.value(), "png", png)
+        try same_value(decoded.value(), "empty", empty)
+        try same_value(decoded.value(), "channel16", channel)
+        try same_value(decoded.value(), "half", half)
+        try same_value(decoded.value(), "hdr", hdr)
+        try same_value(decoded.value(), "precise", precise)
+        assert(try decoded.value().metadata("/image", "mime") == "image/png")
+        # A text-decoded image must survive a subsequent compressed binary save.
+        if encoding == prism.Encoding.text:
+            let binary = try decoded.value().encode(prism.Encoding.binary, true)
+            defer binary.release()
+            let restored = try prism.Document.decode(binary.value().bytes())
+            defer restored.release()
+            try same_value(restored.value(), "pixels", rgba)
+            try same_value(restored.value(), "png", png)
+            try same_value(restored.value(), "half", half)
+
+pub func main(arguments: str[]) -> i32!:
+    try media()
+    print("PASS images and arbitrary bytes in ASCII, binary, compressed binary and package modes")
+    return 0
