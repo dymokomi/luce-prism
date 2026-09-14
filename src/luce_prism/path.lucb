@@ -1,0 +1,94 @@
+## Path.
+from luce_prism.storage import Buffer
+from luce_prism.types import invalid
+
+pub func name_byte(byte: u8) -> bool:
+    return (byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z') or (byte >= '0' and byte <= '9') or byte == '_'
+
+pub func valid_name(name: str) -> bool:
+    if name.length == 0:
+        return false
+    for byte in name.bytes:
+        if not name_byte(byte):
+            return false
+    return true
+
+pub func anonymous(name: str) -> bool:
+    if name.length < 3 or name.bytes[0] != '[' or name.bytes[name.length - 1] != ']':
+        return false
+    for byte in name.bytes[1..<name.length - 1]:
+        if byte < '0' or byte > '9':
+            return false
+    return true
+
+## Matches kinogaki Path::parse, including positional [N] segments.
+pub func valid_path(path: str) -> bool:
+    if path == "/":
+        return true
+    if path.length < 2 or path.bytes[0] != '/' or path.length > 4096:
+        return false
+    var start: usize = 1
+    var slot = false
+    for i in 1..=path.length:
+        let byte: u8 = 0 if i == path.length else path.bytes[i]
+        if byte == 0 and i != path.length:
+            return false
+        if byte == '/' or byte == '.' or byte == 0:
+            let part = (str)path.bytes[start..<i]
+            if not valid_name(part) and (slot or not anonymous(part)):
+                return false
+            if slot and byte != 0:
+                return false
+            slot = byte == '.'
+            start = i + 1
+    return true
+
+pub func element_path(path: str) -> str:
+    for i in 0..<path.length:
+        if path.bytes[i] == '.':
+            return (str)path.bytes[..<i]
+    return path
+
+pub func parent_path(path: str) -> str:
+    let element = element_path(path)
+    var index = element.length
+    while index > 1:
+        index -= 1
+        if element.bytes[index] == '/':
+            return (str)element.bytes[..<index]
+    return "/"
+
+pub func path_name(path: str) -> str:
+    let element = element_path(path)
+    if element == "/":
+        return ""
+    let parent = parent_path(element)
+    return (str)element.bytes[(1 if parent == "/" else parent.length + 1)..]
+
+pub func slot_name(path: str) -> str:
+    let element = element_path(path)
+    return "" if element.length == path.length else (str)path.bytes[element.length + 1..]
+
+pub func is_descendant(path: str, root: str) -> bool:
+    let element = element_path(path)
+    let base = element_path(root)
+    if base == "/":
+        return true
+    return element == base or (element.length > base.length and (str)element.bytes[..<base.length] == base and element.bytes[base.length] == '/')
+
+pub func require_element(path: str) -> !:
+    if not valid_path(path) or path == "/" or element_path(path) != path:
+        error(invalid, "expected a non-root Prism element path")
+
+pub func require_slot(path: str) -> !:
+    if not valid_path(path) or slot_name(path) == "":
+        error(invalid, "expected a Prism property path")
+
+pub func joined(parent: str, name: str, separator: str = "/") -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    if parent != "/" or separator != "/":
+        try out.text(parent)
+    try out.text(separator)
+    try out.text(name)
+    return out

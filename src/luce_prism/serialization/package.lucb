@@ -1,0 +1,101 @@
+## Serialization package.
+from luce_prism.model import DocumentData
+from luce_prism.path import require_element, valid_path, element_path
+from luce_prism.serialization.binary import read_binary, write_binary
+from luce_prism.serialization.encoding import detect
+from luce_prism.serialization.text_reader import read_text
+from luce_prism.serialization.text_writer import write_text
+from luce_prism.storage import Buffer, List, Reader
+from luce_prism.types import Encoding, invalid, limit_exceeded, unsupported
+
+pub struct Entry:
+    pub var name: str
+    pub var mime: str
+    pub var kind: u8
+    pub var offset: usize
+    pub var size: usize
+
+pub func write_package(document: const DocumentData*, compressed: bool, text_scene: bool = false) -> Buffer!:
+    var scene = try write_text(document) if text_scene else try write_binary(document, compressed)
+    defer scene.close()
+    var header_size: usize = 14 + 25 + 5
+    for asset in document.assets.span():
+        let extra = 25 + asset.path.used + asset.mime.used
+        header_size = header_size +? extra else error(limit_exceeded, "Prism package TOC overflow")
+    var output: Buffer
+    errdefer output.close()
+    try output.text("PRSMZ\0")
+    try output.uint(4, 2)
+    try output.uint(0, 2)
+    try output.uint((u64)(document.assets.count + 1), 4)
+    var offset = header_size
+    for asset in document.assets.span():
+        try output.sized(asset.path.view())
+        try output.byte(2)
+        try output.sized(asset.mime.view())
+        try output.uint((u64)offset, 8)
+        try output.uint((u64)asset.bytes.used, 8)
+        offset = offset +? asset.bytes.used else error(limit_exceeded, "Prism package size overflow")
+    try output.sized("scene")
+    try output.byte(0 if text_scene else 1)
+    try output.sized("")
+    try output.uint((u64)offset, 8)
+    try output.uint((u64)scene.used, 8)
+    for asset in document.assets.span():
+        try output.put(asset.bytes.bytes())
+    try output.put(scene.bytes())
+    return output
+
+pub func read_package(bytes: const u8[], document: DocumentData*) -> !:
+    var reader = Reader(data = bytes, pos = 6)
+    if try reader.uint(2) != 4:
+        error(unsupported, "only Prism v4 packages are supported")
+    if try reader.uint(2) != 0:
+        error(unsupported, "unknown Prism package flags")
+    let count = try reader.count(25)
+    var entries: List[Entry]
+    defer entries.close()
+    var scene: usize? = none
+    for i in 0..<count:
+        let name = try reader.text()
+        let kind = (u8)try reader.uint(1)
+        let mime = try reader.text()
+        let offset = try reader.uint(8)
+        let size = try reader.uint(8)
+        if offset > (u64)bytes.length or size > (u64)bytes.length - offset:
+            error(invalid, "Prism package blob is outside its input")
+        if kind > 2:
+            error(unsupported, "unknown Prism package entry kind")
+        for entry in entries.span():
+            if entry.name == name:
+                error(invalid, "duplicate Prism package entry name")
+        if kind < 2:
+            if scene != none or name != "scene" or mime != "":
+                error(invalid, "Prism package must contain one named scene")
+            scene = i
+        else:
+            if not valid_path(name) or element_path(name) != name:
+                error(invalid, "invalid Prism asset path")
+        try entries.push(Entry(name = name, kind = kind, mime = mime, offset = (usize)offset, size = (usize)size))
+    for i in 0..<entries.count:
+        let a = entries.items[i]
+        if a.offset < reader.pos:
+            error(invalid, "Prism package blob overlaps its table")
+        for j in 0..<i:
+            let b = entries.items[j]
+            if a.size > 0 and b.size > 0 and a.offset < b.offset + b.size and b.offset < a.offset + a.size:
+                error(invalid, "overlapping Prism package blobs")
+    let index = scene else error(invalid, "Prism package has no scene")
+    let entry = entries.items[index]
+    let payload = bytes[entry.offset..<entry.offset + entry.size]
+    let encoding = detect(payload)
+    if encoding != (Encoding.text if entry.kind == 0 else Encoding.binary):
+        error(invalid, "Prism scene kind does not match its magic")
+    # No recursive package scenes: depth and asset ownership stay unambiguous.
+    if encoding == Encoding.text:
+        try read_text(payload, document)
+    else:
+        try read_binary(payload, document)
+    for asset in entries.span():
+        if asset.kind == 2:
+            try document.set_asset(asset.name, bytes[asset.offset..<asset.offset + asset.size], asset.mime)

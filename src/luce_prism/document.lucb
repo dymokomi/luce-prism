@@ -1,0 +1,403 @@
+## Public document ownership, authoring facade and explicit file I/O.
+import memory
+import interop
+import strings
+import files
+import c
+import luce_prism.comparison as comparison
+import luce_prism.composition.layers as layers
+import luce_prism.authoring.names as names
+import luce_prism.authoring.prefab as prefab
+import luce_prism.logic.builders as logic_builders
+import luce_prism.surface.math as surface_math
+import luce_prism.surface.logic as surface_logic
+import luce_prism.pattern as patterns
+from luce_prism.logic.atoms import Atom, Atoms, RuleKind
+from luce_prism.authoring.paths import Paths, own_paths
+from luce_prism.path import is_descendant, parent_path
+from luce_prism.model import DocumentData
+from luce_prism.serialization.binary import write_binary
+from luce_prism.serialization.dispatch import read_document
+from luce_prism.serialization.package import write_package
+from luce_prism.serialization.text_writer import write_text
+from luce_prism.storage import Blob, own_blob
+from luce_prism.types import HandleType, Encoding, Interpolation, invalid, max_bytes
+from luce_prism.value import Value, own_value
+from luce_prism.animation import Property, Sample
+
+pub struct Document:
+    # Package implementation access. Not part of the stable consumer API.
+    var data: DocumentData
+    var generation: usize
+
+    pub func init():
+        return
+
+    pub func revision() -> usize:
+        return self.generation
+
+    pub func view_data() -> const DocumentData*:
+        return &self.data
+
+    pub func copy() -> interop.Reference[Document]!:
+        return try own_document(try self.data.copy())
+
+    pub func extract(path: str) -> interop.Reference[Document]!:
+        return try own_document(try prefab.extract(&self.data, path))
+
+    pub mutating func compile_math(name: str, expression: str) -> !:
+        self.generation += 1
+        var next = try self.data.copy()
+        errdefer next.close()
+        try surface_math.compile(&next, name, expression)
+        self.data.close()
+        self.data = next
+
+    pub mutating func compile_logic(name: str, rule: str) -> !:
+        self.generation += 1
+        var next = try self.data.copy()
+        errdefer next.close()
+        try surface_logic.compile(&next, name, rule)
+        self.data.close()
+        self.data = next
+
+    pub mutating func add_fact(name: str, head: interop.Reference[Atom]) -> !:
+        self.generation += 1
+        var next = try self.data.copy()
+        errdefer next.close()
+        try logic_builders.add_fact(&next, name, (try head.get()).view_data())
+        self.data.close()
+        self.data = next
+
+    pub mutating func add_rule(name: str, kind: RuleKind, head: interop.Reference[Atom], body: interop.Reference[Atoms]) -> !:
+        self.generation += 1
+        var next = try self.data.copy()
+        errdefer next.close()
+        try logic_builders.add_rule(&next, name, kind, (try head.get()).view_data(), (try body.get()).view_data())
+        self.data.close()
+        self.data = next
+
+    pub mutating func add_superiority(name: str, superior: str, inferior: str) -> !:
+        self.generation += 1
+        var next = try self.data.copy()
+        errdefer next.close()
+        try logic_builders.add_superiority(&next, name, superior, inferior)
+        self.data.close()
+        self.data = next
+
+    pub mutating func instantiate(fragment: interop.Reference[Document], parent: str = "/") -> interop.Reference[Paths]!:
+        self.generation += 1
+        var next = try self.data.copy()
+        errdefer next.close()
+        let roots = try own_paths(try prefab.instantiate(&next, (try fragment.get()).view_data(), parent))
+        self.data.close()
+        self.data = next
+        return roots
+
+    pub func children(parent: str = "/") -> interop.Reference[Paths]!:
+        var paths = Paths()
+        errdefer paths.close()
+        for i in 0..<self.data.child_count(parent):
+            try paths.append(self.data.child_at(parent, i) else error(invalid, "invalid Prism child index"))
+        let owned = paths
+        paths = Paths()
+        return try own_paths(owned)
+
+    pub func find(pattern: str) -> interop.Reference[Paths]!:
+        var paths = Paths()
+        errdefer paths.close()
+        for element in self.data.elements.span():
+            if patterns.matches(pattern, element.path.view()):
+                try paths.append(element.path.view())
+        let owned = paths
+        paths = Paths()
+        return try own_paths(owned)
+
+    pub func has_property(path: str, name: str) -> bool:
+        return self.data.has_property(path, name)
+
+    pub mutating func remove_property(path: str, name: str) -> !:
+        self.generation += 1
+        try self.data.remove_property(path, name)
+
+    pub mutating func remove_metadata(path: str, key: str) -> !:
+        self.generation += 1
+        try self.data.remove_metadata(path, key)
+
+    pub func has_metadata(path: str, key: str) -> bool:
+        return self.data.has_metadata(path, key)
+
+    pub func metadata_count(path: str) -> usize!:
+        return try self.data.metadata_count(path)
+
+    pub func metadata_name(path: str, index: usize) -> str!:
+        return try self.data.metadata_name(path, index)
+
+    pub mutating func set_type(path: str, name: str) -> !:
+        self.generation += 1
+        try self.data.set_type(path, name)
+
+    pub func overlay(layer: interop.Reference[Document]) -> interop.Reference[Document]!:
+        let other = try layer.get()
+        let opinions: DocumentData[1] = [other.data]
+        return try own_document(try layers.overlay(&self.data, opinions))
+
+    pub func diff(target: interop.Reference[Document]) -> interop.Reference[Document]!:
+        let other = try target.get()
+        return try own_document(try layers.diff(&self.data, &other.data))
+
+    pub func equals(other: interop.Reference[Document]) -> bool!:
+        return comparison.equal_documents(&self.data, (try other.get()).view_data())
+
+    pub func contains(path: str) -> bool:
+        return self.data.contains(path)
+
+    pub func element_id(path: str) -> usize?:
+        return self.data.element_id(path)
+
+    pub func path_for_id(identifier: usize) -> str?:
+        return self.data.path_for_id(identifier)
+
+    pub func child_count(parent: str = "/") -> usize:
+        return self.data.child_count(parent)
+
+    pub func child_at(parent: str, index: usize) -> str?:
+        return self.data.child_at(parent, index)
+
+    pub func element_count() -> usize:
+        return self.data.element_count()
+
+    pub func path_at(index: usize) -> str!:
+        return try self.data.path_at(index)
+
+    pub func type_at(path: str) -> str!:
+        return try self.data.type_at(path)
+
+    pub mutating func add(path: str, type_name: str, override: bool = false) -> !:
+        self.generation += 1
+        try self.data.add(path, type_name, override)
+
+    pub mutating func append(path: str, type_name: str, override: bool = false) -> str!:
+        self.generation += 1
+        var allocated = try names.unique_path(&self.data, path)
+        defer allocated.close()
+        try self.data.insert(allocated.view(), type_name, override)
+        return try self.data.path_at(self.data.element_count() - 1)
+
+    pub mutating func add_child(parent: str, type_name: str) -> str!:
+        self.generation += 1
+        var allocated = try names.anonymous_path(&self.data, parent)
+        defer allocated.close()
+        try self.data.insert(allocated.view(), type_name)
+        return try self.data.path_at(self.data.element_count() - 1)
+
+    pub mutating func move(path: str, destination: str) -> str!:
+        self.generation += 1
+        if not self.data.contains(path) or is_descendant(parent_path(destination), path):
+            return path
+        let identifier = self.data.element_id(path) else error(invalid, "missing Prism element")
+        var allocated = try names.unique_path(&self.data, destination, path)
+        defer allocated.close()
+        try self.data.rename(path, allocated.view())
+        return self.data.path_for_id(identifier) else error(invalid, "moved Prism element lost its identity")
+
+    pub mutating func set(path: str, name: str, value: interop.Reference[Value], type_name: str = "") -> !:
+        self.generation += 1
+        try self.data.set(path, name, value, type_name)
+
+    pub func get(path: str, name: str) -> interop.Reference[Value]!:
+        return try self.data.get(path, name)
+
+    pub func property_count(path: str) -> usize!:
+        return try self.data.property_count(path)
+
+    pub func property_name(path: str, index: usize) -> str!:
+        return try self.data.property_name(path, index)
+
+    pub mutating func set_metadata(path: str, key: str, value: str) -> !:
+        self.generation += 1
+        try self.data.set_metadata(path, key, value)
+
+    pub func metadata(path: str, key: str) -> str!:
+        return try self.data.metadata(path, key)
+
+    pub mutating func connect(source: str, target: str) -> !:
+        self.generation += 1
+        try self.data.connect(source, target)
+
+    pub func connection_count() -> usize:
+        return self.data.connection_count()
+
+    pub func source(target: str) -> str!:
+        return try self.data.source(target)
+
+    pub mutating func disconnect(target: str):
+        self.generation += 1
+        self.data.disconnect(target)
+
+    pub mutating func set_sample(path: str, name: str, time: f64, value: interop.Reference[Value], interpolation: Interpolation = Interpolation.linear) -> !:
+        self.generation += 1
+        try self.data.set_sample(path, name, time, value, interpolation)
+
+    pub mutating func animate(path: str, name: str, time: f64, value: interop.Reference[Value], interpolation: Interpolation = Interpolation.linear) -> !:
+        self.generation += 1
+        if self.data.has_property(path, name):
+            try self.data.set_sample(path, name, time, value, interpolation)
+            return
+        var next = try self.data.copy()
+        errdefer next.close()
+        try next.set(path, name, value)
+        try next.set_sample(path, name, time, value, interpolation)
+        self.data.close()
+        self.data = next
+
+    pub mutating func set_handles(path: str, name: str, time: f64, kind: HandleType, left: const f64[], right: const f64[]) -> !:
+        self.generation += 1
+        try self.data.set_handles(path, name, time, kind, left, right)
+
+    pub mutating func remove_sample(path: str, name: str, time: f64) -> !:
+        self.generation += 1
+        try self.data.remove_sample(path, name, time)
+
+    pub func sample_count(path: str, name: str) -> usize!:
+        return try self.data.sample_count(path, name)
+
+    func property(path: str, name: str) -> const Property*!:
+        let element = &self.data.elements.items[try self.data.require(path)]
+        let index = element.property(name) else error(invalid, "Prism property does not exist")
+        return &element.properties.items[index]
+
+    func key(path: str, name: str, index: usize) -> const Sample*!:
+        let property = try self.property(path, name)
+        if index >= property.samples.count:
+            error(invalid, "Prism keyframe index is out of bounds")
+        return &property.samples.items[index]
+
+    pub func property_type_name(path: str, name: str) -> str!:
+        return (try self.property(path, name)).type_name.view()
+
+    pub func sample_time_at(path: str, name: str, index: usize) -> f64!:
+        return (try self.key(path, name, index)).time
+
+    pub func sample_interpolation_at(path: str, name: str, index: usize) -> Interpolation!:
+        return (try self.key(path, name, index)).interpolation
+
+    pub func sample_handle_at(path: str, name: str, index: usize) -> HandleType!:
+        return (HandleType)(try self.key(path, name, index)).handle
+
+    pub func sample_left_at(path: str, name: str, index: usize) -> const f64[]!:
+        return (try self.key(path, name, index)).left.span()
+
+    pub func sample_right_at(path: str, name: str, index: usize) -> const f64[]!:
+        return (try self.key(path, name, index)).right.span()
+
+    pub func sample_value_at(path: str, name: str, index: usize) -> interop.Reference[Value]!:
+        return try own_value(try (try self.key(path, name, index)).value.copy())
+
+    pub func resolve(path: str, name: str, time: f64 = 0.0) -> interop.Reference[Value]!:
+        return try self.data.resolve(path, name, time)
+
+    pub func eval(slot: str, time: f64 = 0.0) -> interop.Reference[Value]!:
+        return try self.data.eval(slot, time)
+
+    pub mutating func mark_deleted(path: str) -> !:
+        self.generation += 1
+        try self.data.mark_deleted(path)
+
+    pub mutating func mark_disconnected(target: str) -> !:
+        self.generation += 1
+        try self.data.mark_disconnected(target)
+
+    pub mutating func mark_unset(path: str, name: str, metadata: bool = false) -> !:
+        self.generation += 1
+        try self.data.mark_unset(path, name, metadata)
+
+    pub mutating func reorder(parent: str, children: const str[]) -> !:
+        self.generation += 1
+        try self.data.reorder(parent, children)
+
+    pub mutating func connect_pattern(source: str, target_pattern: str) -> !:
+        self.generation += 1
+        try self.data.connect_pattern(source, target_pattern)
+
+    pub mutating func set_asset(path: str, bytes: const u8[], mime: str = "application/octet-stream") -> !:
+        self.generation += 1
+        try self.data.set_asset(path, bytes, mime)
+
+    pub mutating func rename(path: str, destination: str) -> !:
+        self.generation += 1
+        try self.data.rename(path, destination)
+
+    pub mutating func remove(path: str) -> !:
+        self.generation += 1
+        try self.data.remove(path)
+
+    pub func asset_count() -> usize:
+        return self.data.asset_count()
+
+    pub func asset(path: str) -> interop.Reference[Blob]!:
+        return try self.data.asset(path)
+
+    pub func asset_mime(path: str) -> str!:
+        return try self.data.asset_mime(path)
+
+    pub mutating func close():
+        self.generation += 1
+        self.data.close()
+
+    pub func encode(encoding: Encoding = Encoding.binary, compressed: bool = false) -> interop.Reference[Blob]!:
+        if encoding == Encoding.package:
+            return try own_blob(try write_package(&self.data, compressed))
+        if self.data.assets.count > 0:
+            error(invalid, "use package encoding to preserve Prism assets")
+        if encoding == Encoding.text:
+            return try own_blob(try write_text(&self.data))
+        if encoding == Encoding.binary:
+            return try own_blob(try write_binary(&self.data, compressed))
+        error(invalid, "choose a Prism encoding")
+
+    pub func encode_package(text_scene: bool = false, compressed: bool = false) -> interop.Reference[Blob]!:
+        return try own_blob(try write_package(&self.data, compressed, text_scene))
+
+    pub mutating func remove_asset(path: str):
+        self.generation += 1
+        self.data.remove_asset(path)
+
+    pub static func decode(bytes: const u8[]) -> interop.Reference[Document]!:
+        let native = try new Document() in memory.heap
+        read_document(bytes, &native.data) catch failure:
+            native.close()
+            free(native) in memory.heap
+            error(failure.code, failure.message)
+        return try interop.Reference[Document].adopt(native, document_type, memory.heap)
+
+    pub static func parse(text: str) -> interop.Reference[Document]!:
+        return try Document.decode(text.bytes)
+
+    pub static func load(path: str) -> interop.Reference[Document]!:
+        with memory.heap:
+            let name = try strings.copy(path)
+            defer strings.release(name)
+            let bytes = try files.read_limit((c.str)name, max_bytes)
+            defer free(bytes) in memory.heap
+            return try Document.decode(bytes)
+
+    pub func save(path: str, encoding: Encoding = Encoding.binary, compressed: bool = false) -> !:
+        let output = try self.encode(encoding, compressed)
+        defer output.release()
+        with memory.heap:
+            let name = try strings.copy(path)
+            defer strings.release(name)
+            try files.write_atomic((c.str)name, output.value().bytes(), synchronize = true)
+
+
+pub let document_type = interop.Type[Document]("Prism document", Document.close, closeable = true)
+
+pub func own_document(data: DocumentData) -> interop.Reference[Document]!:
+    var owned = data
+    errdefer owned.close()
+    let native = try new Document() in memory.heap
+    native.data = owned
+    # adopt consumes native, including on failure; it becomes the sole owner.
+    owned = DocumentData()
+    return try interop.Reference[Document].adopt(native, document_type, memory.heap)

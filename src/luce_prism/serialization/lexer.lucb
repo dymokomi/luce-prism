@@ -1,0 +1,155 @@
+## Serialization lexer.
+from luce_prism.storage import Buffer, List, close_names
+from luce_prism.types import invalid, limit_exceeded, max_bytes
+
+pub struct Parser:
+    pub var source: const u8[]
+    pub var position: usize
+    pub var token_start: usize
+    pub var token: str = ""
+    pub var token_kind: u8
+    pub var decoded: List[Buffer]
+    pub var string_budget: usize = max_bytes
+
+    pub func peek() -> str:
+        return self.token
+
+    pub func kind() -> u8:
+        return self.token_kind
+
+    pub func remaining() -> usize:
+        return self.source.length - self.token_start
+
+    pub mutating func take() -> str!:
+        if self.kind() == 0:
+            try self.fail("unexpected end of input")
+        let text = self.peek()
+        try self.advance()
+        return text
+
+    pub func at(text: str) -> bool:
+        if self.peek() != text:
+            return false
+        if text.length == 1 and punctuation(text.bytes[0]):
+            return self.kind() == text.bytes[0]
+        return self.kind() == 1
+
+    pub mutating func accept(text: str) -> bool!:
+        if not self.at(text):
+            return false
+        try self.advance()
+        return true
+
+    pub mutating func expect(text: str) -> !:
+        if not (try self.accept(text)):
+            try self.fail("unexpected token")
+
+    pub func fail(message: str) -> !:
+        error(invalid, message)
+
+    pub mutating func name() -> str!:
+        if self.kind() != 1 and self.kind() != 2:
+            try self.fail("expected a name")
+        return try self.take()
+
+    pub mutating func quoted() -> str!:
+        if self.kind() != 2:
+            try self.fail("expected a quoted string")
+        return try self.take()
+
+    pub mutating func path() -> str!:
+        if self.kind() != 4:
+            try self.fail("expected a <path>")
+        return try self.take()
+
+    pub mutating func advance() -> !:
+        let bytes = self.source
+        var pos = self.position
+        while pos < bytes.length:
+            let byte = bytes[pos]
+            if byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n':
+                pos += 1
+            elif byte == '#':
+                while pos < bytes.length and bytes[pos] != '\n':
+                    pos += 1
+            else:
+                break
+        self.token_start = pos
+        self.token = ""
+        self.token_kind = 0
+        if pos == bytes.length:
+            self.position = pos
+            return
+        let byte = bytes[pos]
+        if byte == '"' or byte == '\'' or byte == '<':
+            let end: u8 = '>' if byte == '<' else byte
+            self.token_kind = 4 if byte == '<' else (2 if byte == '"' else 3)
+            pos += 1
+            let start = pos
+            var escaped = false
+            var closed = false
+            while pos < bytes.length:
+                let current = bytes[pos]
+                if current == end:
+                    closed = true
+                    break
+                pos += 1
+                if current == '\\' and byte != '<':
+                    if pos == bytes.length:
+                        break
+                    escaped = true
+                    pos += 1
+            if not closed:
+                error(invalid, "unterminated Prism literal")
+            let raw = bytes[start..<pos]
+            if escaped:
+                var decoded: Buffer
+                errdefer decoded.close()
+                var i: usize = 0
+                while i < raw.length:
+                    var current = raw[i]
+                    i += 1
+                    if current == '\\':
+                        current = raw[i]
+                        i += 1
+                        current = '\n' if current == 'n' else ('\t' if current == 't' else current)
+                    try decoded.byte(current)
+                let cost = decoded.used + 128
+                if cost > self.string_budget:
+                    error(limit_exceeded, "Prism decoded string budget exceeded")
+                try self.decoded.push(decoded)
+                self.string_budget -= cost
+                self.token = decoded.view()
+            else:
+                self.token = (str)raw
+            if self.token_kind == 3 and self.token.length != 1:
+                error(invalid, "invalid Prism byte character")
+            pos += 1
+        elif punctuation(byte):
+            self.token_kind = byte
+            self.token = (str)bytes[pos..<pos + 1]
+            pos += 1
+        else:
+            self.token_kind = 1
+            let start = pos
+            while pos < bytes.length:
+                let current = bytes[pos]
+                if current <= 32 or punctuation(current) or current == '"' or current == '\'' or current == '<' or current == '#' or current == '>':
+                    break
+                pos += 1
+            if pos == start:
+                error(invalid, "invalid Prism text byte")
+            self.token = (str)bytes[start..<pos]
+        self.position = pos
+
+    pub mutating func close():
+        close_names(&self.decoded)
+
+pub func punctuation(byte: u8) -> bool:
+    return byte == '{' or byte == '}' or byte == '[' or byte == ']' or byte == '(' or byte == ')' or byte == '=' or byte == ',' or byte == ':'
+
+pub func tokenize(bytes: const u8[]) -> Parser!:
+    var parser = Parser(source = bytes)
+    errdefer parser.close()
+    try parser.advance()
+    return parser

@@ -1,0 +1,7 @@
+import compatibility.logic as logic
+import compatibility.surface as surface
+
+pub func main(arguments: str[]) -> i32!:
+    try logic.run()
+    try surface.run()
+    return 0

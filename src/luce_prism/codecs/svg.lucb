@@ -1,0 +1,88 @@
+## Structural SVG codec: case-sensitive tags and attributes, visible text nodes.
+import luce_prism.codecs.xml as xml
+from luce_prism.codecs.common import append, blank, set_text, get_text, type_of
+from luce_prism.model import DocumentData
+from luce_prism.storage import Buffer
+from luce_prism.types import invalid, limit_exceeded
+
+func attributes(doc: DocumentData*, path: str, token: const xml.Token*) -> !:
+    for attr in token.attrs.span():
+        try set_text(doc, path, attr.key.view(), attr.value.view())
+
+func children(doc: DocumentData*, path: str, tokens: const xml.Tokens*, position: usize*, close: str, depth: usize) -> !:
+    if depth > 128:
+        error(limit_exceeded, "SVG nesting exceeds 128")
+    while position[0] < tokens.values.count:
+        let token = &tokens.values.items[position[0]]
+        if token.kind == xml.Kind.close:
+            if token.name.view() == close:
+                position[0] += 1
+            return
+        if token.kind == xml.Kind.text:
+            if not blank(token.text.view()):
+                var child = try append(doc, path, "#text", false)
+                defer child.close()
+                try set_text(doc, child.view(), "text", token.text.view())
+            position[0] += 1
+        else:
+            var child = try append(doc, path, token.name.view(), false)
+            defer child.close()
+            try attributes(doc, child.view(), token)
+            position[0] += 1
+            if token.kind == xml.Kind.open:
+                try children(doc, child.view(), tokens, position, token.name.view(), depth + 1)
+    error(invalid, "unterminated SVG element")
+
+pub func decode(bytes: const u8[]) -> DocumentData!:
+    var tokens = try xml.tokenize(try str(bytes), false)
+    defer tokens.close()
+    var index: usize = 0
+    while index < tokens.values.count and tokens.values.items[index].kind == xml.Kind.text:
+        index += 1
+    if index == tokens.values.count:
+        error(invalid, "SVG has no root element")
+    let token = &tokens.values.items[index]
+    var doc = DocumentData()
+    errdefer doc.close()
+    try doc.add("/svg", token.name.view())
+    try attributes(&doc, "/svg", token)
+    if token.kind == xml.Kind.open:
+        index += 1
+        try children(&doc, "/svg", &tokens, &index, token.name.view(), 0)
+    return doc
+
+func write(doc: const DocumentData*, path: str, output: Buffer*, depth: usize) -> !:
+    if depth > 128:
+        error(limit_exceeded, "SVG emission depth exceeded")
+    let kind = type_of(doc, path)
+    if kind == "#text":
+        try xml.escape(output, get_text(doc, path, "text"))
+        return
+    try output.byte('<')
+    try output.text(kind)
+    let element = &doc.elements.items[try doc.require(path)]
+    for prop in element.properties.span():
+        try output.byte(' ')
+        try output.text(prop.name.view())
+        try output.text("=\"")
+        try xml.escape(output, get_text(doc, path, prop.name.view()), true)
+        try output.byte('"')
+    var kids = try doc.children(path)
+    defer kids.close()
+    if kids.count == 0:
+        try output.text("/>")
+        return
+    try output.byte('>')
+    for child in kids.span():
+        try write(doc, child, output, depth + 1)
+    try output.text("</")
+    try output.text(kind)
+    try output.byte('>')
+
+pub func encode(doc: const DocumentData*) -> Buffer!:
+    if not doc.contains("/svg"):
+        error(invalid, "SVG codec requires a /svg tree")
+    var output: Buffer
+    errdefer output.close()
+    try write(doc, "/svg", &output, 0)
+    return output

@@ -1,0 +1,152 @@
+import prism
+import interop
+
+func scene() -> interop.Reference[prism.Document]!:
+    return try prism.Document.parse("#prisma 4.0\ndef group \"world\" { def object \"sphere\" { connect inMaterial = </world/mat.out> } def material \"mat\" {} }")
+
+func extract_rebases_and_keeps_binding() -> !:
+    let doc = try scene()
+    defer doc.release()
+    let fragment = try doc.value().extract("/world/sphere")
+    defer fragment.release()
+    assert(fragment.value().contains("/sphere") and fragment.value().contains("/mat"))
+    assert(fragment.value().connection_count() == 1)
+    assert(try fragment.value().source("/sphere.inMaterial") == "/mat.out")
+
+func instantiate_stamps_with_remapped_wiring() -> !:
+    let doc = try scene()
+    defer doc.release()
+    let fragment = try doc.value().extract("/world/sphere")
+    defer fragment.release()
+    let destination = try prism.Document.parse("#prisma 4.0\ndef group \"scene\" {}")
+    defer destination.release()
+    let roots = try destination.value().instantiate(fragment, "/scene")
+    defer roots.release()
+    assert(roots.value().count() == 2)
+    assert(destination.value().contains("/scene/sphere") and destination.value().contains("/scene/mat"))
+    assert(try destination.value().source("/scene/sphere.inMaterial") == "/scene/mat.out")
+
+func second_instance_uniquifies_and_binds_its_own_material() -> !:
+    let doc = try scene()
+    defer doc.release()
+    let fragment = try doc.value().extract("/world/sphere")
+    defer fragment.release()
+    let destination = try prism.Document.parse("#prisma 4.0\ndef group \"scene\" {}")
+    defer destination.release()
+    for i in 0..<2:
+        let roots = try destination.value().instantiate(fragment, "/scene")
+        defer roots.release()
+        assert(roots.value().count() == 2)
+    assert(try destination.value().source("/scene/sphere.inMaterial") == "/scene/mat.out")
+    assert(try destination.value().source("/scene/sphere_1.inMaterial") == "/scene/mat_1.out")
+    assert(destination.value().element_id("/scene/sphere") != destination.value().element_id("/scene/sphere_1"))
+
+func extract_then_instantiate_round_trips_subtree() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"a\" { def group \"b\" { def group \"c\" { connect in = </a/b.out> } } }")
+    defer doc.release()
+    let fragment = try doc.value().extract("/a")
+    defer fragment.release()
+    let destination = try prism.Document.parse("#prisma 4.0\n")
+    defer destination.release()
+    let roots = try destination.value().instantiate(fragment)
+    defer roots.release()
+    assert(roots.value().count() == 1 and try roots.value().at(0) == "/a")
+    assert(try destination.value().equals(doc))
+
+func instantiate_skips_orphan_descendant() -> !:
+    let fragment = try prism.Document.parse("#prisma 4.0\n")
+    defer fragment.release()
+    discard(try fragment.value().append("/missing/child", "group"))
+    discard(try fragment.value().append("/kept", "group"))
+    let destination = try prism.Document.parse("#prisma 4.0\n")
+    defer destination.release()
+    let roots = try destination.value().instantiate(fragment)
+    defer roots.release()
+    assert(roots.value().count() == 1 and destination.value().element_count() == 1)
+    assert(destination.value().contains("/kept"))
+
+func instantiate_into_populated_parent_uniquifies() -> !:
+    let fragment = try prism.Document.parse("#prisma 4.0\ndef group \"a\" { def group \"child\" {} } def group \"a_1\" {}")
+    defer fragment.release()
+    let destination = try prism.Document.parse("#prisma 4.0\ndef group \"parent\" { def group \"a\" {} }")
+    defer destination.release()
+    let roots = try destination.value().instantiate(fragment, "/parent")
+    defer roots.release()
+    assert(try roots.value().at(0) == "/parent/a_1")
+    assert(try roots.value().at(1) == "/parent/a_1_1")
+    assert(destination.value().contains("/parent/a_1/child"))
+
+func extract_leaf_and_drops_outgoing_wire() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"a\" { def group \"leaf\" {} } def group \"other\" { connect in = </a/leaf.out> }")
+    defer doc.release()
+    let fragment = try doc.value().extract("/a/leaf")
+    defer fragment.release()
+    assert(fragment.value().element_count() == 1 and fragment.value().contains("/leaf"))
+    assert(fragment.value().connection_count() == 0)
+
+func seed() -> interop.Reference[prism.Document]!:
+    return try prism.Document.parse("#prisma 4.0\ndef group \"world\" { def object \"a\" { float v = 1 } def object \"b\" { float v = 2 } }")
+
+func detects_a_single_rename() -> !:
+    let base = try seed()
+    defer base.release()
+    let edited = try base.value().copy()
+    defer edited.release()
+    try edited.value().rename("/world/a", "/world/c")
+    let moves = try prism.renames(base, edited)
+    defer moves.release()
+    assert(moves.value().count() == 1)
+    assert(try moves.value().origin_at(0) == "/world/a" and try moves.value().destination_at(0) == "/world/c")
+    assert(try moves.value().id_at(0) == base.value().element_id("/world/a"))
+
+func no_rename_no_moves() -> !:
+    let base = try seed()
+    defer base.release()
+    let edited = try base.value().copy()
+    defer edited.release()
+    let value = try prism.Value.number(99.0)
+    defer value.release()
+    try edited.value().set("/world/a", "v", value)
+    try edited.value().add("/world/d", "object")
+    let moves = try prism.renames(base, edited)
+    defer moves.release()
+    assert(moves.value().count() == 0)
+
+func move_detected_alongside_edits() -> !:
+    let base = try seed()
+    defer base.release()
+    let edited = try base.value().copy()
+    defer edited.release()
+    let value = try prism.Value.number(5.0)
+    defer value.release()
+    try edited.value().set("/world/b", "v", value)
+    try edited.value().rename("/world/a", "/world/x")
+    let moves = try prism.renames(base, edited)
+    defer moves.release()
+    assert(moves.value().count() == 1 and try moves.value().destination_at(0) == "/world/x")
+
+func reparent_under_a_new_parent_is_a_move() -> !:
+    let base = try seed()
+    defer base.release()
+    try base.value().add("/world/box", "group")
+    let edited = try base.value().copy()
+    defer edited.release()
+    try edited.value().rename("/world/a", "/world/box/a")
+    let moves = try prism.renames(base, edited)
+    defer moves.release()
+    assert(moves.value().count() == 1)
+    assert(try moves.value().origin_at(0) == "/world/a" and try moves.value().destination_at(0) == "/world/box/a")
+
+pub func run() -> !:
+    try extract_rebases_and_keeps_binding()
+    try instantiate_stamps_with_remapped_wiring()
+    try second_instance_uniquifies_and_binds_its_own_material()
+    try extract_then_instantiate_round_trips_subtree()
+    try instantiate_skips_orphan_descendant()
+    try instantiate_into_populated_parent_uniquifies()
+    try extract_leaf_and_drops_outgoing_wire()
+    try detects_a_single_rename()
+    try no_rename_no_moves()
+    try move_detected_alongside_edits()
+    try reparent_under_a_new_parent_is_a_move()
+    print("PASS 7 legacy prefab and 4 rename-detection cases")

@@ -1,0 +1,165 @@
+## Small typed application settings persisted as a human-editable Prism document.
+import interop
+import memory
+import luce_prism.io as io
+from luce_prism.model import DocumentData
+from luce_prism.value import Value, ValueData
+from luce_prism.animation import resolve_property
+from luce_prism.query.scalars import numeric
+from luce_prism.serialization.dispatch import read_document
+from luce_prism.serialization.text_writer import write_text
+from luce_prism.storage import Buffer, List, Reader, text_copy
+from luce_prism.authoring.paths import Paths, own_paths
+from luce_prism.types import DType
+
+pub struct AppSettings:
+    var filename: Buffer
+    var data: DocumentData
+
+    pub func init(path: str) -> !:
+        self.filename = try text_copy(path)
+        self.data = DocumentData()
+        errdefer self.close()
+        discard(try self.load())
+
+    pub func path() -> str:
+        return self.filename.view()
+
+    pub mutating func load() -> bool!:
+        var next = DocumentData()
+        errdefer next.close()
+        var loaded = true
+        load_data(self.filename.view(), &next) catch failure:
+            if failure.code == memory.exhausted:
+                error(failure.code, failure.message)
+            next.close()
+            next = DocumentData()
+            loaded = false
+        self.data.close()
+        self.data = next
+        return loaded
+
+    pub func save() -> !:
+        var text = try write_text(&self.data)
+        defer text.close()
+        try io.write(self.filename.view(), text.bytes())
+
+    pub func has(key: str) -> bool:
+        return self.data.has_property("/settings", key)
+
+    pub mutating func set(key: str, value: interop.Reference[Value]) -> !:
+        var next = try self.data.copy()
+        errdefer next.close()
+        if not next.contains("/settings"):
+            try next.insert("/settings", "settings")
+        try next.set("/settings", key, value)
+        self.data.close()
+        self.data = next
+
+    pub mutating func remove(key: str) -> !:
+        if self.data.contains("/settings"):
+            try self.data.remove_property("/settings", key)
+
+    func number(key: str) -> f64?!:
+        let index = self.data.find("/settings") else return none
+        let element = &self.data.elements.items[index]
+        let position = element.property(key) else return none
+        var value = try resolve_property(&element.properties.items[position], 0.0)
+        defer value.close()
+        if let scalar = numeric(&value):
+            return (f64)(f32)scalar
+        return none
+
+    pub func get_number(key: str, fallback: f64 = 0.0) -> f64!:
+        return (try self.number(key)) else fallback
+
+    pub func get_integer(key: str, fallback: i64 = 0) -> i64!:
+        let number = (try self.number(key)) else return fallback
+        return (i64)(i32)number
+
+    pub func get_boolean(key: str, fallback: bool = false) -> bool!:
+        let number = (try self.number(key)) else return fallback
+        return number != 0.0
+
+    pub func get_string(key: str, fallback: str = "") -> str!:
+        let index = self.data.find("/settings") else return fallback
+        let element = &self.data.elements.items[index]
+        let position = element.property(key) else return fallback
+        # String interpolation holds the left sample; return a view of owned data.
+        let property = &element.properties.items[position]
+        var value = &property.value
+        if property.samples.count > 0:
+            value = &property.samples.items[0].value
+            for i in 0..<property.samples.count:
+                if property.samples.items[i].time > 0.0:
+                    break
+                value = &property.samples.items[i].value
+        if value.kind != DType.string or value.count() == 0:
+            return fallback
+        var reader = Reader(data = value.payload.bytes())
+        return try reader.text()
+
+    pub func string_list(key: str) -> interop.Reference[Paths]!:
+        var result = Paths()
+        errdefer result.close()
+        if let index = self.data.find("/settings"):
+            let element = &self.data.elements.items[index]
+            if let position = element.property(key):
+                var value = try resolve_property(&element.properties.items[position], 0.0)
+                defer value.close()
+                if value.kind == DType.string:
+                    var reader = Reader(data = value.payload.bytes())
+                    for i in 0..<value.count():
+                        try result.append(try reader.text())
+        let owned = result
+        result = Paths()
+        return try own_paths(owned)
+
+    pub mutating func set_string_list(key: str, values: const str[]) -> !:
+        let shape: i64[1] = [(i64)values.length]
+        let value = try Value.strings(shape, values)
+        defer value.release()
+        try self.set(key, value)
+
+    pub func recent_files(cap: usize = 10) -> interop.Reference[Paths]!:
+        let paths = try self.string_list("recent_files")
+        defer paths.release()
+        var result = Paths()
+        errdefer result.close()
+        for i in 0..<(try paths.get()).count():
+            if result.count() >= cap:
+                break
+            let path = try (try paths.get()).at(i)
+            if path.length > 0 and try io.exists(path):
+                try result.append(path)
+        let owned = result
+        result = Paths()
+        return try own_paths(owned)
+
+    pub mutating func add_recent_file(path: str, cap: usize = 10) -> !:
+        if path.length == 0:
+            return
+        let paths = try self.string_list("recent_files")
+        defer paths.release()
+        var values: List[str]
+        defer values.close()
+        if cap > 0:
+            try values.push(path)
+        for i in 0..<(try paths.get()).count():
+            if values.count >= cap:
+                break
+            let previous = try (try paths.get()).at(i)
+            if previous != path:
+                try values.push(previous)
+        try self.set_string_list("recent_files", values.span())
+
+    pub mutating func close():
+        self.filename.close()
+        self.data.close()
+
+func load_data(path: str, doc: DocumentData*) -> !:
+    var bytes = try io.read(path)
+    defer bytes.close()
+    try read_document(bytes.bytes(), doc)
+
+pub let app_settings_type = interop.Type[AppSettings]("Prism application settings", AppSettings.close, closeable = true)

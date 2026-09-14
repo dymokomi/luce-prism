@@ -1,0 +1,99 @@
+import prism
+import interop
+import memory
+
+struct Producer:
+    var calls: usize
+    var throws: bool
+    var close_cache: prism.ValueCache*?
+
+    pub mutating func produce(key: prism.EvalKey) -> interop.Outcome[interop.Reference[prism.Value]]:
+        self.calls += 1
+        if let cache = self.close_cache:
+            cache.close()
+        if self.throws:
+            return interop.Outcome[interop.Reference[prism.Value]].failure(prism.invalid, interop.Owned[str]("producer failed"))
+        let result = prism.Value.number((f64)self.calls * 10.0) catch failure:
+            return interop.Outcome[interop.Reference[prism.Value]].failure(failure.code, interop.Owned[str]("value allocation failed"))
+        return interop.Outcome[interop.Reference[prism.Value]].success(interop.Owned[interop.Reference[prism.Value]](result, &result.owner.header))
+
+    pub mutating func close():
+        return
+
+let producer_type = interop.Type[Producer]("Cache test producer", Producer.close, closeable = true)
+
+func produce(producer: interop.Reference[Producer]) -> interop.Callback[prism.EvalKey, interop.Reference[prism.Value]]!:
+    return try interop.Callback[prism.EvalKey, interop.Reference[prism.Value]].bind_mutating(producer, Producer.produce)
+
+func number(cache: prism.ValueCache*, key: prism.EvalKey, producer: interop.Callback[prism.EvalKey, interop.Reference[prism.Value]]) -> f64!:
+    let result = try cache.evaluate(key, producer)
+    defer result.release()
+    return try result.value().number_at()
+
+func evalcache_hit_and_miss() -> !:
+    let owner = try interop.Reference[Producer].adopt(try new Producer() in memory.heap, producer_type, memory.heap)
+    defer owner.release()
+    let callback = try produce(owner)
+    defer callback.release()
+    var cache = prism.ValueCache()
+    defer cache.close()
+    assert(try number(&cache, prism.EvalKey(1, 0.0), callback) == 10.0)
+    assert(try number(&cache, prism.EvalKey(1, 0.0), callback) == 10.0 and owner.value().calls == 1)
+    assert(cache.valid(prism.EvalKey(1, 0.0)))
+    assert(try number(&cache, prism.EvalKey(2, 0.0), callback) == 20.0)
+    assert(not cache.valid(prism.EvalKey(1, 0.0)))
+    assert(try number(&cache, prism.EvalKey(2, 1.0), callback) == 30.0)
+    cache.invalidate()
+    assert(not cache.valid(prism.EvalKey(2, 1.0)))
+    assert(try number(&cache, prism.EvalKey(2, 1.0), callback) == 40.0 and owner.value().calls == 4)
+
+func evalcache_fresh_is_not_a_phantom_hit() -> !:
+    let owner = try interop.Reference[Producer].adopt(try new Producer() in memory.heap, producer_type, memory.heap)
+    defer owner.release()
+    let callback = try produce(owner)
+    defer callback.release()
+    var cache = prism.ValueCache()
+    defer cache.close()
+    assert(not cache.valid(prism.EvalKey()))
+    assert(try number(&cache, prism.EvalKey(), callback) == 10.0)
+    assert(owner.value().calls == 1 and cache.valid(prism.EvalKey()))
+
+func evalcache_throwing_producer_leaves_prior_entry_intact() -> !:
+    let owner = try interop.Reference[Producer].adopt(try new Producer() in memory.heap, producer_type, memory.heap)
+    defer owner.release()
+    let callback = try produce(owner)
+    defer callback.release()
+    var cache = prism.ValueCache()
+    defer cache.close()
+    assert(try number(&cache, prism.EvalKey(1, 0.0), callback) == 10.0)
+    owner.value().throws = true
+    var failed = false
+    discard(number(&cache, prism.EvalKey(2, 0.0), callback) catch failure:
+        failed = true
+        recover 0.0
+    )
+    assert(failed and cache.valid(prism.EvalKey(1, 0.0)))
+    assert(try number(&cache, prism.EvalKey(1, 0.0), callback) == 10.0)
+    assert(owner.value().calls == 2)
+
+pub func run() -> !:
+    try evalcache_hit_and_miss()
+    try evalcache_fresh_is_not_a_phantom_hit()
+    try evalcache_throwing_producer_leaves_prior_entry_intact()
+    try close_during_production()
+    print("PASS 3 legacy evaluation-cache cases and owned callback result lifetime")
+
+func close_during_production() -> !:
+    let cache = try interop.Reference[prism.ValueCache].adopt(try new prism.ValueCache() in memory.heap, prism.value_cache_type, memory.heap)
+    defer cache.release()
+    let owner = try interop.Reference[Producer].adopt(try new Producer() in memory.heap, producer_type, memory.heap)
+    defer owner.release()
+    owner.value().close_cache = cache.value()
+    let callback = try produce(owner)
+    defer callback.release()
+    assert(try number(cache.value(), prism.EvalKey(1, 0.0), callback) == 10.0)
+    assert(not cache.value().valid(prism.EvalKey(1, 0.0)))
+
+pub func allocation_case() -> !:
+    try evalcache_hit_and_miss()
+    try close_during_production()

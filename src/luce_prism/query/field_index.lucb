@@ -1,0 +1,56 @@
+## Snapshot value index. Exact scalar keys keep large integer identifiers distinct.
+import interop
+import luce_prism.query.scalars as scalars
+from luce_prism.collections.index import Index
+from luce_prism.query.results import Selection, own_selection
+from luce_prism.document import Document
+from luce_prism.model import DocumentData
+from luce_prism.value import Value
+from luce_prism.animation import resolve_property
+
+pub struct FieldIndex:
+    var doc: DocumentData = DocumentData()
+    var index: Index
+
+    pub func init(doc: interop.Reference[Document], field: str) -> !:
+        self.doc = try (try doc.get()).view_data().copy()
+        self.index = Index()
+        errdefer self.close()
+        for row in 0..<self.doc.elements.count:
+            let element = &self.doc.elements.items[row]
+            if let position = element.property(field):
+                var value = try resolve_property(&element.properties.items[position], 0.0)
+                defer value.close()
+                if let result = try scalars.key(&value):
+                    var key = result
+                    defer key.close()
+                    discard(try self.index.add(key.view(), row))
+
+    pub func key_count() -> usize:
+        return self.index.buckets.count
+
+    pub func equals(value: interop.Reference[Value]) -> interop.Reference[Selection]!:
+        var selection = Selection()
+        errdefer selection.close()
+        if let result = try scalars.key((try value.get()).view_data()):
+            var key = result
+            defer key.close()
+            if let position = self.index.find(key.view()):
+                for row in self.index.buckets.items[position].rows.span():
+                    try selection.append(&self.doc.elements.items[row])
+        let owned = selection
+        selection = Selection()
+        return try own_selection(owned)
+
+    pub func contains(value: interop.Reference[Value]) -> bool!:
+        if let result = try scalars.key((try value.get()).view_data()):
+            var key = result
+            defer key.close()
+            return self.index.find(key.view()) != none
+        return false
+
+    pub mutating func close():
+        self.doc.close()
+        self.index.close()
+
+pub let field_index_type = interop.Type[FieldIndex]("Prism field index", FieldIndex.close, closeable = true)

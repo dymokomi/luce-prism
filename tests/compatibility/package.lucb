@@ -1,0 +1,244 @@
+import prism
+import interop
+import memory
+
+func sample() -> interop.Reference[prism.Document]!:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"world\" { def texture \"brick\" {} def material \"mat\" { float ior = 1.5 connect normalMap = </world/brick.out> } }")
+    errdefer doc.release()
+    let png: u8[9] = [137,80,78,71,13,10,26,10,0]
+    try doc.value().set_asset("/world/brick", png, "image/png")
+    return doc
+
+func same_bytes(a: const u8[], b: const u8[]):
+    assert(a.length == b.length)
+    for i in 0..<a.length:
+        assert(a[i] == b[i])
+
+func reject(bytes: const u8[]) -> !:
+    let result = prism.Document.decode(bytes) catch failure:
+        assert(failure.code == prism.invalid or failure.code == prism.unsupported or failure.code == prism.limit_exceeded)
+        return
+    result.release()
+    assert(false)
+
+func asset_store_get_set_erase() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\n")
+    defer doc.release()
+    assert(doc.value().asset_count() == 0)
+    try doc.value().set_asset("/t", b"abc", "image/png")
+    assert(doc.value().asset_count() == 1)
+    let asset = try doc.value().asset("/t")
+    defer asset.release()
+    assert(try asset.value().text() == "abc" and try doc.value().asset_mime("/t") == "image/png")
+    doc.value().remove_asset("/t")
+    assert(doc.value().asset_count() == 0)
+    assert(try asset.value().text() == "abc")
+
+func asset_store_slot_in_key_is_ignored() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\n")
+    defer doc.release()
+    try doc.value().set_asset("/tex.out", b"bytes")
+    let asset = try doc.value().asset("/tex")
+    defer asset.release()
+    assert(try asset.value().text() == "bytes")
+    assert(try doc.value().asset_mime("/tex.out") == "application/octet-stream")
+    doc.value().remove_asset("/tex.out")
+    assert(doc.value().asset_count() == 0)
+
+func asset_store_reparent_and_remove_subtree() -> !:
+    let doc = try sample()
+    defer doc.release()
+    try doc.value().set_asset("/world/wood", b"2")
+    try doc.value().set_asset("/other", b"3")
+    try doc.value().rename("/world", "/scene")
+    assert(doc.value().asset_count() == 3)
+    let wood = try doc.value().asset("/scene/wood")
+    defer wood.release()
+    assert(try wood.value().text() == "2")
+    try doc.value().remove("/scene")
+    assert(doc.value().asset_count() == 1)
+    let other = try doc.value().asset("/other")
+    defer other.release()
+    assert(try other.value().text() == "3")
+
+func rename_with_assetstore_reparent_keeps_blob_addressable() -> !:
+    let doc = try sample()
+    defer doc.release()
+    let before = try doc.value().asset("/world/brick")
+    defer before.release()
+    try doc.value().rename("/world", "/scene")
+    let after = try doc.value().asset("/scene/brick")
+    defer after.release()
+    same_bytes(before.value().bytes(), after.value().bytes())
+    assert(try doc.value().asset_mime("/scene/brick") == "image/png")
+    assert(doc.value().contains("/scene/brick") and not doc.value().contains("/world/brick"))
+    let encoded = try doc.value().encode_package()
+    defer encoded.release()
+    let decoded = try prism.Document.decode(encoded.value().bytes())
+    defer decoded.release()
+    assert(try decoded.value().equals(doc))
+
+func remove_subtree_drops_assets_in_lockstep() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"a\" { def object \"keep\" {} def object \"drop\" {} }")
+    defer doc.release()
+    try doc.value().set_asset("/a/keep", b"k")
+    try doc.value().set_asset("/a/drop", b"d")
+    try doc.value().remove("/a/drop")
+    assert(doc.value().asset_count() == 1)
+    let kept = try doc.value().asset("/a/keep")
+    defer kept.release()
+    assert(try kept.value().text() == "k")
+
+func roundtrip(text_scene: bool) -> !:
+    let doc = try sample()
+    defer doc.release()
+    let bytes = try doc.value().encode_package(text_scene)
+    defer bytes.release()
+    assert(prism.detect(bytes.value().bytes()) == prism.Encoding.package)
+    assert((str)bytes.value().bytes()[..<6] == "PRSMZ\0")
+    let back = try prism.Document.decode(bytes.value().bytes())
+    defer back.release()
+    assert(try back.value().equals(doc))
+    let original = try doc.value().asset("/world/brick")
+    defer original.release()
+    let restored = try back.value().asset("/world/brick")
+    defer restored.release()
+    same_bytes(original.value().bytes(), restored.value().bytes())
+    assert(try back.value().asset_mime("/world/brick") == "image/png")
+    let again = try back.value().encode_package(text_scene)
+    defer again.release()
+    same_bytes(bytes.value().bytes(), again.value().bytes())
+
+func package_round_trip_recovers_stage_and_assets() -> !:
+    try roundtrip(false)
+
+func package_round_trip_byte_stable() -> !:
+    let doc = try sample()
+    defer doc.release()
+    let first = try doc.value().encode_package(false, true)
+    defer first.release()
+    let back = try prism.Document.decode(first.value().bytes())
+    defer back.release()
+    let second = try back.value().encode_package(false, true)
+    defer second.release()
+    same_bytes(first.value().bytes(), second.value().bytes())
+
+func package_with_text_scene_chunk_round_trips() -> !:
+    try roundtrip(true)
+
+func deserialize_routes_package_to_scene_only() -> !:
+    let doc = try sample()
+    defer doc.release()
+    let bytes = try doc.value().encode_package()
+    defer bytes.release()
+    let back = try prism.Document.decode(bytes.value().bytes())
+    defer back.release()
+    assert(back.value().element_count() == 3 and back.value().connection_count() == 1)
+    let ior = try back.value().get("/world/mat", "ior")
+    defer ior.release()
+    assert(try ior.value().number_at() == 1.5)
+    # Native documents also retain the asset sidecar on unified decode.
+    assert(back.value().asset_count() == 1)
+
+func package_rejects_malformed() -> !:
+    try reject(b"PRSMZ")
+    try reject(b"PRSMZ\0")
+    let doc = try sample()
+    defer doc.release()
+    let good = try doc.value().encode_package()
+    defer good.release()
+    let padded = try alloc u8[good.value().size() + 8] in memory.heap
+    defer free(padded) in memory.heap
+    memory.copy(padded, good.value().bytes(), good.value().size())
+    for i in good.value().size()..<padded.length:
+        padded[i] = 255
+    let back = try prism.Document.decode(padded)
+    defer back.release()
+    assert(try back.value().equals(doc))
+    for cut in 0..<good.value().size():
+        try reject(good.value().bytes()[..<cut])
+
+func detect_recognises_package_magic() -> !:
+    let doc = try sample()
+    defer doc.release()
+    let bytes = try doc.value().encode_package()
+    defer bytes.release()
+    assert(prism.detect(bytes.value().bytes()) == prism.Encoding.package)
+
+func empty_asset_store_round_trips_in_package() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef object \"a\" {}")
+    defer doc.release()
+    let bytes = try doc.value().encode_package()
+    defer bytes.release()
+    let back = try prism.Document.decode(bytes.value().bytes())
+    defer back.release()
+    assert(back.value().asset_count() == 0 and try back.value().equals(doc))
+
+func zero_byte_and_nul_containing_assets_round_trip() -> !:
+    let doc = try sample()
+    defer doc.release()
+    try doc.value().set_asset("/empty", b"")
+    try doc.value().set_asset("/nul", b"a\0b\0c")
+    let bytes = try doc.value().encode_package(true)
+    defer bytes.release()
+    let back = try prism.Document.decode(bytes.value().bytes())
+    defer back.release()
+    assert(try back.value().equals(doc))
+    let empty = try back.value().asset("/empty")
+    defer empty.release()
+    let nul = try back.value().asset("/nul")
+    defer nul.release()
+    assert(empty.value().size() == 0)
+    same_bytes(nul.value().bytes(), b"a\0b\0c")
+
+func u32_at(bytes: const u8[], offset: usize) -> usize:
+    var result: usize = 0
+    for i in 0..<(usize)4:
+        result |= (usize)bytes[offset + i] << (8 * i)
+    return result
+
+func offset_field(bytes: const u8[], index: usize) -> usize:
+    var position: usize = 14
+    for i in 0..=index:
+        position += 4 + u32_at(bytes, position) + 1
+        position += 4 + u32_at(bytes, position)
+        if i == index:
+            return position
+        position += 16
+    return 0
+
+func package_rejects_overlapping_blob_offsets() -> !:
+    let doc = try sample()
+    defer doc.release()
+    let packed = try doc.value().encode_package()
+    defer packed.release()
+    let data = packed.value().bytes()
+    let changed = try alloc u8[data.length] in memory.heap
+    defer free(changed) in memory.heap
+    memory.copy(changed, data, data.length)
+    let first = offset_field(data, 0)
+    let scene = offset_field(data, 1)
+    for i in 0..<(usize)8:
+        changed[scene + i] = data[first + i]
+    try reject(changed)
+    memory.copy(changed, data, data.length)
+    for i in 0..<(usize)8:
+        changed[first + i] = 0
+    try reject(changed)
+
+pub func run() -> !:
+    try asset_store_get_set_erase()
+    try asset_store_slot_in_key_is_ignored()
+    try asset_store_reparent_and_remove_subtree()
+    try rename_with_assetstore_reparent_keeps_blob_addressable()
+    try remove_subtree_drops_assets_in_lockstep()
+    try package_round_trip_recovers_stage_and_assets()
+    try package_round_trip_byte_stable()
+    try package_with_text_scene_chunk_round_trips()
+    try deserialize_routes_package_to_scene_only()
+    try package_rejects_malformed()
+    try detect_recognises_package_magic()
+    try empty_asset_store_round_trips_in_package()
+    try zero_byte_and_nul_containing_assets_round_trip()
+    try package_rejects_overlapping_blob_offsets()
+    print("PASS 14 legacy asset/package cases, ASCII scene chunks, every truncated prefix and overlapping blobs")

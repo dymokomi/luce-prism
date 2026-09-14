@@ -1,0 +1,37 @@
+## Owned path results for hierarchy and prefab operations.
+import interop
+import memory
+from luce_prism.storage import Buffer, List, text_copy, close_names
+from luce_prism.types import invalid
+
+pub struct Paths:
+    var paths: List[Buffer]
+
+    pub func init():
+        return
+
+    pub func count() -> usize:
+        return self.paths.count
+
+    pub func at(index: usize) -> str!:
+        if index >= self.paths.count:
+            error(invalid, "Prism path index is out of bounds")
+        return self.paths.items[index].view()
+
+    pub mutating func append(path: str) -> !:
+        var owned = try text_copy(path)
+        errdefer owned.close()
+        try self.paths.push(owned)
+
+    pub mutating func close():
+        close_names(&self.paths)
+
+pub let paths_type = interop.Type[Paths]("Prism paths", Paths.close, closeable = true)
+
+pub func own_paths(paths: Paths) -> interop.Reference[Paths]!:
+    var owned = paths
+    let native = new Paths() in memory.heap catch failure:
+        owned.close()
+        error(failure.code, failure.message)
+    native[0] = owned
+    return try interop.Reference[Paths].adopt(native, paths_type, memory.heap)

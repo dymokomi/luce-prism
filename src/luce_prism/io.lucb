@@ -1,0 +1,43 @@
+## Explicit bounded file access and durable atomic replacement.
+import files
+import strings
+import memory
+import c
+import interop
+import luce_prism.codecs.api as codecs
+from luce_prism.document import Document
+from luce_prism.storage import Buffer
+from luce_prism.types import max_bytes
+
+pub func read(path: str) -> Buffer!:
+    with memory.heap:
+        let name = try strings.copy(path)
+        defer strings.release(name)
+        let bytes = try files.read_limit((c.str)name, max_bytes)
+        if bytes.length == 0:
+            free(bytes) in memory.heap
+            return Buffer()
+        return Buffer(data = bytes, used = bytes.length)
+
+pub func write(path: str, bytes: const u8[]) -> !:
+    with memory.heap:
+        let name = try strings.copy(path)
+        defer strings.release(name)
+        try files.write_atomic((c.str)name, bytes, synchronize = true)
+
+pub func exists(path: str) -> bool!:
+    with memory.heap:
+        let name = try strings.copy(path)
+        defer strings.release(name)
+        discard(files.metadata((c.str)name) catch failure: return false)
+        return true
+
+pub func load(path: str, codec: codecs.Codec = codecs.Codec.auto) -> interop.Reference[Document]!:
+    var bytes = try read(path)
+    defer bytes.close()
+    return try codecs.decode(bytes.bytes(), try codecs.codec_for_path(path) if codec == codecs.Codec.auto else codec)
+
+pub func save(doc: interop.Reference[Document], path: str, codec: codecs.Codec = codecs.Codec.auto) -> !:
+    let bytes = try codecs.encode(doc, try codecs.codec_for_path(path) if codec == codecs.Codec.auto else codec)
+    defer bytes.release()
+    try write(path, (try bytes.get()).bytes())

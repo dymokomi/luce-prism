@@ -1,0 +1,175 @@
+import prism
+import interop
+import strings
+
+func number(document: interop.Reference[prism.Document], path: str, name: str) -> f64!:
+    let value = try document.value().get(path, name)
+    defer value.release()
+    return try value.value().number_at()
+
+func pair(root: str, source: str, filename: str = "lib.prisma") -> interop.Reference[prism.Document]!:
+    var library = prism.ReferenceLibrary()
+    defer library.close()
+    let a = try prism.Document.parse(root)
+    defer a.release()
+    let b = try prism.Document.parse(source)
+    defer b.release()
+    try library.add("root.prisma", a)
+    try library.add(filename, b)
+    return try library.compose("root.prisma")
+
+func compose_grafts_referenced_subtree() -> !:
+    let output = try pair("#prisma 4.0\ndef group \"a\" { reference \"lib.prisma\" }", "#prisma 4.0\ndef object \"widget\" { float size = 10 def object \"handle\" { float len = 3 } }")
+    defer output.release()
+    assert(try number(output, "/a", "size") == 10.0)
+    assert(try number(output, "/a/handle", "len") == 3.0)
+    assert(not output.value().has_metadata("/a", "reference"))
+
+func compose_local_opinions_win() -> !:
+    let output = try pair("#prisma 4.0\ndef object \"a\" { float size = 99 reference \"lib.prisma\" }", "#prisma 4.0\ndef object \"widget\" { float size = 10 float3 color = (1,0,0) }")
+    defer output.release()
+    assert(try number(output, "/a", "size") == 99.0)
+    assert(try number(output, "/a", "color") == 1.0)
+
+func compose_reference_path_picks_subprim() -> !:
+    let output = try pair("#prisma 4.0\ndef object \"x\" { reference \"lib.prisma\" \"/parts/bolt\" }", "#prisma 4.0\ndef group \"parts\" { def object \"bolt\" { int32 thread = 20 } }")
+    defer output.release()
+    assert(try number(output, "/x", "thread") == 20.0)
+
+func compose_resolves_nested_references() -> !:
+    var library = prism.ReferenceLibrary()
+    defer library.close()
+    let leaf = try prism.Document.parse("#prisma 4.0\ndef object \"leaf\" { float value = 7 }")
+    defer leaf.release()
+    let middle = try prism.Document.parse("#prisma 4.0\ndef object \"mid\" { reference \"../leaf.prisma\" }")
+    defer middle.release()
+    let root = try prism.Document.parse("#prisma 4.0\ndef group \"m\" { reference \"sub/mid.prisma\" }")
+    defer root.release()
+    try library.add("leaf.prisma", leaf)
+    try library.add("sub/mid.prisma", middle)
+    try library.add("root.prisma", root)
+    let output = try library.compose("root.prisma")
+    defer output.release()
+    assert(try number(output, "/m", "value") == 7.0)
+    assert(root.value().has_metadata("/m", "reference"))
+    assert(not root.value().has_property("/m", "value"))
+
+func compose_detects_cycles() -> !:
+    var library = prism.ReferenceLibrary()
+    defer library.close()
+    let a = try prism.Document.parse("#prisma 4.0\ndef group \"a\" { reference \"b.prisma\" }")
+    defer a.release()
+    let b = try prism.Document.parse("#prisma 4.0\ndef group \"b\" { reference \"./a.prisma\" }")
+    defer b.release()
+    try library.add("a.prisma", a)
+    try library.add("b.prisma", b)
+    let result: interop.Reference[prism.Document]? = library.compose("a.prisma") catch failure:
+        assert(failure.code == prism.invalid)
+        recover none
+    if let unexpected = result:
+        unexpected.release()
+        assert(false)
+
+func compose_missing_reference_fails() -> !:
+    var library = prism.ReferenceLibrary()
+    defer library.close()
+    let root = try prism.Document.parse("#prisma 4.0\ndef group \"a\" { reference \"nope.prisma\" }")
+    defer root.release()
+    try library.add("root.prisma", root)
+    let result: interop.Reference[prism.Document]? = library.compose("root.prisma") catch failure:
+        assert(failure.code == prism.missing)
+        recover none
+    if let unexpected = result:
+        unexpected.release()
+        assert(false)
+
+func compose_no_references_is_identity() -> !:
+    var library = prism.ReferenceLibrary()
+    defer library.close()
+    let root = try prism.Document.parse("#prisma 4.0\ndef object \"a\" { float x = 1 }")
+    defer root.release()
+    try library.add("root.prisma", root)
+    let output = try library.compose("root.prisma")
+    defer output.release()
+    assert(try number(output, "/a", "x") == 1.0)
+    assert(output.value().element_count() == 1)
+
+func compose_file_resolves_relative_paths(directory: str) -> !:
+    let root = try prism.Document.parse("#prisma 4.0\ndef group \"g\" { reference \"gear.prism\" }")
+    defer root.release()
+    let lib = try prism.Document.parse("#prisma 4.0\ndef object \"gear\" { int32 teeth = 24 }")
+    defer lib.release()
+    let filename = try strings.join([directory, "root.prisma"], "/")
+    defer strings.release(filename)
+    let target = try strings.join([directory, "gear.prism"], "/")
+    defer strings.release(target)
+    try root.value().save(filename, prism.Encoding.text)
+    try lib.value().save(target, prism.Encoding.binary, true)
+    let output = try prism.compose_file(filename)
+    defer output.release()
+    assert(try number(output, "/g", "teeth") == 24.0)
+    assert(root.value().has_metadata("/g", "reference"))
+
+func compose_diamond_dag_is_linear_not_exponential() -> !:
+    var library = prism.ReferenceLibrary()
+    defer library.close()
+    let leaf = try prism.Document.parse("#prisma 4.0\ndef object \"leaf\" { int32 v = 42 }")
+    defer leaf.release()
+    let left = try prism.Document.parse("#prisma 4.0\ndef group \"left\" { reference \"leaf.prisma\" }")
+    defer left.release()
+    let right = try prism.Document.parse("#prisma 4.0\ndef group \"right\" { reference \"leaf.prisma\" }")
+    defer right.release()
+    let root = try prism.Document.parse("#prisma 4.0\ndef group \"l\" { reference \"left.prisma\" } def group \"r\" { reference \"right.prisma\" }")
+    defer root.release()
+    try library.add("leaf.prisma", leaf)
+    try library.add("left.prisma", left)
+    try library.add("right.prisma", right)
+    try library.add("root.prisma", root)
+    let output = try library.compose("root.prisma")
+    defer output.release()
+    assert(try number(output, "/l", "v") == 42.0)
+    assert(try number(output, "/r", "v") == 42.0)
+
+func compose_local_subtree_wins_wholesale() -> !:
+    let output = try pair("#prisma 4.0\ndef object \"a\" { reference \"lib.prisma\" def object \"handle\" { float len = 99 } }", "#prisma 4.0\ndef object \"widget\" { def object \"handle\" { float len = 3 def object \"grip\" { bool soft = true } } }")
+    defer output.release()
+    assert(try number(output, "/a/handle", "len") == 99.0)
+    assert(not output.value().contains("/a/handle/grip"))
+
+func reference_wildcard_grafts_matches_as_children() -> !:
+    let output = try pair("#prisma 4.0\ndef group \"hardware\" { reference \"lib.prisma\" \"/parts/*\" }", "#prisma 4.0\ndef group \"parts\" { def object \"bolt\" { float len = 3 } def object \"nut\" { float len = 1 } def object \"washer\" { float len = 0.2 } }")
+    defer output.release()
+    assert(output.value().contains("/hardware/bolt"))
+    assert(output.value().contains("/hardware/nut"))
+    assert(output.value().contains("/hardware/washer"))
+    assert(not output.value().contains("/hardware/parts"))
+    assert(try number(output, "/hardware/bolt", "len") == 3.0)
+    assert(not output.value().has_metadata("/hardware", "referencePath"))
+
+func reference_wildcard_brings_subtrees_and_scaffolding() -> !:
+    let output = try pair("#prisma 4.0\ndef group \"scene\" { reference \"lib.prisma\" \"/rig/**/camera\" }", "#prisma 4.0\ndef group \"rig\" { def group \"arm\" { def camera \"camera\" { float fov = 50 } } }")
+    defer output.release()
+    assert(output.value().contains("/scene/arm"))
+    assert(try number(output, "/scene/arm/camera", "fov") == 50.0)
+    assert(not output.value().contains("/scene/rig"))
+
+func reference_wildcard_carries_internal_connections() -> !:
+    let output = try pair("#prisma 4.0\ndef group \"hw\" { reference \"lib.prisma\" \"/parts/*\" }", "#prisma 4.0\ndef group \"parts\" { def material \"mat\" { float3 out = (0,1,0) } def object \"bolt\" { float3 albedo = (1,1,1) connect albedo = </parts/mat.out> } }")
+    defer output.release()
+    assert(try output.value().source("/hw/bolt.albedo") == "/hw/mat.out")
+
+pub func run(directory: str) -> !:
+    try compose_grafts_referenced_subtree()
+    try compose_local_opinions_win()
+    try compose_reference_path_picks_subprim()
+    try compose_resolves_nested_references()
+    try compose_detects_cycles()
+    try compose_missing_reference_fails()
+    try compose_no_references_is_identity()
+    try compose_file_resolves_relative_paths(directory)
+    try compose_diamond_dag_is_linear_not_exponential()
+    try compose_local_subtree_wins_wholesale()
+    try reference_wildcard_grafts_matches_as_children()
+    try reference_wildcard_brings_subtrees_and_scaffolding()
+    try reference_wildcard_carries_internal_connections()
+    print("PASS 13 legacy reference composition cases")

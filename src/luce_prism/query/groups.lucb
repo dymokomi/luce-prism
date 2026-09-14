@@ -1,0 +1,131 @@
+## Materialized, ordered groups with snapshot rows and optional aggregates.
+import interop
+import memory
+import luce_prism.query.aggregation as aggregation
+from luce_prism.query.results import Selection, own_selection
+from luce_prism.collections.index import Index
+from luce_prism.model import DocumentData
+from luce_prism.storage import List, Buffer, less
+from luce_prism.types import invalid, missing
+
+struct Group:
+    var key: Buffer
+    var rows: Selection = Selection()
+    var aggregate: f64?
+
+    mutating func close():
+        self.key.close()
+        self.rows.close()
+
+pub struct Groups:
+    var groups: List[Group]
+
+    pub func init():
+        return
+
+    pub func count() -> usize:
+        return self.groups.count
+
+    func at(index: usize) -> const Group*!:
+        if index >= self.groups.count:
+            error(invalid, "group index is out of bounds")
+        return &self.groups.items[index]
+
+    pub func key_at(index: usize) -> str!:
+        return (try self.at(index)).key.view()
+
+    pub func value_at(index: usize) -> f64?!:
+        return (try self.at(index)).aggregate
+
+    pub func row_count(index: usize) -> usize!:
+        return (try self.at(index)).rows.count()
+
+    pub func rows(index: usize) -> interop.Reference[Selection]!:
+        let source = try self.at(index)
+        var result = Selection()
+        errdefer result.close()
+        for element in source.rows.view_data().span():
+            try result.append(&element)
+        let owned = result
+        result = Selection()
+        return try own_selection(owned)
+
+    pub func get(key: str) -> f64!:
+        for group in self.groups.span():
+            if group.key.view() == key:
+                return group.aggregate else error(missing, "group has no numeric aggregate")
+        error(missing, "group is absent")
+
+    pub mutating func close():
+        for i in 0..<self.groups.count:
+            self.groups.items[i].close()
+        self.groups.close()
+
+pub let groups_type = interop.Type[Groups]("Prism groups", Groups.close, closeable = true)
+
+func sift(groups: Group[], start: usize, count: usize):
+    var root = start
+    while root * 2 + 1 < count:
+        var child = root * 2 + 1
+        if child + 1 < count and less(groups[child].key.view(), groups[child + 1].key.view()):
+            child += 1
+        if not less(groups[root].key.view(), groups[child].key.view()):
+            return
+        let previous = groups[root]
+        groups[root] = groups[child]
+        groups[child] = previous
+        root = child
+
+pub func build(doc: const DocumentData*, rows: const usize[], fields: const str[], value_field: str = "", operation: aggregation.Aggregate? = none) -> interop.Reference[Groups]!:
+    var index: Index
+    defer index.close()
+    for row in rows:
+        var key: Buffer
+        defer key.close()
+        for i in 0..<fields.length:
+            if i > 0:
+                try key.byte(31)
+            var label = try aggregation.label(&doc.elements.items[row], fields[i], operation == none)
+            defer label.close()
+            try key.text(label.view())
+        discard(try index.add(key.view(), row))
+    let native = try new Groups() in memory.heap
+    var unowned = true
+    errdefer destroy(native, unowned)
+    try native.groups.reserve(index.buckets.count)
+    for bucket in index.buckets.span():
+        var value: f64? = none
+        if let op = operation:
+            if op == aggregation.Aggregate.count:
+                value = (f64)bucket.rows.count
+            else:
+                value = try aggregation.numeric(doc, bucket.rows.span(), value_field, op)
+                if value == none:
+                    if op == aggregation.Aggregate.sum:
+                        value = 0.0
+                    else:
+                        continue
+        var group = Group(aggregate = value)
+        errdefer group.close()
+        group.key = try bucket.key.copy()
+        for row in bucket.rows.span():
+            try group.rows.append(&doc.elements.items[row])
+        try native.groups.push(group)
+    var start = native.groups.count // 2
+    while start > 0:
+        start -= 1
+        sift(native.groups.span(), start, native.groups.count)
+    var end = native.groups.count
+    while end > 1:
+        end -= 1
+        let previous = native.groups.items[0]
+        native.groups.items[0] = native.groups.items[end]
+        native.groups.items[end] = previous
+        sift(native.groups.span(), 0, end)
+    unowned = false
+    return try interop.Reference[Groups].adopt(native, groups_type, memory.heap)
+
+func destroy(native: Groups*, unowned: bool):
+    if unowned:
+        native.close()
+        free(native) in memory.heap

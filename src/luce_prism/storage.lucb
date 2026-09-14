@@ -1,0 +1,312 @@
+## Internal bounded collections and byte buffers shared by model and codecs.
+import memory
+import interop
+import math
+from luce_prism.types import invalid, limit_exceeded, max_bytes, max_items
+
+pub struct List[T]:
+    pub var items: T[]
+    pub var count: usize
+
+    pub mutating func reserve(count: usize) -> !:
+        if count > max_items:
+            error(limit_exceeded, "Prism collection limit exceeded")
+        if count <= self.items.length:
+            return
+        let capacity = count if count > self.items.length * 2 else self.items.length * 2
+        let grown = try alloc T[capacity] in memory.heap
+        memory.copy(grown, self.items, self.count)
+        if self.items.length > 0:
+            free(self.items) in memory.heap
+        self.items = grown
+
+    pub mutating func push(value: T) -> !:
+        try self.reserve(self.count + 1)
+        self.items[self.count] = value
+        self.count += 1
+
+    pub func span() -> T[]:
+        return self.items[..<self.count]
+
+    pub mutating func remove(index: usize):
+        for i in index + 1..<self.count:
+            self.items[i - 1] = self.items[i]
+        self.count -= 1
+
+    pub mutating func close():
+        if self.items.length > 0:
+            free(self.items) in memory.heap
+        var empty: T[]
+        self.items = empty
+        self.count = 0
+
+pub struct Buffer:
+    pub var data: u8[]
+    pub var used: usize
+
+    pub mutating func reserve(count: usize) -> !:
+        if count > max_bytes:
+            error(limit_exceeded, "Prism byte limit exceeded (256 MiB)")
+        if count <= self.data.length:
+            return
+        var capacity = self.data.length * 2
+        if capacity < 64:
+            capacity = 64
+        if capacity < count:
+            capacity = count
+        if capacity > max_bytes:
+            capacity = max_bytes
+        let grown = try alloc u8[capacity] in memory.heap
+        memory.copy(grown, self.data, self.used)
+        if self.data.length > 0:
+            free(self.data) in memory.heap
+        self.data = grown
+
+    pub mutating func put(data: const u8[]) -> !:
+        let count = self.used +? data.length else error(limit_exceeded, "Prism byte size overflow")
+        # Internal callers never append an alias of a buffer to itself.
+        try self.reserve(count)
+        memory.copy(self.data[self.used..], data, data.length)
+        self.used = count
+
+    pub mutating func text(value: str) -> !:
+        try self.put(value.bytes)
+
+    pub mutating func byte(value: u8) -> !:
+        let data: u8[1] = [value]
+        try self.put(data)
+
+    pub mutating func uint(value: u64, width: usize) -> !:
+        for i in 0..<width:
+            try self.byte((u8)((value >> (i * 8)) & 255))
+
+    pub mutating func real(value: f64) -> !:
+        var finite = value if math.is_finite(value) else 0.0
+        try self.uint(memory.read[u64](&finite), 8)
+
+    pub mutating func sized(value: str) -> !:
+        try self.uint((u64)value.length, 4)
+        try self.text(value)
+
+    pub func bytes() -> const u8[]:
+        return self.data[..<self.used]
+
+    pub func view() -> str:
+        return (str)self.bytes()
+
+    pub func copy() -> Buffer!:
+        return try copied(self.bytes())
+
+    pub mutating func close():
+        if self.data.length > 0:
+            free(self.data) in memory.heap
+        var empty: u8[]
+        self.data = empty
+        self.used = 0
+
+pub func copied(data: const u8[]) -> Buffer!:
+    var output: Buffer
+    errdefer output.close()
+    try output.put(data)
+    return output
+
+pub func text_copy(value: str) -> Buffer!:
+    return try copied(value.bytes)
+
+pub func less(a: str, b: str) -> bool:
+    let count = a.length if a.length < b.length else b.length
+    for i in 0..<count:
+        if a.bytes[i] != b.bytes[i]:
+            return a.bytes[i] < b.bytes[i]
+    return a.length < b.length
+
+pub struct Reader:
+    pub var data: const u8[]
+    pub var pos: usize
+    pub var budget: usize = max_bytes
+
+    pub func remaining() -> usize:
+        return self.data.length - self.pos
+
+    pub mutating func take(count: usize) -> const u8[]!:
+        if count > self.remaining():
+            error(invalid, "truncated Prism input")
+        let start = self.pos
+        self.pos += count
+        return self.data[start..<self.pos]
+
+    pub mutating func uint(width: usize) -> u64!:
+        let bytes = try self.take(width)
+        var value: u64 = 0
+        for i in 0..<width:
+            value |= (u64)bytes[i] << (i * 8)
+        return value
+
+    pub mutating func count(minimum: usize) -> usize!:
+        let count = (usize)try self.uint(4)
+        if count > max_items or (minimum > 0 and count > self.remaining() // minimum):
+            error(limit_exceeded, "implausible Prism record count")
+        return count
+
+    pub mutating func real() -> f64!:
+        var bits = try self.uint(8)
+        let value = memory.read[f64](&bits)
+        if not math.is_finite(value):
+            error(invalid, "non-finite Prism time or handle")
+        return value
+
+    pub mutating func text() -> str!:
+        let size = (usize)try self.uint(4)
+        let data = try self.take(size)
+        return str(data) catch failure:
+            error(invalid, "invalid UTF-8 in Prism string")
+
+pub struct Blob:
+    var storage: Buffer
+
+    pub static func from_bytes(bytes: const u8[]) -> interop.Reference[Blob]!:
+        return try own_blob(try copied(bytes))
+
+    pub func bytes() -> const u8[]:
+        return self.storage.bytes()
+
+    pub func text() -> str!:
+        return try str(self.storage.bytes())
+
+    pub func size() -> usize:
+        return self.storage.used
+
+    pub mutating func close():
+        self.storage.close()
+
+pub let blob_type = interop.Type[Blob]("Prism bytes", Blob.close, closeable = true)
+
+pub func own_blob(storage: Buffer) -> interop.Reference[Blob]!:
+    var owned = storage
+    let native = new Blob(storage = owned) in memory.heap catch failure:
+        owned.close()
+        error(failure.code, failure.message)
+    return try interop.Reference[Blob].adopt(native, blob_type, memory.heap)
+
+pub struct Pair:
+    pub var key: Buffer
+    pub var value: Buffer
+
+    pub mutating func close():
+        self.key.close()
+        self.value.close()
+
+pub func pair(key: str, value: str) -> Pair!:
+    var out: Pair
+    errdefer out.close()
+    out.key = try text_copy(key)
+    out.value = try text_copy(value)
+    return out
+
+pub func close_names(names: List[Buffer]*):
+    for i in 0..<names.count:
+        names.items[i].close()
+    names.close()
+
+pub func add_name(names: List[Buffer]*, name: str) -> !:
+    for item in names.span():
+        if item.view() == name:
+            return
+    var copy = try text_copy(name)
+    errdefer copy.close()
+    try names.push(copy)
+    var index = names.count - 1
+    while index > 0 and less(names.items[index].view(), names.items[index - 1].view()):
+        let previous = names.items[index - 1]
+        names.items[index - 1] = names.items[index]
+        names.items[index] = previous
+        index -= 1
+
+pub func sort_pairs(pairs: List[Pair]*):
+    for end in 1..<pairs.count:
+        var i = end
+        while i > 0:
+            let a = &pairs.items[i]
+            let b = &pairs.items[i - 1]
+            if not less(a.key.view(), b.key.view()) and (a.key.view() != b.key.view() or not less(a.value.view(), b.value.view())):
+                break
+            let previous = pairs.items[i - 1]
+            pairs.items[i - 1] = pairs.items[i]
+            pairs.items[i] = previous
+            i -= 1
+
+pub func set_pair(pairs: List[Pair]*, key: str, value: str) -> !:
+    var replacement = try pair(key, value)
+    errdefer replacement.close()
+    for i in 0..<pairs.count:
+        if pairs.items[i].key.view() == key:
+            pairs.items[i].close()
+            pairs.items[i] = replacement
+            return
+    try pairs.push(replacement)
+    sort_pairs(pairs)
+
+
+pub func equal_bytes(a: const u8[], b: const u8[]) -> bool:
+    if a.length != b.length:
+        return false
+    for i in 0..<a.length:
+        if a[i] != b[i]:
+            return false
+    return true
+
+pub func copy_list[T](source: const List[T]*) -> List[T]!:
+    var output: List[T]
+    errdefer output.close()
+    try output.reserve(source.count)
+    for item in source.span():
+        try output.push(item)
+    return output
+
+pub func copy_names(source: const List[Buffer]*) -> List[Buffer]!:
+    var output: List[Buffer]
+    errdefer close_names(&output)
+    try output.reserve(source.count)
+    for item in source.span():
+        try output.push(try item.copy())
+    return output
+
+pub func equal_names(a: const List[Buffer]*, b: const List[Buffer]*) -> bool:
+    if a.count != b.count:
+        return false
+    for i in 0..<a.count:
+        if a.items[i].view() != b.items[i].view():
+            return false
+    return true
+
+pub func has_name(names: const List[Buffer]*, name: str) -> bool:
+    for item in names.span():
+        if item.view() == name:
+            return true
+    return false
+
+pub func find_pair(pairs: const List[Pair]*, key: str) -> str?:
+    for item in pairs.span():
+        if item.key.view() == key:
+            return item.value.view()
+    return none
+
+pub func remove_pair(pairs: List[Pair]*, key: str):
+    for i in 0..<pairs.count:
+        if pairs.items[i].key.view() == key:
+            pairs.items[i].close()
+            pairs.remove(i)
+            return
+
+pub func copy_pairs(source: const List[Pair]*) -> List[Pair]!:
+    var output: List[Pair]
+    errdefer close_pairs(&output)
+    try output.reserve(source.count)
+    for item in source.span():
+        try output.push(try pair(item.key.view(), item.value.view()))
+    return output
+
+pub func close_pairs(pairs: List[Pair]*):
+    for i in 0..<pairs.count:
+        pairs.items[i].close()
+    pairs.close()

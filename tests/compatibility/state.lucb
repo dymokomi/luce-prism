@@ -1,0 +1,276 @@
+import prism
+import interop
+import memory
+import strings
+from compatibility.serialization import roundtrip, same_bytes
+
+func seed() -> interop.Reference[prism.Document]!:
+    return try prism.Document.parse("#prisma 4.0\ndef group \"s\" { def object \"a\" { float3 c = (1,0,0) string note = \"hi\" } def material \"m\" { float3 out = (1,1,1) } } connect </s/a.c> = </s/m.out>")
+
+func copy_is_isolated_across_every_mutator() -> !:
+    let doc = try seed()
+    defer doc.release()
+    let snapshot = try doc.value().copy()
+    defer snapshot.release()
+    let expected = try seed()
+    defer expected.release()
+    let before = try snapshot.value().encode()
+    defer before.release()
+    try doc.value().add("/s/b", "object")
+    discard(try doc.value().add_child("/s", "anon"))
+    let value = try prism.Value.number(9.0)
+    defer value.release()
+    try doc.value().set("/s/a", "c", value)
+    try doc.value().set_metadata("/s/a", "note", "changed")
+    try doc.value().connect("/s/m.out", "/s/b.in")
+    doc.value().disconnect("/s/a.c")
+    try doc.value().rename("/s/a", "/s/a2")
+    try doc.value().remove("/s/m")
+    try doc.value().mark_deleted("/ghost")
+    var empty: str[]
+    try doc.value().reorder("/s", empty)
+    let fragment = try prism.Document.parse("#prisma 4.0\ndef thing \"p\" {}")
+    defer fragment.release()
+    let roots = try doc.value().instantiate(fragment, "/s")
+    defer roots.release()
+    let after = try snapshot.value().encode()
+    defer after.release()
+    same_bytes(before.value().bytes(), after.value().bytes())
+    assert(try snapshot.value().equals(expected) and not try doc.value().equals(snapshot))
+
+func mutating_a_copy_leaves_the_original_intact() -> !:
+    let original = try seed()
+    defer original.release()
+    let copy = try original.value().copy()
+    defer copy.release()
+    let before = try original.value().encode()
+    defer before.release()
+    try copy.value().add("/s/extra", "object")
+    let value = try prism.Value.number(2.0)
+    defer value.release()
+    try copy.value().set("/s/a", "c", value)
+    let after = try original.value().encode()
+    defer after.release()
+    same_bytes(before.value().bytes(), after.value().bytes())
+    assert(not try copy.value().equals(original))
+
+func equality_and_ids_hold_across_copy() -> !:
+    let original = try seed()
+    defer original.release()
+    let copy = try original.value().copy()
+    defer copy.release()
+    assert(try copy.value().equals(original))
+    assert(copy.value().element_id("/s/a") == original.value().element_id("/s/a"))
+
+func snapshot_chain_stays_independent() -> !:
+    let doc = try seed()
+    defer doc.release()
+    let first = try doc.value().copy()
+    defer first.release()
+    let before = try first.value().encode()
+    defer before.release()
+    try doc.value().add("/s/x", "object")
+    let one = try prism.Value.number(1.0)
+    defer one.release()
+    try doc.value().set("/s/x", "v", one)
+    let second = try doc.value().copy()
+    defer second.release()
+    let middle = try second.value().encode()
+    defer middle.release()
+    let two = try prism.Value.number(2.0)
+    defer two.release()
+    try doc.value().set("/s/x", "v", two)
+    try doc.value().remove("/s/m")
+    let first_after = try first.value().encode()
+    defer first_after.release()
+    let second_after = try second.value().encode()
+    defer second_after.release()
+    same_bytes(before.value().bytes(), first_after.value().bytes())
+    same_bytes(middle.value().bytes(), second_after.value().bytes())
+    assert(not try first.value().equals(second) and first.value().contains("/s/m") and second.value().contains("/s/x"))
+
+func referenced(asset: str, target: str) -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef object \"x\" { float3 color = (0,0,1) }")
+    defer doc.release()
+    try doc.value().set_metadata("/x", "reference", asset)
+    if target.length > 0:
+        try doc.value().set_metadata("/x", "referencePath", target)
+    let encoded = try doc.value().encode(prism.Encoding.text)
+    defer encoded.release()
+    let text = try encoded.value().text()
+    assert(strings.contains(text, "reference \"") and not strings.contains(text, "string reference"))
+    assert(strings.contains(text, "float3 color"))
+    for mode in 0..<(usize)5:
+        let back = try roundtrip(doc, mode)
+        defer back.release()
+        assert(try back.value().metadata("/x", "reference") == asset)
+        if target.length > 0:
+            assert(try back.value().metadata("/x", "referencePath") == target)
+        # A referenced filename is data; decoding never attempts to open it.
+        assert(back.value().element_count() == 1)
+
+func reference_directive_round_trips() -> !:
+    try referenced("car.prisma", "")
+
+func reference_with_inner_element_path() -> !:
+    try referenced("parts.prisma", "/parts/bolt")
+
+func reference_authored_programmatically() -> !:
+    try referenced("parts.prism", "/parts/bolt")
+
+func reference_wildcard_round_trips_in_text() -> !:
+    try referenced("parts.prisma", "/parts/*")
+
+func legacy_string_reference_still_parses() -> !:
+    let doc = try prism.Document.parse("#prisma 3.0\ndef object \"a\" { string reference = \"car.prisma\" }")
+    defer doc.release()
+    assert(try doc.value().metadata("/a", "reference") == "car.prisma")
+    let back = try roundtrip(doc, 0)
+    defer back.release()
+
+func wired(reverse: bool) -> interop.Reference[prism.Document]!:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef \"m1\" { float out = 1 } def \"m2\" { float out = 2 } def \"a\" {} def \"b\" {} def \"c\" {}")
+    errdefer doc.release()
+    let slots: str[3] = ["/a.v","/b.v","/c.v"]
+    for i in 0..<slots.length:
+        try doc.value().connect("/m1.out", slots[2 - i] if reverse else slots[i])
+    return doc
+
+func identical(a: interop.Reference[prism.Document], b: interop.Reference[prism.Document]) -> !:
+    assert(try a.value().equals(b))
+    for compressed in [false, true]:
+        let first = try a.value().encode(prism.Encoding.binary, compressed)
+        defer first.release()
+        let second = try b.value().encode(prism.Encoding.binary, compressed)
+        defer second.release()
+        same_bytes(first.value().bytes(), second.value().bytes())
+
+func binary_is_deterministic_across_connection_order() -> !:
+    let forward = try wired(false)
+    defer forward.release()
+    let reverse = try wired(true)
+    defer reverse.release()
+    try identical(forward, reverse)
+
+func binary_is_deterministic_after_resourcing() -> !:
+    let churned = try wired(false)
+    defer churned.release()
+    let direct = try wired(false)
+    defer direct.release()
+    try churned.value().connect("/m2.out", "/a.v")
+    try churned.value().connect("/m1.out", "/a.v")
+    try identical(churned, direct)
+
+func binary_round_trip_is_idempotent_and_stable() -> !:
+    let original = try wired(true)
+    defer original.release()
+    let back = try roundtrip(original, 1)
+    defer back.release()
+    try identical(original, back)
+
+func layer() -> interop.Reference[prism.Document]!:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"world\" { def object \"sphere\" { float radius = 2 float3 albedo = (1,0,0) string label = \"the sphere\" float radius.timeSamples = { 0: 2, 24: 5 } } over material \"mat\" { float gain = 0.5 string note = \"tweaked\" unset oldParam unset string oldNote } } connect </world/sphere.albedo> = </world/mat.out> delete \"/world/junk\" disconnect \"/world/sphere.radius\"")
+    return doc
+
+func text_and_binary_round_trip_identically() -> !:
+    let doc = try layer()
+    defer doc.release()
+    for mode in 0..<(usize)5:
+        let back = try roundtrip(doc, mode)
+        defer back.release()
+
+func overlay_tombstones_survive_each_codec_specifically() -> !:
+    let doc = try layer()
+    defer doc.release()
+    let base = try prism.Document.parse("#prisma 4.0\ndef group \"world\" { def object \"sphere\" {} def \"junk\" {} def material \"mat\" { float oldParam = 1 float retained = 4 string oldNote = \"old\" } } connect </world/sphere.radius> = </world/mat.out>")
+    defer base.release()
+    for mode in 0..<(usize)5:
+        let back = try roundtrip(doc, mode)
+        defer back.release()
+        let composed = try base.value().overlay(back)
+        defer composed.release()
+        assert(not composed.value().contains("/world/junk"))
+        assert(not composed.value().has_property("/world/mat", "oldParam"))
+        assert(not composed.value().has_metadata("/world/mat", "oldNote"))
+        assert(composed.value().has_property("/world/mat", "retained"))
+        assert(composed.value().connection_count() == 1)
+
+func query() -> interop.Reference[prism.Query]!:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef table \"t\" { def row \"a\" { float v = 10 } def row \"b\" { float v = 20 } def row \"c\" {} }")
+    defer doc.release()
+    return try interop.Reference[prism.Query].adopt(try new prism.Query(doc, "/t/*") in memory.heap, prism.query_type, memory.heap)
+
+func is_null_and_not_null() -> !:
+    let all = try query()
+    defer all.release()
+    let absent = try prism.Predicate.is_null("v")
+    defer absent.release()
+    let present = try prism.Predicate.exists("v")
+    defer present.release()
+    let nulls = try all.value().filter(absent)
+    defer nulls.release()
+    let nonnulls = try all.value().filter(present)
+    defer nonnulls.release()
+    assert(try nulls.value().one() == "/t/c" and try nonnulls.value().count() == 2)
+
+func three_valued_comparison() -> !:
+    let all = try query()
+    defer all.release()
+    let ten = try prism.Value.number(10.0)
+    defer ten.release()
+    let neq = try prism.Predicate.field("v", prism.Comparison.not_equal, ten)
+    defer neq.release()
+    let eq = try prism.Predicate.field("v", prism.Comparison.equal, ten)
+    defer eq.release()
+    let negated = try eq.value().negate()
+    defer negated.release()
+    let present_unequal = try all.value().filter(neq)
+    defer present_unequal.release()
+    let complement = try all.value().filter(negated)
+    defer complement.release()
+    assert(try present_unequal.value().one() == "/t/b" and try complement.value().count() == 2)
+
+func aggregates_skip_null() -> !:
+    let all = try query()
+    defer all.release()
+    assert(try all.value().count() == 3)
+    assert(try all.value().aggregate("v", prism.Aggregate.sum) == 30.0)
+    assert(try all.value().aggregate("v", prism.Aggregate.average) == 15.0)
+
+func wildcard_priority_and_root_assets() -> !:
+    let doc = try wired(false)
+    defer doc.release()
+    try doc.value().connect_pattern("/m2.out", "/*.other")
+    try doc.value().connect_pattern("/m1.out", "/a*.other")
+    assert(try doc.value().source("/a.other") == "/m2.out")
+    for mode in 0..<(usize)5:
+        let back = try roundtrip(doc, mode)
+        defer back.release()
+        assert(try back.value().source("/a.other") == "/m2.out")
+    try doc.value().set_asset("/", b"root\0bytes")
+    let package = try roundtrip(doc, 3)
+    defer package.release()
+    let root = try package.value().asset("/")
+    defer root.release()
+    same_bytes(root.value().bytes(), b"root\0bytes")
+
+pub func run() -> !:
+    try copy_is_isolated_across_every_mutator()
+    try mutating_a_copy_leaves_the_original_intact()
+    try equality_and_ids_hold_across_copy()
+    try snapshot_chain_stays_independent()
+    try reference_directive_round_trips()
+    try reference_with_inner_element_path()
+    try reference_authored_programmatically()
+    try reference_wildcard_round_trips_in_text()
+    try legacy_string_reference_still_parses()
+    try binary_is_deterministic_across_connection_order()
+    try binary_is_deterministic_after_resourcing()
+    try binary_round_trip_is_idempotent_and_stable()
+    try text_and_binary_round_trip_identically()
+    try overlay_tombstones_survive_each_codec_specifically()
+    try is_null_and_not_null()
+    try three_valued_comparison()
+    try aggregates_skip_null()
+    try wildcard_priority_and_root_assets()
+    print("PASS 18 copy, reference, deterministic serialization, codec parity and null cases")

@@ -1,0 +1,152 @@
+## Column scans dispatch once by dtype and preserve legacy selection semantics.
+import interop
+import memory
+import math
+from luce_prism.query.predicates import Comparison
+from luce_prism.query.aggregation import Aggregate, calculate, sort_numbers
+from luce_prism.document import Document
+from luce_prism.model import Element
+from luce_prism.value import ValueData, half_number
+from luce_prism.animation import resolve_property
+from luce_prism.storage import List
+from luce_prism.types import DType, invalid
+
+pub struct RowMask:
+    var indices: List[i64]
+
+    pub func init(indices: const i64[]) -> !:
+        self.indices = List[i64]()
+        errdefer self.close()
+        try self.indices.reserve(indices.length)
+        for index in indices:
+            if index < 0:
+                error(invalid, "column row indices must be nonnegative")
+            try self.indices.push(index)
+
+    pub func count() -> usize:
+        return self.indices.count
+
+    pub func at(index: usize) -> i64!:
+        if index >= self.indices.count:
+            error(invalid, "column row index is out of bounds")
+        return self.indices.items[index]
+
+    pub func values() -> const i64[]:
+        return self.indices.span()
+
+    pub mutating func close():
+        self.indices.close()
+
+pub let row_mask_type = interop.Type[RowMask]("Prism column row mask", RowMask.close, closeable = true)
+
+func numbers(value: const ValueData*) -> List[f64]!:
+    var output: List[f64]
+    errdefer output.close()
+    if value.kind == DType.string:
+        return output
+    try output.reserve(value.count())
+    let kind = value.kind
+    if kind == DType.boolean or kind == DType.uint8:
+        for index in 0..<value.count():
+            try output.push((f64)memory.read[u8](&value.payload.data[index * 1]))
+    elif kind == DType.character or kind == DType.int8:
+        for index in 0..<value.count():
+            try output.push((f64)memory.read[i8](&value.payload.data[index * 1]))
+    elif kind == DType.int16:
+        for index in 0..<value.count():
+            try output.push((f64)memory.read[i16](&value.payload.data[index * 2]))
+    elif kind == DType.uint16:
+        for index in 0..<value.count():
+            try output.push((f64)memory.read[u16](&value.payload.data[index * 2]))
+    elif kind == DType.int32:
+        for index in 0..<value.count():
+            try output.push((f64)memory.read[i32](&value.payload.data[index * 4]))
+    elif kind == DType.uint32:
+        for index in 0..<value.count():
+            try output.push((f64)memory.read[u32](&value.payload.data[index * 4]))
+    elif kind == DType.int64:
+        for index in 0..<value.count():
+            try output.push((f64)memory.read[i64](&value.payload.data[index * 8]))
+    elif kind == DType.uint64:
+        for index in 0..<value.count():
+            try output.push((f64)memory.read[u64](&value.payload.data[index * 8]))
+    elif kind == DType.float32:
+        for index in 0..<value.count():
+            try output.push((f64)memory.read[f32](&value.payload.data[index * 4]))
+    elif kind == DType.float64:
+        for index in 0..<value.count():
+            try output.push((f64)memory.read[f64](&value.payload.data[index * 8]))
+    else:
+        for index in 0..<value.count():
+            try output.push(half_number(memory.read[u16](&value.payload.data[index * 2])))
+    return output
+
+func compare(x: f64, operation: Comparison, value: f64) -> bool:
+    if operation == Comparison.equal:
+        return x == value
+    if operation == Comparison.not_equal:
+        return x != value
+    if operation == Comparison.less:
+        return x < value
+    if operation == Comparison.less_equal:
+        return x <= value
+    if operation == Comparison.greater:
+        return x > value
+    return x >= value
+
+pub struct ColumnTable:
+    var table: Element
+
+    pub func init(doc: interop.Reference[Document], path: str) -> !:
+        let data = (try doc.get()).view_data()
+        self.table = try data.elements.items[try data.require(path)].copy()
+
+    func column(name: str) -> List[f64]!:
+        let position = self.table.property(name) else return List[f64]()
+        var value = try resolve_property(&self.table.properties.items[position], 0.0)
+        defer value.close()
+        return try numbers(&value)
+
+    pub func rows(column: str) -> usize!:
+        var values = try self.column(column)
+        defer values.close()
+        return values.count
+
+    pub func filter(column: str, operation: Comparison, value: f64) -> interop.Reference[RowMask]!:
+        var values = try self.column(column)
+        defer values.close()
+        var indices: List[i64]
+        defer indices.close()
+        for index in 0..<values.count:
+            if compare(values.items[index], operation, value):
+                try indices.push((i64)index)
+        let native = try new RowMask(indices.span()) in memory.heap
+        return try interop.Reference[RowMask].adopt(native, row_mask_type, memory.heap)
+
+    pub func aggregate(column: str, operation: Aggregate, rows: interop.Reference[RowMask]? = none) -> f64!:
+        var values = try self.column(column)
+        defer values.close()
+        if values.count == 0:
+            return math.nan
+        var selected: List[f64]
+        defer selected.close()
+        if let mask = rows:
+            for index in (try mask.get()).values():
+                if (usize)index < values.count:
+                    try selected.push(values.items[(usize)index])
+        else:
+            let previous = selected
+            selected = values
+            values = previous
+        if selected.count == 0:
+            return 0.0 if operation == Aggregate.sum or operation == Aggregate.count else math.nan
+        if operation == Aggregate.median:
+            sort_numbers(selected.span())
+            let middle = selected.count // 2
+            return selected.items[middle] if selected.count % 2 != 0 else (selected.items[middle - 1] + selected.items[middle]) / 2.0
+        return calculate(selected.span(), operation) else math.nan
+
+    pub mutating func close():
+        self.table.close()
+
+pub let column_table_type = interop.Type[ColumnTable]("Prism column table", ColumnTable.close, closeable = true)

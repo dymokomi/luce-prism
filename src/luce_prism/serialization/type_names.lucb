@@ -1,0 +1,62 @@
+## Serialization type names.
+import strings
+from luce_prism.storage import List
+from luce_prism.types import DType, unsupported
+from luce_prism.value import dtype_from
+
+pub struct TypeSpec:
+    pub var kind: DType = DType.float32
+    pub var shape: List[u32]
+    pub var dynamic: bool
+    pub var tuple_width: usize
+    pub var label: str = ""
+
+    pub mutating func close():
+        self.shape.close()
+
+pub func dtype_name(dtype: DType) -> str:
+    let names: str[14] = ["bool", "char", "int8", "int16", "int32", "int64", "uint8", "uint16", "uint32", "uint64", "float32", "float64", "str", "float16"]
+    return names[(usize)dtype]
+
+pub func type_spec(name: str) -> TypeSpec!:
+    var spec = TypeSpec()
+    errdefer spec.close()
+    for i in 0..<(u64)14:
+        let kind = try dtype_from(i)
+        if name == dtype_name(kind):
+            spec.kind = kind
+            return spec
+    if name == "float" or name == "int":
+        spec.kind = DType.float32 if name == "float" else DType.int64
+        return spec
+    if name == "float2" or name == "float3" or name == "matrix" or name == "spectrum":
+        if name == "matrix":
+            try spec.shape.push(2)
+            try spec.shape.push(3)
+            spec.tuple_width = 6
+        else:
+            let size: u32 = 2 if name == "float2" else (3 if name == "float3" else 32)
+            try spec.shape.push(size)
+            spec.tuple_width = 0 if name == "spectrum" else (usize)size
+        return spec
+    spec.label = name
+    if name.length == 5 and strings.starts_with(name, "vec") and name.bytes[3] >= '2' and name.bytes[3] <= '4':
+        let code = name.bytes[4]
+        if code != 'f' and code != 'd' and code != 'h' and code != 'i':
+            error(unsupported, "unknown Prism vector type")
+        spec.kind = DType.float64 if code == 'd' else (DType.float16 if code == 'h' else (DType.int32 if code == 'i' else DType.float32))
+        try spec.shape.push((u32)(name.bytes[3] - '0'))
+        return spec
+    if name == "matrix2d" or name == "matrix3d" or name == "matrix4d" or name == "matrix4f":
+        spec.kind = DType.float32 if name == "matrix4f" else DType.float64
+        try spec.shape.push((u32)(name.bytes[6] - '0'))
+        try spec.shape.push((u32)(name.bytes[6] - '0'))
+        return spec
+    if name == "quath" or name == "quatf" or name == "quatd":
+        spec.kind = DType.float16 if name == "quath" else (DType.float64 if name == "quatd" else DType.float32)
+        try spec.shape.push(4)
+        return spec
+    if name == "point3f" or name == "normal3f" or name == "vector3f" or name == "color3f" or name == "color4f" or name == "texCoord2f" or name == "texCoord3f":
+        try spec.shape.push(4 if name == "color4f" else (2 if name == "texCoord2f" else 3))
+        return spec
+    error(unsupported, "unknown Prism value type")

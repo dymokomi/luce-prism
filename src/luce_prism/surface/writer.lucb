@@ -1,0 +1,133 @@
+## Project canonical op graphs and atoms back to the legacy editable surface.
+import c
+import strings
+from luce_prism.model import DocumentData
+from luce_prism.storage import Buffer, text_copy
+from luce_prism.path import path_name, parent_path, element_path, joined
+from luce_prism.logic.atoms import read_atom, read_text
+from luce_prism.animation import resolve_property
+from luce_prism.query.scalars import numeric
+from luce_prism.value import floating
+from luce_prism.types import DType, invalid, limit_exceeded, max_depth
+
+extern func format_number as "snprintf"(output: u8*, size: usize, spec: c.str, ...) -> i32
+
+func number(output: Buffer*, value: f64) -> !:
+    var scratch: u8[64]
+    if value > -1e15 and value < 1e15 and (f64)(i64)value == value:
+        try output.text(try strings.format_i64((i64)value, scratch))
+        return
+    let count = format_number(&scratch[0], scratch.length, "%g", value)
+    if count < 0 or (usize)count >= scratch.length:
+        error(invalid, "Prism surface number cannot be formatted")
+    try output.text((str)scratch[..<(usize)count])
+
+func scalar(doc: const DocumentData*, path: str, name: str) -> f64!:
+    let index = doc.find(path) else return 0.0
+    let element = &doc.elements.items[index]
+    let property = element.property(name) else return 0.0
+    var value = try resolve_property(&element.properties.items[property], 0.0)
+    defer value.close()
+    return (f64)(f32)(numeric(&value) else 0.0)
+
+func operand(doc: const DocumentData*, path: str, name: str, root: str, output: Buffer*, depth: usize) -> !:
+    var target = try text_copy(path)
+    defer target.close()
+    try target.text(".")
+    try target.text(name)
+    if let source = doc.incoming(target.view()):
+        let element = element_path(source)
+        let leaf = path_name(element)
+        if parent_path(element) == root and leaf.length > 0 and leaf.bytes[0] == '[':
+            try output.byte('(')
+            try expression(doc, element, root, output, depth + 1)
+            try output.byte(')')
+        else:
+            try output.text((str)source.bytes[1..] if source.length > 0 and source.bytes[0] == '/' else source)
+    else:
+        try number(output, try scalar(doc, path, name))
+
+func expression(doc: const DocumentData*, path: str, root: str, output: Buffer*, depth: usize) -> !:
+    if depth > max_depth:
+        error(limit_exceeded, "cyclic or overly deep Prism surface expression")
+    let index = doc.find(path)
+    let kind = doc.elements.items[index else 0].kind.view() if index != none else ""
+    if kind == "neg":
+        try output.byte('-')
+        try operand(doc, path, "a", root, output, depth)
+    else:
+        try operand(doc, path, "a", root, output, depth)
+        try output.text(" + " if kind == "add" else (" - " if kind == "sub" else (" * " if kind == "mul" else " / ")))
+        try operand(doc, path, "b", root, output, depth)
+
+func atom(doc: const DocumentData*, path: str, output: Buffer*) -> !:
+    var value = try read_atom(doc, path)
+    defer value.close()
+    if value.negative:
+        try output.byte('-')
+    try output.text(value.predicate.view())
+    if value.arguments.count > 0:
+        try output.byte('(')
+        for i in 0..<value.arguments.count:
+            if i > 0:
+                try output.text(", ")
+            try output.text(value.arguments.items[i].name.view())
+        try output.byte(')')
+
+pub func write(doc: const DocumentData*) -> Buffer!:
+    var output: Buffer
+    errdefer output.close()
+    for element in doc.elements.span():
+        let path = element.path.view()
+        if parent_path(path) != "/":
+            continue
+        let kind = element.kind.view()
+        let math = kind == "add" or kind == "sub" or kind == "mul" or kind == "div" or kind == "neg"
+        let logic = kind == "fact" or kind == "strict" or kind == "defeasible" or kind == "defeater"
+        if not math and not logic and kind != "sup" and kind != "":
+            continue
+        try output.text("math" if math else ("logic" if logic or kind == "sup" else "def"))
+        try output.text(" \"")
+        try output.text(path_name(path))
+        try output.text("\" { ")
+        if math:
+            try expression(doc, path, path, &output, 0)
+        elif logic:
+            if kind != "fact":
+                var count: usize = 0
+                for i in 0..<doc.child_count(path):
+                    let child = doc.child_at(path, i) else error(invalid, "invalid Prism logic child index")
+                    if path_name(child) == "head":
+                        continue
+                    if count > 0:
+                        try output.text(", ")
+                    try atom(doc, child, &output)
+                    count += 1
+                try output.text(" -> " if kind == "strict" else (" => " if kind == "defeasible" else " ~> "))
+            var head = try joined(path, "head")
+            defer head.close()
+            try atom(doc, head.view(), &output)
+        elif kind == "sup":
+            var superior_name = try read_text(doc, path, "superior")
+            defer superior_name.close()
+            var inferior_name = try read_text(doc, path, "inferior")
+            defer inferior_name.close()
+            try output.text(superior_name.view())
+            try output.text(" > ")
+            try output.text(inferior_name.view())
+        else:
+            for property in element.properties.span():
+                var value = try resolve_property(&property, 0.0)
+                defer value.close()
+                try output.text("bool" if value.kind == DType.boolean else ("float" if floating(value.kind) else "int"))
+                try output.byte(' ')
+                try output.text(property.name.view())
+                try output.text(" = ")
+                let numeric_value = (f64)(f32)(numeric(&value) else 0.0)
+                if value.kind == DType.boolean:
+                    try output.text("true" if numeric_value != 0.0 else "false")
+                else:
+                    try number(&output, numeric_value)
+                try output.byte(' ')
+        try output.text(" }\n" if kind != "" else "}\n")
+    return output

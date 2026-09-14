@@ -1,0 +1,288 @@
+import prism
+import interop
+import math
+from compatibility.query import plan, compare, filtered, paths
+
+func orders() -> interop.Reference[prism.Document]!:
+    return try prism.Document.parse("#prisma 4.0\ndef table \"orders\" { def order \"o1\" { str region = \"west\" float amount = 100 } def order \"o2\" { str region = \"west\" float amount = 50 } def order \"o3\" { str region = \"east\" float amount = 200 } def order \"o4\" { str region = \"east\" float amount = 25 } def order \"o5\" { str region = \"west\" } }")
+
+func scalar_aggregates() -> !:
+    let doc = try orders()
+    defer doc.release()
+    var query = try prism.Query(doc, "/orders/*")
+    defer query.close()
+    assert(try query.count() == 5)
+    assert(try query.aggregate("amount", prism.Aggregate.sum) == 375.0)
+    assert(try query.aggregate("amount", prism.Aggregate.average) == 93.75)
+    assert(try query.aggregate("amount", prism.Aggregate.minimum) == 25.0)
+    assert(try query.aggregate("amount", prism.Aggregate.maximum) == 200.0)
+
+func aggregate_with_filter() -> !:
+    let doc = try orders()
+    defer doc.release()
+    let query = try filtered(doc, try compare("region", try prism.Value.text("west")))
+    defer query.release()
+    assert(try query.value().count() == 3)
+    assert(try query.value().aggregate("amount", prism.Aggregate.sum) == 150.0)
+
+func group_by_sum_and_count() -> !:
+    let doc = try orders()
+    defer doc.release()
+    var query = try prism.Query(doc, "/orders/*")
+    defer query.close()
+    let sums = try query.aggregate_by(["region"], "amount", prism.Aggregate.sum)
+    defer sums.release()
+    assert(try sums.value().get("west") == 150.0 and try sums.value().get("east") == 225.0)
+    let counts = try query.aggregate_by(["region"], "amount", prism.Aggregate.count)
+    defer counts.release()
+    assert(try counts.value().get("west") == 3.0 and try counts.value().get("east") == 2.0)
+    let maxes = try query.aggregate_by(["region"], "amount", prism.Aggregate.maximum)
+    defer maxes.release()
+    assert(try maxes.value().get("west") == 100.0 and try maxes.value().get("east") == 200.0)
+
+func aggregate_of_no_numeric_rows_is_nullopt() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef table \"t\" { def row \"x\" { str label = \"a\" } }")
+    defer doc.release()
+    var query = try prism.Query(doc, "/t/*")
+    defer query.close()
+    assert(try query.aggregate("missing", prism.Aggregate.sum) == none)
+    assert(try query.aggregate("label", prism.Aggregate.average) == none)
+    assert(try query.aggregate("label", prism.Aggregate.minimum) == none)
+    let sums = try query.aggregate_by(["label"], "missing", prism.Aggregate.sum)
+    defer sums.release()
+    assert(try sums.value().get("a") == 0.0)
+    let averages = try query.aggregate_by(["label"], "missing", prism.Aggregate.average)
+    defer averages.release()
+    assert(averages.value().count() == 0)
+
+func statistical_aggregates() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef table \"t\" { def row { float x = 2 } def row { float x = 4 } def row { float x = 4 } def row { float x = 4 } def row { float x = 5 } def row { float x = 5 } def row { float x = 7 } def row { float x = 9 } }")
+    defer doc.release()
+    var query = try prism.Query(doc, "/t/*")
+    defer query.close()
+    assert(try query.aggregate("x", prism.Aggregate.median) == 4.5)
+    assert(try query.aggregate("x", prism.Aggregate.variance) == 4.0)
+    assert(try query.aggregate("x", prism.Aggregate.standard_deviation) == 2.0)
+    assert(try query.distinct_count("x") == 5)
+
+func multi_key_group_by() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef table \"t\" { def row \"a\" { str region = \"west\" str tier = \"gold\" float amt = 100 } def row \"b\" { str region = \"west\" str tier = \"gold\" float amt = 50 } def row \"c\" { str region = \"west\" str tier = \"silver\" float amt = 30 } def row \"d\" { str region = \"east\" str tier = \"gold\" float amt = 200 } }")
+    defer doc.release()
+    var query = try prism.Query(doc, "/t/*")
+    defer query.close()
+    let sums = try query.aggregate_by(["region", "tier"], "amt", prism.Aggregate.sum)
+    defer sums.release()
+    assert(sums.value().count() == 3)
+    let west: u8[9] = ['w', 'e', 's', 't', 31, 'g', 'o', 'l', 'd']
+    let east: u8[9] = ['e', 'a', 's', 't', 31, 'g', 'o', 'l', 'd']
+    assert(try sums.value().get((str)west) == 150.0)
+    assert(try sums.value().get((str)east) == 200.0)
+
+func issues() -> interop.Reference[prism.Document]!:
+    return try prism.Document.parse("#prisma 4.0\ndef table \"t\" { def issue \"i1\" { str status = \"open\" float sev = 1 } def issue \"i2\" { str status = \"open\" float sev = 2 } def issue \"i3\" { str status = \"done\" float sev = 1 } def issue \"i4\" { str status = \"open\" float sev = 3 } def issue \"i5\" {} }")
+
+func index_equals_matches_the_scan() -> !:
+    let doc = try issues()
+    defer doc.release()
+    var index = try prism.FieldIndex(doc, "status")
+    defer index.close()
+    assert(index.key_count() == 2)
+    let value = try prism.Value.text("open")
+    defer value.release()
+    let indexed = try index.equals(value)
+    defer indexed.release()
+    let query = try filtered(doc, try compare("status", value.clone()))
+    defer query.release()
+    let scanned = try query.value().select()
+    defer scanned.release()
+    assert(indexed.value().count() == 3 and scanned.value().count() == 3)
+    for i in 0..<indexed.value().count():
+        assert(try indexed.value().path_at(i) == try scanned.value().path_at(i))
+    try doc.value().remove("/t")
+    let snapshot = try index.equals(value)
+    defer snapshot.release()
+    assert(snapshot.value().count() == 3)
+
+func index_matches_numerically_like_the_query() -> !:
+    let doc = try issues()
+    defer doc.release()
+    var index = try prism.FieldIndex(doc, "sev")
+    defer index.close()
+    let integer = try prism.Value.integer(1)
+    defer integer.release()
+    let floating = try prism.Value.number(1.0)
+    defer floating.release()
+    for value in [integer, floating]:
+        let rows = try index.equals(value)
+        defer rows.release()
+        assert(rows.value().count() == 2)
+        assert(try rows.value().path_at(0) == "/t/i1" and try rows.value().path_at(1) == "/t/i3")
+
+func index_misses_and_unindexed() -> !:
+    let doc = try issues()
+    defer doc.release()
+    var index = try prism.FieldIndex(doc, "status")
+    defer index.close()
+    let missing = try prism.Value.text("nope")
+    defer missing.release()
+    assert(not try index.contains(missing))
+    let empty = try index.equals(missing)
+    defer empty.release()
+    assert(empty.value().count() == 0)
+    var count: usize = 0
+    for name in ["done", "open"]:
+        let value = try prism.Value.text(name)
+        defer value.release()
+        assert(try index.contains(value))
+        let rows = try index.equals(value)
+        defer rows.release()
+        count += rows.value().count()
+    assert(count == 4)
+
+func big_ids() -> interop.Reference[prism.Document]!:
+    return try prism.Document.parse("#prisma 4.0\ndef table \"t\" { def row \"a\" { int64 id = 9007199254740992 } def row \"b\" { int64 id = 9007199254740993 } def row \"c\" { int64 id = 9007199254740999 } }")
+
+func eq_distinguishes_large_int_ids() -> !:
+    let doc = try big_ids()
+    defer doc.release()
+    try paths(try filtered(doc, try compare("id", try prism.Value.integer(9007199254740992))), ["/t/a"])
+    try paths(try filtered(doc, try compare("id", try prism.Value.integer(9007199254740993))), ["/t/b"])
+    try paths(try filtered(doc, try compare("id", try prism.Value.integer(9007199254740993), prism.Comparison.less)), ["/t/a"])
+
+func int_three_still_equals_float_three() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef table \"t\" { def row \"i\" { int64 v = 3 } def row \"f\" { float v = 3 } def row \"h\" { float v = 3.5 } }")
+    defer doc.release()
+    try paths(try filtered(doc, try compare("v", try prism.Value.integer(3))), ["/t/i", "/t/f"])
+    try paths(try filtered(doc, try compare("v", try prism.Value.number(3.0))), ["/t/i", "/t/f"])
+    try paths(try filtered(doc, try compare("v", try prism.Value.number(3.5))), ["/t/h"])
+
+func nunique_counts_large_ints_exactly() -> !:
+    let doc = try big_ids()
+    defer doc.release()
+    var query = try prism.Query(doc, "/t/*")
+    defer query.close()
+    assert(try query.distinct_count("id") == 3)
+    try doc.value().add("/t/d", "row")
+    let value = try prism.Value.integer(9007199254740993)
+    defer value.release()
+    try doc.value().set("/t/d", "id", value)
+    assert(try query.distinct_count("id") == 3)
+
+func field_index_distinguishes_large_ints() -> !:
+    let doc = try big_ids()
+    defer doc.release()
+    var index = try prism.FieldIndex(doc, "id")
+    defer index.close()
+    assert(index.key_count() == 3)
+    let ids = [9007199254740992, 9007199254740993]
+    let expected_paths = ["/t/a", "/t/b"]
+    for i in 0..<ids.length:
+        let value = try prism.Value.integer(ids[i])
+        defer value.release()
+        let rows = try index.equals(value)
+        defer rows.release()
+        assert(rows.value().count() == 1 and try rows.value().path_at(0) == expected_paths[i])
+
+func join_on_large_int_keys_matches_exactly() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef table \"l\" { def row \"x\" { int64 k = 9007199254740992 } def row \"y\" { int64 k = 9007199254740993 } } def table \"r\" { def row \"p\" { int64 k = 9007199254740993 } }")
+    defer doc.release()
+    let left = try plan(doc, "/l/*")
+    defer left.release()
+    let right = try plan(doc, "/r/*")
+    defer right.release()
+    let pairs = try prism.join_on(left, "k", right, "k")
+    defer pairs.release()
+    assert(pairs.value().count() == 1)
+    assert(try pairs.value().left_path(0) == "/l/y" and try pairs.value().right_path(0) == "/r/p")
+
+func shop() -> interop.Reference[prism.Document]!:
+    return try prism.Document.parse("#prisma 4.0\ndef table \"customers\" { def customer \"c1\" { str region = \"west\" float id = 1 } def customer \"c2\" { str region = \"east\" float id = 2 } } def table \"orders\" { def order \"o1\" { str region = \"west\" connect customer = </customers/c1.id> } def order \"o2\" { str region = \"east\" connect customer = </customers/c2.id> } def order \"o3\" { str region = \"west\" connect customer = </customers/c1.id> } }")
+
+func equality_hash_join() -> !:
+    let doc = try shop()
+    defer doc.release()
+    let left = try plan(doc, "/orders/*")
+    defer left.release()
+    let right = try plan(doc, "/customers/*")
+    defer right.release()
+    let pairs = try prism.join_on(left, "region", right, "region")
+    defer pairs.release()
+    assert(pairs.value().count() == 3)
+    for i in 0..<(usize)3:
+        let a = try pairs.value().left_row(i) else error(prism.invalid, "missing left row")
+        defer a.release()
+        let b = try pairs.value().right_row(i) else error(prism.invalid, "missing right row")
+        defer b.release()
+        let x = try a.value().get("region")
+        defer x.release()
+        let y = try b.value().get("region")
+        defer y.release()
+        assert(try x.value().text_at() == try y.value().text_at())
+
+func connection_join_follows_foreign_key() -> !:
+    let doc = try shop()
+    defer doc.release()
+    let left = try plan(doc, "/orders/*")
+    defer left.release()
+    let pairs = try prism.join_by_connection(doc, left, "customer")
+    defer pairs.release()
+    assert(pairs.value().count() == 3)
+    let expected = ["/customers/c1", "/customers/c2", "/customers/c1"]
+    for i in 0..<expected.length:
+        assert(try pairs.value().right_path(i) == expected[i])
+
+func join_skips_unmatched_rows() -> !:
+    let doc = try shop()
+    defer doc.release()
+    try doc.value().add("/orders/o4", "order")
+    let north = try prism.Value.text("north")
+    defer north.release()
+    try doc.value().set("/orders/o4", "region", north)
+    let left = try plan(doc, "/orders/*")
+    defer left.release()
+    let right = try plan(doc, "/customers/*")
+    defer right.release()
+    let eq = try prism.join_on(left, "region", right, "region")
+    defer eq.release()
+    let connection = try prism.join_by_connection(doc, left, "customer")
+    defer connection.release()
+    assert(eq.value().count() == 3 and connection.value().count() == 3)
+
+func join_types() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef table \"o\" { def order \"a\" { str r = \"west\" } def order \"b\" { str r = \"north\" } } def table \"c\" { def cust \"c1\" { str r = \"west\" } def cust \"c2\" { str r = \"east\" } def cust \"noKey\" {} }")
+    defer doc.release()
+    let left = try plan(doc, "/o/*")
+    defer left.release()
+    let right = try plan(doc, "/c/*")
+    defer right.release()
+    let kinds = [prism.JoinType.inner, prism.JoinType.left, prism.JoinType.right, prism.JoinType.outer, prism.JoinType.anti]
+    let counts: usize[5] = [1, 2, 2, 3, 1]
+    for i in 0..<kinds.length:
+        let pairs = try prism.join_on(left, "r", right, "r", kinds[i])
+        defer pairs.release()
+        assert(pairs.value().count() == counts[i])
+        if kinds[i] == prism.JoinType.anti:
+            assert(try pairs.value().left_path(0) == "/o/b" and try pairs.value().right_path(0) == none)
+        if kinds[i] == prism.JoinType.left or kinds[i] == prism.JoinType.outer:
+            assert(try pairs.value().left_path(1) == "/o/b" and try pairs.value().right_path(1) == none)
+
+pub func run() -> !:
+    try scalar_aggregates()
+    try aggregate_with_filter()
+    try group_by_sum_and_count()
+    try aggregate_of_no_numeric_rows_is_nullopt()
+    try statistical_aggregates()
+    try multi_key_group_by()
+    try index_equals_matches_the_scan()
+    try index_matches_numerically_like_the_query()
+    try index_misses_and_unindexed()
+    try eq_distinguishes_large_int_ids()
+    try int_three_still_equals_float_three()
+    try nunique_counts_large_ints_exactly()
+    try field_index_distinguishes_large_ints()
+    try join_on_large_int_keys_matches_exactly()
+    try equality_hash_join()
+    try connection_join_follows_foreign_key()
+    try join_skips_unmatched_rows()
+    try join_types()
+    print("PASS 18 legacy aggregate, index and join cases, including exact large integer keys")

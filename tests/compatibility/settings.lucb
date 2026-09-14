@@ -1,0 +1,153 @@
+import prism
+import files
+import strings
+import memory
+import c
+
+func remove(path: str) -> !:
+    with memory.heap:
+        let name = try strings.copy(path)
+        defer strings.release(name)
+        if files.exists((c.str)name):
+            try files.remove_file((c.str)name)
+
+func appsettings_defaults_when_file_missing(path: str) -> !:
+    try remove(path)
+    var settings = try prism.AppSettings(path)
+    defer settings.close()
+    assert(try settings.get_integer("window_w", 900) == 900)
+    assert(try settings.get_number("scale", 1.5) == 1.5)
+    assert(try settings.get_boolean("wrap", true))
+    assert(try settings.get_string("theme", "fallback") == "fallback")
+    assert(not settings.has("theme"))
+    assert(not try settings.load())
+
+func appsettings_round_trips_typed_values(path: str) -> !:
+    try remove(path)
+    var settings = try prism.AppSettings(path)
+    defer settings.close()
+    let width = try prism.Value.integer(1280)
+    defer width.release()
+    let theme = try prism.Value.text("pastel")
+    defer theme.release()
+    let wrap = try prism.Value.boolean(true)
+    defer wrap.release()
+    let scale = try prism.Value.number(1.25)
+    defer scale.release()
+    try settings.set("window_w", width)
+    try settings.set("theme", theme)
+    try settings.set("wrap", wrap)
+    try settings.set("ui_scale", scale)
+    try settings.save()
+    var back = try prism.AppSettings(path)
+    defer back.close()
+    assert(back.has("theme") and try back.get_string("theme") == "pastel")
+    assert(try back.get_integer("window_w") == 1280)
+    assert(try back.get_boolean("wrap"))
+    assert(try back.get_number("ui_scale") == 1.25)
+    assert(try back.get_number("theme", 7.0) == 7.0)
+
+func appsettings_set_overwrites_and_remove_deletes(path: str) -> !:
+    try remove(path)
+    var settings = try prism.AppSettings(path)
+    defer settings.close()
+    let first = try prism.Value.text("cortex")
+    defer first.release()
+    let second = try prism.Value.text("light")
+    defer second.release()
+    try settings.set("theme", first)
+    try settings.set("theme", second)
+    assert(try settings.get_string("theme") == "light")
+    try settings.remove("theme")
+    assert(not settings.has("theme") and try settings.get_string("theme", "fallback") == "fallback")
+
+func appsettings_string_list_round_trips(path: str) -> !:
+    try remove(path)
+    var settings = try prism.AppSettings(path)
+    defer settings.close()
+    let names: str[3] = ["alpha", "beta", "gamma"]
+    try settings.set_string_list("tags", names)
+    try settings.save()
+    var back = try prism.AppSettings(path)
+    defer back.close()
+    let tags = try back.string_list("tags")
+    defer tags.release()
+    assert(tags.value().count() == 3 and try tags.value().at(0) == "alpha" and try tags.value().at(2) == "gamma")
+    let absent = try back.string_list("missing")
+    defer absent.release()
+    assert(absent.value().count() == 0)
+
+func appsettings_recent_files_promote_cap_and_drop_missing(path: str, a: str, b: str, gone: str) -> !:
+    try remove(path)
+    try remove(gone)
+    try prism.write_durable(a, b"a")
+    try prism.write_durable(b, b"b")
+    var settings = try prism.AppSettings(path)
+    defer settings.close()
+    try settings.add_recent_file(a)
+    try settings.add_recent_file(gone)
+    try settings.add_recent_file(b)
+    try settings.add_recent_file(a)
+    try settings.save()
+    var back = try prism.AppSettings(path)
+    defer back.close()
+    let recent = try back.recent_files()
+    defer recent.release()
+    assert(recent.value().count() == 2 and try recent.value().at(0) == a and try recent.value().at(1) == b)
+    try back.add_recent_file(b, 1)
+    let capped = try back.recent_files(1)
+    defer capped.release()
+    assert(capped.value().count() == 1 and try capped.value().at(0) == b)
+    let empty = try back.recent_files(0)
+    defer empty.release()
+    assert(empty.value().count() == 0)
+
+func durable_write_lands_bytes_and_overwrites(path: str) -> !:
+    let bytes: u8[6] = [0, 255, 0, 10, 13, 128]
+    try prism.write_durable(path, bytes)
+    with memory.heap:
+        let name = try strings.copy(path)
+        defer strings.release(name)
+        let got = try files.read_limit((c.str)name, 100)
+        defer free(got) in memory.heap
+        assert(got.length == bytes.length)
+        for i in 0..<bytes.length:
+            assert(got[i] == bytes[i])
+    try prism.write_durable(path, b"new")
+    with memory.heap:
+        let name = try strings.copy(path)
+        defer strings.release(name)
+        let got = try files.read_limit((c.str)name, 100)
+        defer free(got) in memory.heap
+        assert((str)got == "new")
+
+func document_load_save_round_trip_by_extension(md: str, prisma: str) -> !:
+    try prism.write_durable(md, b"# Notes\n\n- one\n- two\n")
+    let doc = try prism.load(md)
+    defer doc.release()
+    assert(doc.value().contains("/document"))
+    try prism.save(doc, prisma)
+    let back = try prism.load(prisma)
+    defer back.release()
+    assert(try back.value().equals(doc))
+
+pub func run(directory: str) -> !:
+    var p: u8[4096]
+    var q: u8[4096]
+    var r: u8[4096]
+    var s: u8[4096]
+    let path = try format(p, f"{directory}/settings.prisma")
+    let a = try format(q, f"{directory}/recent-a.md")
+    let b = try format(r, f"{directory}/recent-b.prism")
+    let gone = try format(s, f"{directory}/missing.prism")
+    try appsettings_defaults_when_file_missing(path)
+    try appsettings_round_trips_typed_values(path)
+    try appsettings_set_overwrites_and_remove_deletes(path)
+    try appsettings_string_list_round_trips(path)
+    try appsettings_recent_files_promote_cap_and_drop_missing(path, a, b, gone)
+    try durable_write_lands_bytes_and_overwrites(b)
+    try document_load_save_round_trip_by_extension(a, path)
+    try remove(path)
+    try remove(a)
+    try remove(b)
+    print("PASS 5 legacy app-settings cases, durable writes and codec I/O by extension")

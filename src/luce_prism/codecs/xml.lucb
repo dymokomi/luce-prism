@@ -1,0 +1,183 @@
+## Shared entity decoding and markup tokens. SVG preserves case; HTML folds it.
+from luce_prism.storage import Buffer, List, Pair, pair, text_copy, close_pairs
+from luce_prism.codecs.common import utf8, whitespace, lower, find
+from luce_prism.types import invalid
+
+pub enum Kind as u8:
+    text = 0
+    open = 1
+    close = 2
+    empty = 3
+
+pub struct Token:
+    pub var kind: Kind
+    pub var name: Buffer
+    pub var attrs: List[Pair]
+    pub var text: Buffer
+    pub var start: usize
+    pub var end: usize
+
+    pub func attr(name: str) -> str?:
+        for item in self.attrs.span():
+            if item.key.view() == name:
+                return item.value.view()
+        return none
+
+    pub mutating func close():
+        self.name.close()
+        self.text.close()
+        close_pairs(&self.attrs)
+
+pub struct Tokens:
+    pub var values: List[Token]
+
+    pub mutating func close():
+        for i in 0..<self.values.count:
+            self.values.items[i].close()
+        self.values.close()
+
+pub func entities(text: str) -> Buffer!:
+    var output: Buffer
+    errdefer output.close()
+    var i: usize = 0
+    while i < text.length:
+        let end = find(text, ";", i + 1) if text.bytes[i] == '&' else none
+        if let semi = end:
+            if semi - i <= 10:
+                let name = (str)text.bytes[i + 1..<semi]
+                if name == "amp":
+                    try output.byte('&')
+                elif name == "lt":
+                    try output.byte('<')
+                elif name == "gt":
+                    try output.byte('>')
+                elif name == "quot":
+                    try output.byte('"')
+                elif name == "apos" or name == "#39":
+                    try output.byte('\'')
+                elif name.length > 0 and name.bytes[0] == '#':
+                    let hexadecimal = name.length > 1 and (name.bytes[1] == 'x' or name.bytes[1] == 'X')
+                    var cp: u32 = 0
+                    for k in (2 if hexadecimal else 1)..<name.length:
+                        let byte = name.bytes[k]
+                        var digit: u32 = 16
+                        if byte >= '0' and byte <= '9':
+                            digit = (u32)(byte - '0')
+                        elif hexadecimal and byte >= 'a' and byte <= 'f':
+                            digit = (u32)(byte - 'a' + 10)
+                        elif hexadecimal and byte >= 'A' and byte <= 'F':
+                            digit = (u32)(byte - 'A' + 10)
+                        if digit >= (16 if hexadecimal else 10):
+                            break
+                        cp = cp * (16 if hexadecimal else 10) + digit
+                    if cp > 0:
+                        try utf8(&output, cp)
+                    else:
+                        try output.put(text.bytes[i..<semi + 1])
+                else:
+                    try output.put(text.bytes[i..<semi + 1])
+                i = semi + 1
+                continue
+        try output.byte(text.bytes[i])
+        i += 1
+    return output
+
+pub func escape(output: Buffer*, text: str, attribute: bool = false) -> !:
+    for byte in text.bytes:
+        if byte == '&':
+            try output.text("&amp;")
+        elif byte == '<':
+            try output.text("&lt;")
+        elif byte == '>' and not attribute:
+            try output.text("&gt;")
+        elif byte == '"' and attribute:
+            try output.text("&quot;")
+        else:
+            try output.byte(byte)
+
+func html_name(byte: u8) -> bool:
+    return (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or (byte >= '0' and byte <= '9') or byte == '-'
+
+pub func tokenize(source: str, html: bool) -> Tokens!:
+    var output: Tokens
+    errdefer output.close()
+    var i: usize = 0
+    while i < source.length:
+        var token = Token(start = i)
+        defer token.close()
+        if source.bytes[i] != '<':
+            let start = i
+            while i < source.length and source.bytes[i] != '<':
+                i += 1
+            token.text = try entities((str)source.bytes[start..<i])
+        elif i + 1 < source.length and (source.bytes[i + 1] == '!' or (not html and source.bytes[i + 1] == '?')):
+            let end = find(source, ">", i) else break
+            i = end + 1
+            continue
+        else:
+            let closing = i + 1 < source.length and source.bytes[i + 1] == '/'
+            i += 2 if closing else 1
+            let start = i
+            while i < source.length:
+                let byte = source.bytes[i]
+                if (html and not html_name(byte)) or (not html and (whitespace(byte) or byte == '>' or byte == '/')):
+                    break
+                i += 1
+            let name = (str)source.bytes[start..<i]
+            token.name = try lower(name) if html else try text_copy(name)
+            var self_closing = false
+            while i < source.length and source.bytes[i] != '>':
+                while i < source.length and whitespace(source.bytes[i]):
+                    i += 1
+                if i == source.length or source.bytes[i] == '>':
+                    break
+                if source.bytes[i] == '/':
+                    self_closing = true
+                    i += 1
+                    continue
+                let attr_start = i
+                while i < source.length and source.bytes[i] != '=' and source.bytes[i] != '>' and not whitespace(source.bytes[i]) and (html or source.bytes[i] != '/'):
+                    i += 1
+                let attr_name = (str)source.bytes[attr_start..<i]
+                var key = try lower(attr_name) if html else try text_copy(attr_name)
+                defer key.close()
+                var value: Buffer
+                defer value.close()
+                while i < source.length and whitespace(source.bytes[i]):
+                    i += 1
+                if i < source.length and source.bytes[i] == '=':
+                    i += 1
+                    while i < source.length and whitespace(source.bytes[i]):
+                        i += 1
+                    let quote = source.bytes[i] if i < source.length else 0
+                    if quote == '"' or quote == '\'':
+                        i += 1
+                        let start_value = i
+                        while i < source.length and source.bytes[i] != quote:
+                            i += 1
+                        value = try entities((str)source.bytes[start_value..<i])
+                        if i < source.length:
+                            i += 1
+                    else:
+                        let start_value = i
+                        while i < source.length and source.bytes[i] != '>' and not whitespace(source.bytes[i]) and (html or source.bytes[i] != '/'):
+                            i += 1
+                        value = try entities((str)source.bytes[start_value..<i])
+                if key.used > 0:
+                    try token.attrs.push(Pair(key = key, value = value))
+                    key = Buffer()
+                    value = Buffer()
+                # Unlike the old tokenizer, malformed punctuation cannot stall.
+                if i == attr_start:
+                    i += 1
+            if i < source.length:
+                i += 1
+            elif not html:
+                error(invalid, "truncated XML tag")
+            let name_view = token.name.view()
+            let empty = self_closing or (html and (name_view == "br" or name_view == "hr" or name_view == "img"))
+            token.kind = Kind.close if closing else (Kind.empty if empty else Kind.open)
+        token.end = i
+        try output.values.push(token)
+        token = Token()
+    return output

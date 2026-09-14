@@ -28,9 +28,8 @@ page.set_metadata("/page/hero", "reference", "media.prism")
 page.set_metadata("/page/hero", "referencePath", "/image")
 ```
 
-The current text writer emits equivalent `string reference = "media.prism"` and
-`string referencePath = "/image"` declarations. Both spellings preserve the same
-binary records and work with the original C++ implementation.
+The writer emits the `reference` directive. The reader also accepts the legacy
+`string reference` and `string referencePath` metadata declarations.
 
 ## Loading external content
 
@@ -72,11 +71,17 @@ properties byte for byte against the expected document.
 In the legacy composition model, an explicit `referencePath` selects the subtree
 whose root becomes the referencing element. Local properties take precedence.
 When that key is omitted, the first top-level referenced element is selected.
-Recursive composition, default target selection, wildcard targets, cycle
-detection and automatic property fallback have not yet been ported to Luce.
-The example uses an explicit concrete target and loads it directly. `get` and
-`resolve` currently inspect the local authored document; they do not follow
-external references.
+Recursive composition, default target selection, wildcard targets and cycle
+handling are implemented by `ReferenceLibrary.compose(name)` and
+`compose_file(path)`. The latter resolves filenames relative to the referring
+file. Calling either is an explicit request to expand references; `get`,
+`resolve`, `load`, and `parse` themselves inspect only authored local data.
+
+For host-controlled resolution, construct `ReferenceLibrary()`, add each document
+with `add(name, document)`, then call `compose(name)`. Registration captures an
+independent snapshot. Missing documents or reference targets report an error;
+cyclic arcs follow the reference core's cycle-cut behavior. Composition returns a
+new document and leaves the authored source and its arcs available to the caller.
 
 A `.prism` external file may also use the legacy `PRSMZ` package encoding for
 `set_asset` attachments. `Document.load` detects the encoding from its magic;

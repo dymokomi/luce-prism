@@ -1,0 +1,209 @@
+## Deterministic Markdown rendering and the legacy HTML-only degradation rules.
+from luce_prism.codecs.common import get_text, get_number, type_of
+from luce_prism.storage import Buffer
+from luce_prism.model import DocumentData
+from luce_prism.types import invalid, limit_exceeded
+
+func repeat(output: Buffer*, byte: u8, count: usize) -> !:
+    if count > 1048576:
+        error(limit_exceeded, "Markdown repeat limit exceeded")
+    for i in 0..<count:
+        try output.byte(byte)
+
+func longest_run(text: str, byte: u8) -> usize:
+    var longest: usize = 0
+    var current: usize = 0
+    for c in text.bytes:
+        current = current + 1 if c == byte else 0
+        if current > longest:
+            longest = current
+    return longest
+
+func inline_content(doc: const DocumentData*, parent: str, output: Buffer*, depth: usize) -> !:
+    if depth > 128:
+        error(limit_exceeded, "Markdown emission depth exceeded")
+    var children = try doc.children(parent)
+    defer children.close()
+    for child in children.span():
+        let kind = type_of(doc, child)
+        if kind == "text":
+            for byte in get_text(doc, child, "text").bytes:
+                if byte == '\\' or byte == '`' or byte == '*' or byte == '_' or byte == '[' or byte == ']' or byte == '|':
+                    try output.byte('\\')
+                try output.byte(byte)
+        elif kind == "emphasis" or kind == "strong":
+            let delimiter = "*" if kind == "emphasis" else "**"
+            try output.text(delimiter)
+            try inline_content(doc, child, output, depth + 1)
+            try output.text(delimiter)
+        elif kind == "code":
+            let code = get_text(doc, child, "text")
+            let count = longest_run(code, '`') + 1
+            let padding = code.length > 0 and (code.bytes[0] == '`' or code.bytes[code.length - 1] == '`')
+            try repeat(output, '`', count)
+            if padding:
+                try output.byte(' ')
+            try output.text(code)
+            if padding:
+                try output.byte(' ')
+            try repeat(output, '`', count)
+        elif kind == "link" or kind == "image":
+            try output.text("![" if kind == "image" else "[")
+            if kind == "image":
+                try output.text(get_text(doc, child, "alt"))
+            else:
+                try inline_content(doc, child, output, depth + 1)
+            try output.text("](")
+            try output.text(get_text(doc, child, "src" if kind == "image" else "href"))
+            try output.byte(')')
+        elif kind == "linebreak":
+            try output.text("  \n")
+
+func escape_leads(output: Buffer*, text: str) -> !:
+    var start: usize = 0
+    for i in 0..=text.length:
+        if i != text.length and text.bytes[i] != '\n':
+            continue
+        var first = start
+        while first < i and text.bytes[first] == ' ':
+            first += 1
+        var escape: usize? = none
+        if first < i:
+            let byte = text.bytes[first]
+            if byte == '#' or byte == '>' or byte == '-' or byte == '+' or byte == '~':
+                escape = first
+            else:
+                var digits = first
+                while digits < i and text.bytes[digits] >= '0' and text.bytes[digits] <= '9':
+                    digits += 1
+                if digits > first and digits < i and (text.bytes[digits] == '.' or text.bytes[digits] == ')'):
+                    escape = digits
+        if let index = escape:
+            try output.put(text.bytes[start..<index])
+            try output.byte('\\')
+            try output.put(text.bytes[index..<i])
+        else:
+            try output.put(text.bytes[start..<i])
+        if i < text.length:
+            try output.byte('\n')
+        start = i + 1
+
+func prefix_lines(output: Buffer*, text: str, first: str, rest: str) -> !:
+    var start: usize = 0
+    var first_line = true
+    for i in 0..=text.length:
+        if i != text.length and text.bytes[i] != '\n':
+            continue
+        if i == text.length and start == i:
+            break
+        try output.text(first if first_line else rest)
+        try output.put(text.bytes[start..<i])
+        try output.byte('\n')
+        first_line = false
+        start = i + 1
+
+func blocks(doc: const DocumentData*, parent: str, output: Buffer*, depth: usize) -> !:
+    if depth > 128:
+        error(limit_exceeded, "Markdown emission depth exceeded")
+    var children = try doc.children(parent)
+    defer children.close()
+    for child in children.span():
+        let kind = type_of(doc, child)
+        if kind == "heading":
+            let level = get_number(doc, child, "level", 1.0)
+            try repeat(output, '#', (usize)(level if level >= 1.0 else 1.0))
+            try output.byte(' ')
+            try inline_content(doc, child, output, depth + 1)
+            try output.text("\n\n")
+        elif kind == "paragraph":
+            var content: Buffer
+            defer content.close()
+            try inline_content(doc, child, &content, depth + 1)
+            try escape_leads(output, content.view())
+            try output.text("\n\n")
+        elif kind == "thematicBreak":
+            try output.text("---\n\n")
+        elif kind == "codeblock":
+            let code = get_text(doc, child, "text")
+            let length = longest_run(code, '`') + 1
+            let count = length if length > 3 else 3
+            try repeat(output, '`', count)
+            try output.text(get_text(doc, child, "language"))
+            try output.byte('\n')
+            try output.text(code)
+            if code.length > 0 and code.bytes[code.length - 1] != '\n':
+                try output.byte('\n')
+            try repeat(output, '`', count)
+            try output.text("\n\n")
+        elif kind == "blockquote" or kind == "note":
+            var content: Buffer
+            defer content.close()
+            try blocks(doc, child, &content, depth + 1)
+            try prefix_lines(output, content.view(), "> ", "> ")
+            try output.byte('\n')
+        elif kind == "list":
+            let ordered = get_number(doc, child, "ordered") != 0.0
+            var items = try doc.children(child)
+            defer items.close()
+            for i in 0..<items.count:
+                let number = i + 1
+                var scratch: u8[32]
+                let marker = try format(scratch, f"{number}. ") if ordered else "- "
+                var spaces: Buffer
+                defer spaces.close()
+                try repeat(&spaces, ' ', marker.length)
+                var content: Buffer
+                defer content.close()
+                try blocks(doc, items.items[i], &content, depth + 1)
+                try prefix_lines(output, content.view(), marker, spaces.view())
+            try output.byte('\n')
+        elif kind == "table":
+            var rows = try doc.children(child)
+            defer rows.close()
+            for i in 0..<rows.count:
+                var cells = try doc.children(rows.items[i])
+                defer cells.close()
+                try output.byte('|')
+                for cell in cells.span():
+                    try output.byte(' ')
+                    try inline_content(doc, cell, output, depth + 1)
+                    try output.text(" |")
+                try output.byte('\n')
+                if i == 0:
+                    try output.byte('|')
+                    for k in 0..<cells.count:
+                        try output.text(" --- |")
+                    try output.byte('\n')
+            try output.byte('\n')
+        elif kind == "definitionList":
+            var items = try doc.children(child)
+            defer items.close()
+            for entry in items.span():
+                if type_of(doc, entry) == "term":
+                    try output.text("**")
+                    try inline_content(doc, entry, output, depth + 1)
+                    try output.text("**\n\n")
+                elif type_of(doc, entry) == "definition":
+                    try blocks(doc, entry, output, depth + 1)
+        elif kind == "figure":
+            try blocks(doc, child, output, depth + 1)
+        elif kind == "caption":
+            try output.byte('*')
+            try inline_content(doc, child, output, depth + 1)
+            try output.text("*\n\n")
+        elif kind == "rawHtml":
+            let text = get_text(doc, child, "text")
+            try output.text(text)
+            if text.length > 0 and text.bytes[text.length - 1] != '\n':
+                try output.byte('\n')
+            try output.byte('\n')
+
+pub func encode(doc: const DocumentData*) -> Buffer!:
+    if type_of(doc, "/document") != "document":
+        error(invalid, "Markdown requires the structured-document model")
+    var output: Buffer
+    errdefer output.close()
+    try blocks(doc, "/document", &output, 0)
+    while output.used >= 2 and output.data[output.used - 1] == '\n' and output.data[output.used - 2] == '\n':
+        output.used -= 1
+    return output

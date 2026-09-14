@@ -1,0 +1,106 @@
+## Query results own selected rows, so later document edits cannot invalidate them.
+import interop
+import memory
+from luce_prism.model import Element, DocumentData
+from luce_prism.document import Document, own_document
+from luce_prism.value import Value, own_value
+from luce_prism.animation import resolve_property
+from luce_prism.storage import List, find_pair
+from luce_prism.types import invalid, missing
+
+pub struct Row:
+    var data: Element
+
+    pub func init():
+        return
+
+    pub func view_data() -> const Element*:
+        return &self.data
+
+    pub func path() -> str:
+        return self.data.path.view()
+
+    pub func type_name() -> str:
+        return self.data.kind.view()
+
+    pub func has_property(name: str) -> bool:
+        return self.data.property(name) != none
+
+    pub func get(name: str) -> interop.Reference[Value]!:
+        let index = self.data.property(name) else error(missing, "row property is absent")
+        return try own_value(try resolve_property(&self.data.properties.items[index], 0.0))
+
+    pub func metadata(name: str) -> str!:
+        return find_pair(&self.data.metadata, name) else error(missing, "row metadata is absent")
+
+    pub mutating func close():
+        self.data.close()
+
+pub let row_type = interop.Type[Row]("Prism query row", Row.close, closeable = true)
+
+pub func copy_row(element: const Element*) -> interop.Reference[Row]!:
+    let native = try new Row() in memory.heap
+    native.data = element.copy() catch failure:
+        free(native) in memory.heap
+        error(failure.code, failure.message)
+    return try interop.Reference[Row].adopt(native, row_type, memory.heap)
+
+pub struct Selection:
+    var rows: List[Element]
+
+    pub func init():
+        return
+
+    pub func view_data() -> const List[Element]*:
+        return &self.rows
+
+    pub mutating func append(element: const Element*) -> !:
+        var copy = try element.copy()
+        errdefer copy.close()
+        try self.rows.push(copy)
+
+    pub func count() -> usize:
+        return self.rows.count
+
+    func at(index: usize) -> const Element*!:
+        if index >= self.rows.count:
+            error(invalid, "selection row index is out of bounds")
+        return &self.rows.items[index]
+
+    pub func path_at(index: usize) -> str!:
+        return (try self.at(index)).path.view()
+
+    pub func type_at(index: usize) -> str!:
+        return (try self.at(index)).kind.view()
+
+    pub func row(index: usize) -> interop.Reference[Row]!:
+        return try copy_row(try self.at(index))
+
+    pub func get(index: usize, name: str) -> interop.Reference[Value]!:
+        let element = try self.at(index)
+        let position = element.property(name) else error(missing, "selected row property is absent")
+        return try own_value(try resolve_property(&element.properties.items[position], 0.0))
+
+    pub func document() -> interop.Reference[Document]!:
+        var doc = DocumentData()
+        errdefer doc.close()
+        for element in self.rows.span():
+            try doc.insert_copy(&element)
+        let owned = doc
+        doc = DocumentData()
+        return try own_document(owned)
+
+    pub mutating func close():
+        for i in 0..<self.rows.count:
+            self.rows.items[i].close()
+        self.rows.close()
+
+pub let selection_type = interop.Type[Selection]("Prism selection", Selection.close, closeable = true)
+
+pub func own_selection(selection: Selection) -> interop.Reference[Selection]!:
+    var owned = selection
+    let native = new Selection() in memory.heap catch failure:
+        owned.close()
+        error(failure.code, failure.message)
+    native.rows = owned.rows
+    return try interop.Reference[Selection].adopt(native, selection_type, memory.heap)

@@ -1,0 +1,94 @@
+## Exact scalar identity shared by predicates, joins, indexes and schema checks.
+import strings
+import math
+import memory
+from luce_prism.value import ValueData, floating, equal_values
+from luce_prism.storage import Buffer, Reader, text_copy, less
+from luce_prism.types import DType
+
+pub struct Integer:
+    pub var negative: bool
+    pub var magnitude: u64
+
+func signed(value: i64) -> Integer:
+    var number = value
+    let bits = memory.read[u64](&number)
+    return Integer(negative = value < 0, magnitude = (~bits) + 1 if value < 0 else bits)
+
+pub func integer(value: const ValueData*) -> Integer?:
+    if value.shape.count != 0 or value.kind == DType.string:
+        return none
+    if value.kind == DType.boolean:
+        return Integer(magnitude = 1 if value.bits(0) != 0 else 0)
+    if value.kind == DType.character or value.kind == DType.int8 or value.kind == DType.int16 or value.kind == DType.int32 or value.kind == DType.int64:
+        return signed(value.signed(0))
+    if not floating(value.kind):
+        return Integer(magnitude = value.bits(0))
+    let number = value.number(0) catch failure: return none
+    if not math.is_finite(number) or math.floor(number) != number:
+        return none
+    if number >= 0.0 and number < 18446744073709551616.0:
+        return Integer(magnitude = (u64)number)
+    if number < 0.0 and number >= -9223372036854775808.0:
+        return signed((i64)number)
+    return none
+
+pub func numeric(value: const ValueData*) -> f64?:
+    if value.shape.count != 0 or value.kind == DType.string:
+        return none
+    if value.kind == DType.character:
+        return (f64)value.signed(0)
+    return value.number(0) catch failure: return none
+
+pub func string(value: const ValueData*) -> str?:
+    if value.shape.count != 0 or value.kind != DType.string:
+        return none
+    var reader = Reader(data = value.payload.bytes())
+    return reader.text() catch failure: return none
+
+pub func key(value: const ValueData*) -> Buffer?!:
+    if value.shape.count != 0:
+        return none
+    var output: Buffer
+    errdefer output.close()
+    if let text = string(value):
+        try output.text("s:")
+        try output.text(text)
+    elif let exact = integer(value):
+        try output.text("n:i-" if exact.negative else "n:i")
+        var scratch: u8[32]
+        try output.text(try strings.format_u64(exact.magnitude, scratch))
+    elif let number = numeric(value):
+        try output.text("n:f")
+        var scratch: u8[64]
+        try output.text(try strings.format_f64(number, scratch))
+    else:
+        return none
+    return output
+
+pub func equal(a: const ValueData*, b: const ValueData*) -> bool!:
+    if let left = try key(a):
+        var first = left
+        defer first.close()
+        if let right = try key(b):
+            var second = right
+            defer second.close()
+            return first.view() == second.view()
+    return equal_values(a, b)
+
+pub func compare(a: const ValueData*, b: const ValueData*) -> i32?:
+    if let left = integer(a):
+        if let right = integer(b):
+            if left.negative != right.negative:
+                return -1 if left.negative else 1
+            if left.magnitude == right.magnitude:
+                return 0
+            let before = left.magnitude > right.magnitude if left.negative else left.magnitude < right.magnitude
+            return -1 if before else 1
+    if let left = numeric(a):
+        if let right = numeric(b):
+            return -1 if left < right else (1 if left > right else 0)
+    if let left = string(a):
+        if let right = string(b):
+            return -1 if less(left, right) else (1 if less(right, left) else 0)
+    return none

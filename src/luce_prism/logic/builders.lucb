@@ -1,0 +1,59 @@
+## Canonical fact/rule elements; expressions are represented as atom children.
+from luce_prism.logic.atoms import AtomData, RuleKind
+from luce_prism.authoring.names import unique_path
+from luce_prism.model import DocumentData
+from luce_prism.storage import Buffer, List
+from luce_prism.path import joined
+from luce_prism.codecs.common import set_text, set_boolean
+
+func append(doc: DocumentData*, path: str, kind: str) -> !:
+    try doc.insert(path, kind)
+
+pub func build_atom(doc: DocumentData*, path: str, atom: const AtomData*, kind: str = "atom", tag: str = "") -> !:
+    try append(doc, path, kind)
+    try set_text(doc, path, "pred", atom.predicate.view())
+    if atom.negative:
+        try set_boolean(doc, path, "neg", true)
+    if tag.length > 0:
+        try set_text(doc, path, "tag", tag)
+    for i in 0..<atom.arguments.count:
+        let arg = &atom.arguments.items[i]
+        var scratch: u8[32]
+        var child = try joined(path, try format(scratch, f"[{i}]"))
+        defer child.close()
+        try append(doc, child.view(), "var" if arg.variable else "const")
+        try set_text(doc, child.view(), "name", arg.name.view())
+
+pub func add_fact(doc: DocumentData*, name: str, head: const AtomData*) -> !:
+    var requested = try joined("/", name)
+    defer requested.close()
+    var path = try unique_path(doc, requested.view())
+    defer path.close()
+    try append(doc, path.view(), "fact")
+    var child = try joined(path.view(), "head")
+    defer child.close()
+    try build_atom(doc, child.view(), head)
+
+pub func add_rule(doc: DocumentData*, name: str, kind: RuleKind, head: const AtomData*, body: const List[AtomData]*) -> !:
+    var requested = try joined("/", name)
+    defer requested.close()
+    var path = try unique_path(doc, requested.view())
+    defer path.close()
+    try append(doc, path.view(), "strict" if kind == RuleKind.strict else ("defeasible" if kind == RuleKind.defeasible else "defeater"))
+    var child = try joined(path.view(), "head")
+    defer child.close()
+    try build_atom(doc, child.view(), head)
+    for i in 0..<body.count:
+        var scratch: u8[32]
+        var body_path = try joined(path.view(), try format(scratch, f"[{i}]"))
+        defer body_path.close()
+        try build_atom(doc, body_path.view(), &body.items[i])
+
+pub func add_superiority(doc: DocumentData*, name: str, superior: str, inferior: str) -> !:
+    var requested = try joined("/", name)
+    defer requested.close()
+    var path = try unique_path(doc, requested.view())
+    defer path.close()
+    try append(doc, path.view(), "sup")
+    try set_text(doc, path.view(), "superior", superior)
+    try set_text(doc, path.view(), "inferior", inferior)

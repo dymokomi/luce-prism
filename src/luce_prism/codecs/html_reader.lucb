@@ -1,0 +1,271 @@
+## HTML imports into the shared structured-document vocabulary.
+import luce_prism.codecs.xml as xml
+from luce_prism.codecs.common import append, blank, whitespace, starts, set_text, set_integer, set_boolean
+from luce_prism.model import DocumentData
+from luce_prism.storage import Buffer
+from luce_prism.types import invalid, limit_exceeded
+
+func raw_tag(name: str) -> bool:
+    return name == "svg" or name == "math"
+
+func inline_tag(name: str) -> bool:
+    return name == "a" or name == "em" or name == "i" or name == "strong" or name == "b" or name == "code" or name == "br" or name == "img" or name == "span"
+
+func class_contains(token: const xml.Token*, name: str) -> bool:
+    let text = token.attr("class") else return false
+    var i: usize = 0
+    while i < text.length:
+        while i < text.length and whitespace(text.bytes[i]):
+            i += 1
+        let start = i
+        while i < text.length and not whitespace(text.bytes[i]):
+            i += 1
+        if (str)text.bytes[start..<i] == name:
+            return true
+    return false
+
+struct Parser:
+    var source: str
+    var tokens: const xml.Tokens*
+    var doc: DocumentData*
+    var position: usize
+
+    func at_close(name: str) -> bool:
+        if self.position == self.tokens.values.count:
+            return false
+        let token = &self.tokens.values.items[self.position]
+        return token.kind == xml.Kind.close and token.name.view() == name
+
+    mutating func inline_content(parent: str, close: str, depth: usize) -> !:
+        if depth > 128:
+            error(limit_exceeded, "HTML inline nesting exceeds 128")
+        while self.position < self.tokens.values.count:
+            let token = &self.tokens.values.items[self.position]
+            let name = token.name.view()
+            if token.kind == xml.Kind.close:
+                if name == close:
+                    self.position += 1
+                return
+            if token.kind == xml.Kind.text:
+                if token.text.used > 0:
+                    var child = try append(self.doc, parent, "text")
+                    defer child.close()
+                    try set_text(self.doc, child.view(), "text", token.text.view())
+                self.position += 1
+            elif token.kind == xml.Kind.empty:
+                if name == "br":
+                    var child = try append(self.doc, parent, "linebreak")
+                    child.close()
+                elif name == "img":
+                    var child = try append(self.doc, parent, "image")
+                    defer child.close()
+                    if let src = token.attr("src"):
+                        try set_text(self.doc, child.view(), "src", src)
+                    if let alt = token.attr("alt"):
+                        try set_text(self.doc, child.view(), "alt", alt)
+                self.position += 1
+            elif name == "em" or name == "i" or name == "strong" or name == "b" or name == "a":
+                let kind = "link" if name == "a" else ("emphasis" if name == "em" or name == "i" else "strong")
+                var child = try append(self.doc, parent, kind)
+                defer child.close()
+                if name == "a":
+                    if let href = token.attr("href"):
+                        try set_text(self.doc, child.view(), "href", href)
+                self.position += 1
+                try self.inline_content(child.view(), name, depth + 1)
+            elif name == "code":
+                self.position += 1
+                var code: Buffer
+                defer code.close()
+                while self.position < self.tokens.values.count and not self.at_close("code"):
+                    let part = &self.tokens.values.items[self.position]
+                    if part.kind == xml.Kind.text:
+                        try code.put(part.text.bytes())
+                    self.position += 1
+                if self.position < self.tokens.values.count:
+                    self.position += 1
+                var child = try append(self.doc, parent, "code")
+                defer child.close()
+                try set_text(self.doc, child.view(), "text", code.view())
+            else:
+                self.position += 1
+                try self.inline_content(parent, name, depth + 1)
+
+    mutating func pre(parent: str) -> !:
+        var language: str = ""
+        var code: Buffer
+        defer code.close()
+        while self.position < self.tokens.values.count and not self.at_close("pre"):
+            let token = &self.tokens.values.items[self.position]
+            if token.kind == xml.Kind.open and token.name.view() == "code":
+                if let classes = token.attr("class"):
+                    if starts(classes, "language-"):
+                        language = (str)classes.bytes[9..]
+            elif token.kind == xml.Kind.text:
+                try code.put(token.text.bytes())
+            self.position += 1
+        if self.position < self.tokens.values.count:
+            self.position += 1
+        if code.used > 0 and code.data[code.used - 1] == '\n':
+            code.used -= 1
+        var child = try append(self.doc, parent, "codeblock")
+        defer child.close()
+        try set_text(self.doc, child.view(), "language", language)
+        try set_text(self.doc, child.view(), "text", code.view())
+
+    mutating func raw(parent: str) -> !:
+        let first = &self.tokens.values.items[self.position]
+        let name = first.name.view()
+        let start = first.start
+        var end = first.end
+        var level: usize = 0
+        var closed = false
+        while self.position < self.tokens.values.count:
+            let token = &self.tokens.values.items[self.position]
+            self.position += 1
+            if token.name.view() != name:
+                continue
+            if token.kind == xml.Kind.open:
+                level += 1
+            elif token.kind == xml.Kind.close:
+                if level > 0:
+                    level -= 1
+                if level == 0:
+                    end = token.end
+                    closed = true
+                    break
+            elif token.kind == xml.Kind.empty and level == 0:
+                end = token.end
+                closed = true
+                break
+        if not closed:
+            error(invalid, "unterminated raw HTML island")
+        var child = try append(self.doc, parent, "rawHtml")
+        defer child.close()
+        try set_text(self.doc, child.view(), "text", (str)self.source.bytes[start..<end])
+
+    mutating func list(parent: str, name: str, depth: usize) -> !:
+        var child = try append(self.doc, parent, "definitionList" if name == "dl" else "list")
+        defer child.close()
+        if name != "dl":
+            try set_boolean(self.doc, child.view(), "ordered", name == "ol")
+        self.position += 1
+        while self.position < self.tokens.values.count and not self.at_close(name):
+            let token = &self.tokens.values.items[self.position]
+            let item_name = token.name.view()
+            self.position += 1
+            if token.kind != xml.Kind.open:
+                continue
+            if name != "dl" and item_name == "li":
+                var item = try append(self.doc, child.view(), "item")
+                defer item.close()
+                try self.blocks(item.view(), "li", depth + 1)
+            elif name == "dl" and (item_name == "dt" or item_name == "dd"):
+                var item = try append(self.doc, child.view(), "term" if item_name == "dt" else "definition")
+                defer item.close()
+                if item_name == "dt":
+                    try self.inline_content(item.view(), "dt", depth + 1)
+                else:
+                    try self.blocks(item.view(), "dd", depth + 1)
+        if self.position < self.tokens.values.count:
+            self.position += 1
+
+    mutating func table(parent: str, depth: usize) -> !:
+        var child = try append(self.doc, parent, "table")
+        defer child.close()
+        self.position += 1
+        while self.position < self.tokens.values.count and not self.at_close("table"):
+            let token = &self.tokens.values.items[self.position]
+            self.position += 1
+            if token.kind != xml.Kind.open or token.name.view() != "tr":
+                continue
+            var row = try append(self.doc, child.view(), "tablerow")
+            defer row.close()
+            var header = false
+            while self.position < self.tokens.values.count and not self.at_close("tr"):
+                let cell_token = &self.tokens.values.items[self.position]
+                let name = cell_token.name.view()
+                self.position += 1
+                if cell_token.kind == xml.Kind.open and (name == "td" or name == "th"):
+                    header = header or name == "th"
+                    var cell = try append(self.doc, row.view(), "tablecell")
+                    defer cell.close()
+                    try self.inline_content(cell.view(), name, depth + 1)
+            if self.position < self.tokens.values.count:
+                self.position += 1
+            if header:
+                try set_boolean(self.doc, row.view(), "header", true)
+        if self.position < self.tokens.values.count:
+            self.position += 1
+
+    mutating func blocks(parent: str, close: str, depth: usize) -> !:
+        if depth > 128:
+            error(limit_exceeded, "HTML block nesting exceeds 128")
+        while self.position < self.tokens.values.count:
+            let token = &self.tokens.values.items[self.position]
+            let name = token.name.view()
+            if token.kind == xml.Kind.close:
+                if name == close:
+                    self.position += 1
+                return
+            if token.kind == xml.Kind.text:
+                if blank(token.text.view()):
+                    self.position += 1
+                else:
+                    var child = try append(self.doc, parent, "paragraph")
+                    defer child.close()
+                    try self.inline_content(child.view(), "", depth + 1)
+            elif raw_tag(name):
+                try self.raw(parent)
+            elif token.kind == xml.Kind.empty:
+                if name == "hr":
+                    var child = try append(self.doc, parent, "thematicBreak")
+                    child.close()
+                    self.position += 1
+                else:
+                    var child = try append(self.doc, parent, "paragraph")
+                    defer child.close()
+                    try self.inline_content(child.view(), "", depth + 1)
+            elif name.length == 2 and name.bytes[0] == 'h' and name.bytes[1] >= '1' and name.bytes[1] <= '6':
+                var child = try append(self.doc, parent, "heading")
+                defer child.close()
+                try set_integer(self.doc, child.view(), "level", (i32)(name.bytes[1] - '0'))
+                if let id = token.attr("id"):
+                    try set_text(self.doc, child.view(), "id", id)
+                self.position += 1
+                try self.inline_content(child.view(), name, depth + 1)
+            elif name == "p" or name == "figcaption":
+                var child = try append(self.doc, parent, "paragraph" if name == "p" else "caption")
+                defer child.close()
+                self.position += 1
+                try self.inline_content(child.view(), name, depth + 1)
+            elif name == "ul" or name == "ol" or name == "dl":
+                try self.list(parent, name, depth)
+            elif name == "table":
+                try self.table(parent, depth)
+            elif name == "figure" or name == "blockquote" or (name == "div" and class_contains(token, "note")):
+                var child = try append(self.doc, parent, "note" if name == "div" else name)
+                defer child.close()
+                self.position += 1
+                try self.blocks(child.view(), name, depth + 1)
+            elif name == "pre":
+                self.position += 1
+                try self.pre(parent)
+            elif inline_tag(name):
+                var child = try append(self.doc, parent, "paragraph")
+                defer child.close()
+                try self.inline_content(child.view(), "", depth + 1)
+            else:
+                self.position += 1
+                try self.blocks(parent, name, depth + 1)
+
+pub func decode(bytes: const u8[]) -> DocumentData!:
+    let source = try str(bytes)
+    var tokens = try xml.tokenize(source, true)
+    defer tokens.close()
+    var doc = DocumentData()
+    errdefer doc.close()
+    try doc.add("/document", "document")
+    var parser = Parser(source = source, tokens = &tokens, doc = &doc)
+    try parser.blocks("/document", "", 0)
+    return doc

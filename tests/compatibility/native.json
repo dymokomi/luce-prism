@@ -1,0 +1,42 @@
+[
+  {
+    "name": "serialization-types",
+    "source": "#prisma 4.0\ndef object \"data\" {\n    bool b = true\n    char c = 'Q'\n    int8 i8 = -7\n    int16 i16 = -30000\n    int32 i32 = -2000000000\n    int64 i64 = 9007199254740993\n    uint8 u8 = 255\n    uint16 u16 = 65535\n    uint32 u32 = 4000000000\n    uint64 u64 = 18000000000000000000\n    float16 f16 = 1.5\n    float32 f32 = 1.5\n    float64 f64 = 3.141592653589793\n    float16[4] hm = [1,-2,0.5,0.25]\n    str str = \"hello\"\n    uint8[4] bytes = [1,2,3,250]\n    int32[2,3] mat_i32 = [[1,2,3],[4,5,6]]\n    float64[8,8] mat_f64 = [[1e-06,0.100001,0.200001,0.300001,0.400001,0.500001,0.6000010000000001,0.7000010000000001],[0.8000010000000001,0.900001,1.000001,1.100001,1.200001,1.300001,1.400001,1.500001],[1.600001,1.700001,1.800001,1.900001,2.000001,2.1000010000000002,2.2000010000000003,2.3000010000000004],[2.4000010000000005,2.500001,2.6000010000000002,2.7000010000000003,2.8000010000000004,2.9000010000000005,3.000001,3.1000010000000002],[3.2000010000000003,3.3000010000000004,3.4000010000000005,3.500001,3.6000010000000002,3.7000010000000003,3.8000010000000004,3.9000010000000005],[4.000001,4.100001000000001,4.200001,4.300001,4.4000010000000005,4.500001,4.600001000000001,4.700001],[4.800001000000001,4.9000010000000005,5.000001,5.100001000000001,5.200001,5.300001000000001,5.4000010000000005,5.500001],[5.600001000000001,5.700001,5.800001000000001,5.9000010000000005,6.000001,6.100001000000001,6.200001,6.300001000000001]]\n    str[3] strs = [\"a\",\"bb\",\"ccc\"]\n}\n",
+    "cpp_prism_sha256": "4804b526052ffe819f248d52c7900b805f46cfa5b446192bb760208a85b700ea"
+  },
+  {
+    "name": "serialization-scene",
+    "source": "#prisma 4.0\ndef group \"world\" {\n    def object \"sphere\" {\n        float2 position = (1.5,-2)\n        float rotation = 0.25\n        float2 scale = (2,3)\n        bool visible = true\n        int segments = 7\n        spectrum reflectance = [0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5]\n        float2 animPos = (0,0)\n        float2 animPos.timeSamples = { 0: (0,0), 24: (100,0) (interp = held) }\n    }\n    def material \"mat\" {\n        float ior = 1.5\n        string texturePath = \"brick.png\"\n        string label = \"a \\\"quoted\\\"\\ttab\\nnewline\"\n    }\n    def object \"mesh\" {\n        float2[] points = [(0,0),(1.5,-2),(3,0)]\n        int[] edges = [0,1,1,2,2,0]\n        float[] width = [0.1,0.25,0.5]\n    }\n}\nconnect </world/sphere.inMaterial> = </world/mat.out>\n",
+    "cpp_prism_sha256": "26db1244952ef2d52a43769b6c1b77ce07b0c235445e67573134e3ca36b35f68"
+  },
+  {
+    "name": "legacy-aliases",
+    "source": "#prisma 4.0\ndef \"d\" { vec4f v = [1,2,3,4] matrix4d m = [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]] color3f c = [0.9,0.1,0.1] point3f p = [1,2,3] }",
+    "cpp_prism_sha256": "8623899b33fab596ead2403c8043f1da3b57eb3b82f6efe888209116dadf87f9"
+  },
+  {
+    "name": "bezier-handles",
+    "source": "#prisma 4.0\ndef \"anim\" { float rot = 0 float rot.timeSamples = { 0: 0 (interp = bezier, handle = free, left = [2,9], right = [8,1]), 10: 6.28 (interp = bezier), 20: 0 (interp = held) } }",
+    "cpp_prism_sha256": "a37aabaffad5e235d1dd2a78f2368fb1dfe9b25069126199b6ded9c35868f327"
+  },
+  {
+    "name": "reference-and-wildcards",
+    "source": "#prisma 4.0\ndef \"a\" { reference \"missing.prism\" \"/parts/*\" } def \"b\" {} def \"m1\" {} def \"m2\" {} connect </*.x> = </m2.out> connect </a.x> = </m1.out>",
+    "cpp_prism_sha256": "16f68146ec4326c3da667bfacae76ab1e8f383bd28d699d2cecd965822b36162"
+  },
+  {
+    "name": "overlay-tombstones",
+    "source": "#prisma 4.0\ndef group \"world\" { def object \"sphere\" { float radius = 2 float radius.timeSamples = { 0: 2, 24: 5 } } over material \"mat\" { float gain = 0.5 string note = \"tweaked\" unset oldParam unset string oldNote } } connect </world/sphere.albedo> = </world/mat.out> delete \"/world/junk\" disconnect \"/world/sphere.radius\"",
+    "cpp_prism_sha256": "847eafffa511c8dae7c9f802af83697a49a4048cf90582520274d147426f0790"
+  },
+  {
+    "name": "arbitrary-keys",
+    "source": "#prisma 4.0\ndef \"data\" { int \"mat.beam.shape\" = 1 str \"0\" = \"metal\" string \"meta key\" = \"hello\" string \"ns.sub\" = \"value\" }",
+    "cpp_prism_sha256": "5bfad0e7a42d0b9a5e8bfcd9cfdb011d6971bb47546eeddcbba76cacab9a903d"
+  },
+  {
+    "name": "float32-roles",
+    "source": "#prisma 4.0\ndef \"data\" { matrix transform = (2,0,0,3,5,7) float[] values = [0.1,0.2,0.3,0.4] float2[] points = [(0,0),(1,1)] }",
+    "cpp_prism_sha256": "0f10321a47bbbf5967d77830eedfbab206ff60fb4b9b8fbcfb3bcc4832c056ae"
+  }
+]

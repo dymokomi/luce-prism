@@ -1,0 +1,52 @@
+## Concrete foreign-boundary carriers for the generic Base evaluation cache.
+import interop
+import ownership
+from luce_prism.evaluation.cache import EvalCache, EvalKey
+from luce_prism.document import Document
+from luce_prism.value import Value
+
+pub struct ValueCache:
+    var data: EvalCache[Value]
+
+    pub func init():
+        return
+
+    pub func valid(key: EvalKey) -> bool:
+        return self.data.valid(key)
+
+    pub mutating func invalidate():
+        self.data.invalidate()
+
+    pub mutating func evaluate(key: EvalKey, producer: interop.Callback[EvalKey, interop.Reference[Value]]) -> interop.Reference[Value]!:
+        return try self.data.evaluate(key, producer)
+
+    pub func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        self.data.trace(visit, context)
+
+    pub mutating func close():
+        self.data.close()
+
+pub let value_cache_type = interop.Type[ValueCache]("Prism value cache", ValueCache.close, ValueCache.trace, closeable = true)
+
+pub struct DocumentCache:
+    var data: EvalCache[Document]
+
+    pub func init():
+        return
+
+    pub func valid(key: EvalKey) -> bool:
+        return self.data.valid(key)
+
+    pub mutating func invalidate():
+        self.data.invalidate()
+
+    pub mutating func evaluate(key: EvalKey, producer: interop.Callback[EvalKey, interop.Reference[Document]]) -> interop.Reference[Document]!:
+        return try self.data.evaluate(key, producer)
+
+    pub func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        self.data.trace(visit, context)
+
+    pub mutating func close():
+        self.data.close()
+
+pub let document_cache_type = interop.Type[DocumentCache]("Prism document cache", DocumentCache.close, DocumentCache.trace, closeable = true)

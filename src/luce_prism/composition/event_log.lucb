@@ -1,0 +1,110 @@
+## Monotonic commits, retained replay, catch-up deltas and history compaction.
+import interop
+import memory
+import luce_prism.composition.layers as composition
+from luce_prism.model import DocumentData
+from luce_prism.document import Document, own_document
+from luce_prism.storage import List
+from luce_prism.types import invalid, limit_exceeded
+
+pub struct Changes:
+    var layers: List[DocumentData]
+
+    pub func init():
+        return
+
+    pub func count() -> usize:
+        return self.layers.count
+
+    pub func at(index: usize) -> interop.Reference[Document]!:
+        if index >= self.layers.count:
+            error(invalid, "Prism change index is out of bounds")
+        return try own_document(try self.layers.items[index].copy())
+
+    pub mutating func close():
+        for i in 0..<self.layers.count:
+            self.layers.items[i].close()
+        self.layers.close()
+
+pub let changes_type = interop.Type[Changes]("Prism changes", Changes.close, closeable = true)
+
+pub struct EventLog:
+    var base: DocumentData
+    var current: DocumentData
+    var history: Changes
+    var offset: usize
+
+    pub func init(base: interop.Reference[Document]) -> !:
+        var first = try (try base.get()).view_data().copy()
+        errdefer first.close()
+        let second = try first.copy()
+        self.base = first
+        self.current = second
+        self.history = Changes()
+        self.offset = 0
+
+    pub func head_offset() -> usize:
+        return self.offset + self.history.layers.count
+
+    pub func earliest_offset() -> usize:
+        return self.offset
+
+    pub func layer_count() -> usize:
+        return self.history.layers.count
+
+    pub func head() -> interop.Reference[Document]!:
+        return try own_document(try self.current.copy())
+
+    pub mutating func commit(next: interop.Reference[Document]) -> usize!:
+        let count = self.head_offset() +? 1 else error(limit_exceeded, "Prism event offset overflow")
+        var current = try (try next.get()).view_data().copy()
+        errdefer current.close()
+        var layer = try composition.diff(&self.current, &current)
+        errdefer layer.close()
+        try self.history.layers.push(layer)
+        self.current.close()
+        self.current = current
+        return count
+
+    func retained(offset: usize) -> usize!:
+        if offset < self.offset:
+            error(invalid, "Prism history was compacted; obtain a new snapshot")
+        let count = offset - self.offset
+        return count if count < self.history.layers.count else self.history.layers.count
+
+    pub func at(offset: usize) -> interop.Reference[Document]!:
+        let count = try self.retained(offset)
+        return try own_document(try composition.overlay(&self.base, self.history.layers.span()[..<count]))
+
+    pub func since(offset: usize) -> interop.Reference[Changes]!:
+        let start = try self.retained(offset)
+        var changes = Changes()
+        errdefer changes.close()
+        try changes.layers.reserve(self.history.layers.count - start)
+        for layer in self.history.layers.span()[start..]:
+            try changes.layers.push(try layer.copy())
+        let owned = try new Changes() in memory.heap
+        owned[0] = changes
+        changes = Changes()
+        return try interop.Reference[Changes].adopt(owned, changes_type, memory.heap)
+
+    pub mutating func compact(keep: usize) -> !:
+        if keep >= self.history.layers.count:
+            return
+        let folded = self.history.layers.count - keep
+        var base = try composition.overlay(&self.base, self.history.layers.span()[..<folded])
+        self.base.close()
+        self.base = base
+        for i in 0..<folded:
+            self.history.layers.items[i].close()
+        for i in 0..<keep:
+            self.history.layers.items[i] = self.history.layers.items[i + folded]
+        self.history.layers.count = keep
+        self.offset += folded
+
+    pub mutating func close():
+        self.base.close()
+        self.current.close()
+        self.history.close()
+
+pub let event_log_type = interop.Type[EventLog]("Prism event log", EventLog.close, closeable = true)

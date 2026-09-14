@@ -1,0 +1,656 @@
+[
+  {
+    "name": "html_decodes_into_the_shared_model",
+    "codec": "html",
+    "source": "<h2>Title</h2><p>A <em>para</em> with <code>x</code> and <a href=\"u\">link</a>.</p><ul><li>one</li><li>two</li></ul>",
+    "cpp_prism_sha256": "b474cc5a31cd8d9841b160bf9fab43080a8af1e9134c233d00b7278a96a7f018",
+    "cpp_encoded_sha256": {
+      "markdown": "60c1443a1e0554b1c07bbb3e6257ea8e8293d3ba1e66ab7344e05fe810ff9f46",
+      "html": "20ca57edbd23c6e6db6489cc0c80fde120f5cf5f912380dee89f7d0f7c9adc74"
+    }
+  },
+  {
+    "name": "html_round_trip_is_stable",
+    "codec": "html",
+    "source": "<h1>H</h1><p>text <strong>bold</strong> <code>c</code></p><blockquote><p>quote</p></blockquote><pre><code>raw\ncode</code></pre><hr>",
+    "cpp_prism_sha256": "d922b0070f996d0aa242e643b418dfddc7193ad8577c17876d3ef0fe86181b0b",
+    "cpp_encoded_sha256": {
+      "markdown": "8ccbab6528fff8e27accda6c9b6cc041f718f42836207a601dba1e78a1bdd44d",
+      "html": "46c666c48c88df193aa6bfce5768b8260d05f555bb99f4f06e5fa40eed0b84db"
+    }
+  },
+  {
+    "name": "html_heading_id_round_trips",
+    "codec": "html",
+    "source": "<h2 id=\"model\">The mental model</h2>",
+    "cpp_prism_sha256": "202072c0c351f5a40df157eb55dff445a61f8093419ed4f0449b3d77c930dc06",
+    "cpp_encoded_sha256": {
+      "markdown": "1ac07a01e60d316083780dc8f180d2ac0ae7e83dc1e2b95bf93f4a1bc80ada18",
+      "html": "35113a79f9dd83f0bafe9a0d162a2705c474c2d63f629d80acada6172ce47135"
+    }
+  },
+  {
+    "name": "html_definition_list_round_trips",
+    "codec": "html",
+    "source": "<dl><dt>Document</dt><dd>The source of truth.</dd><dt>Element</dt><dd>A node in the tree.</dd></dl>",
+    "cpp_prism_sha256": "66e72345c1309f9c91525dc15d5136f5b57a07ad0859a37f2ecb3fd3d6ec3e40",
+    "cpp_encoded_sha256": {
+      "markdown": "1e703477a9c4644494db0f1875c864d3bf52a13a504d70d7976f98f1f47390e6",
+      "html": "8a35efab77e79ede3ccc8d4afdfabcf064cae0b0134d85b8e85d955e1b14a3ef"
+    }
+  },
+  {
+    "name": "html_note_round_trips",
+    "codec": "html",
+    "source": "<div class=\"note\"><p>Heads up about <code>bake()</code>.</p></div>",
+    "cpp_prism_sha256": "602a03ba3a4acf8c86953dc23a9892e814a7176f738a2471df94cefae3e903c3",
+    "cpp_encoded_sha256": {
+      "markdown": "9fee1ff950d7722af34b33e4fafb424a95305948954c14601c0899c96c190ca3",
+      "html": "bd35c62a639f23cec8e6d0b5ff88e0491bee193c1bac423abc0e26caa4c9a55e"
+    }
+  },
+  {
+    "name": "html_figure_with_svg_island_round_trips",
+    "codec": "html",
+    "source": "<figure><svg viewBox=\"0 0 10 10\"><rect x=\"1\"/><text>/circle</text></svg><figcaption>One element's output feeds the next.</figcaption></figure>",
+    "cpp_prism_sha256": "1d46a287702c2eb0fa9c890cf755c73714205d89a63ac1cd91d5227a3e9030f3",
+    "cpp_encoded_sha256": {
+      "markdown": "bad19959fa21abf67dd0d625aefa02121d59d8b384a292b61710cf0cd10df319",
+      "html": "73ba3a013dd1c4e8394f0c66717c2e21fcd4976ef16c5dc72cbb054f06910365"
+    }
+  },
+  {
+    "name": "html_malformed_input_is_defined",
+    "codec": "html",
+    "source": "<p>hello",
+    "stable": false,
+    "cpp_prism_sha256": "11e6ae1d89f0bae17af88ad90844d05d5c0dd0248b545d87a257e167853229b9",
+    "cpp_encoded_sha256": {
+      "markdown": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03",
+      "html": "ebd124fc4e4c92f8d1d08886925f12ece8727c21f05a54fd8a020cc8c86ab669"
+    }
+  },
+  {
+    "name": "html_malformed_input_is_defined",
+    "codec": "html",
+    "source": "plain text </close> more",
+    "stable": false,
+    "cpp_prism_sha256": "1bad0f06f3762904134262e8bd1c94e39ca54277fd320cf0746603e187f7e1f0",
+    "cpp_encoded_sha256": {
+      "markdown": "2a09b9cdca8881936ff8e50a6c75a46adff58ee3cadf91a889852c2ca6adb225",
+      "html": "276a920c9b533c5a38432a2e91c2ea030312ac6b2a982cd64c9151e510eaf3a3"
+    }
+  },
+  {
+    "name": "html_malformed_input_is_defined",
+    "codec": "html",
+    "source": "<p>a <b>bold",
+    "stable": false,
+    "cpp_prism_sha256": "adfd2f6aff601c151e9fbb0012ab7420714309d46d55de90a9d65d9afe1426cc",
+    "cpp_encoded_sha256": {
+      "markdown": "361422cdfc9c10c4cb457326601a1449dde3b2af8a215452d96bf120ce43f26d",
+      "html": "256c595c0123286b4c8d874e16b6cbe64ab904277e00faceda5077450f70bf4b"
+    }
+  },
+  {
+    "name": "html_malformed_input_is_defined",
+    "codec": "html",
+    "source": "<ul><li>one<li>two</ul>",
+    "stable": false,
+    "cpp_prism_sha256": "556232e4e774f519e6ac11ca295ac6004ffa2c85192f907281f06645e85c5f03",
+    "cpp_encoded_sha256": {
+      "markdown": "446b1098dd6e7c15819e07221b057587f07b8fb117584d0c8b45a1cfa5092b71",
+      "html": "21d4c11ce0868a6ebb04bdc58c430b321d0267baeac389a289cf9685da008e86"
+    }
+  },
+  {
+    "name": "html_malformed_input_is_defined",
+    "codec": "html",
+    "source": "<<<>>><<",
+    "stable": false,
+    "cpp_prism_sha256": "0690c40d00b2af1a5e2c02510c0f6b35c45dd85c7aea793a12660bd571ecf07b",
+    "cpp_encoded_sha256": {
+      "markdown": "7930f12c434e71ad8252ea7e7f4465fda5b3178c6b9df8b6e2dc5180fa205cb6",
+      "html": "d59a61d6e6432b46cd7a2ee733315258ff9eb0ea16f5bfb9a12f2478b067ec55"
+    }
+  },
+  {
+    "name": "html_malformed_input_is_defined",
+    "codec": "html",
+    "source": "<!-- comment with no end",
+    "stable": false,
+    "cpp_prism_sha256": "913f2378a0d0f276e0329f852eb14bc633d5f370612a8dc227446de3f5cda3c5",
+    "cpp_encoded_sha256": {
+      "markdown": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "html": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  {
+    "name": "html_malformed_input_is_defined",
+    "codec": "html",
+    "source": "<p attr=\"unterminated value>x</p>",
+    "stable": false,
+    "cpp_prism_sha256": "4c85f8aa17f896db520b5d43e0300b71cc31815e9ad7b021ecfa0683181b01e5",
+    "cpp_encoded_sha256": {
+      "markdown": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+      "html": "f87324480b6f162c1907fa83cf9ed96fbd72b1156b7439ceafc95f0e5fa10636"
+    }
+  },
+  {
+    "name": "html_malformed_input_is_defined",
+    "codec": "html",
+    "source": "<p>x</p><svg><rect/>",
+    "reject": true
+  },
+  {
+    "name": "html_malformed_input_is_defined",
+    "codec": "html",
+    "source": "<math><mi>x</mi>",
+    "reject": true
+  },
+  {
+    "name": "html_entity_and_utf8_edge_cases",
+    "codec": "html",
+    "source": "<p>&gt; &quot;q&quot; a&apos;b &#65; &#x42; &nope; café</p>",
+    "cpp_prism_sha256": "8017600bed30743908e205d96f8a5d9daa0bbdbc568fe9f22e60f4fa5f0b4526",
+    "cpp_encoded_sha256": {
+      "markdown": "ca873b7bf277fe8465a9350a8dcf948e290868ffeee73152ee3846d2859cf00b",
+      "html": "e63909bfdd52711583b550064223db4024682092533db971f7e7808fb1aed21a"
+    }
+  },
+  {
+    "name": "markdown_and_its_html_share_one_model",
+    "codec": "markdown",
+    "source": "# Heading\n\nA paragraph with **bold**, *italic*, `code`, and [a link](http://x).\n\n- alpha\n- beta\n\n> a quote\n",
+    "shared_model": true,
+    "cpp_prism_sha256": "160f49deca907da038c30b5fa858f8a582096399f9fc50d6a70cddb0c7fcc977",
+    "cpp_encoded_sha256": {
+      "markdown": "78fb0d3329f7bf49870163964186de9cec1fbbb643f1264f59c37d5e9f49731d",
+      "html": "ee07819d3b4c2ab63f8f47aeaa36826f1d4e547037e4efafb19969f84b145335"
+    }
+  },
+  {
+    "name": "markdown_decodes_into_the_shared_model",
+    "codec": "markdown",
+    "source": "# Title\n\nA *para* with `code` and [text](http://x).\n\n- one\n- two\n",
+    "cpp_prism_sha256": "44c885ddf7b3be1aa44465f924e69c2b8e084bd1e70a2107d0b3021cd9ff613a",
+    "cpp_encoded_sha256": {
+      "markdown": "347951bc24becf7c0d5131b8f36f6b8ecd228454f55b95faf7548eebcb08054b",
+      "html": "dff48cb01704d408537f175745706448147f99684517c37a5f46a9c528485008"
+    }
+  },
+  {
+    "name": "markdown_handles_code_blocks_and_blockquotes",
+    "codec": "markdown",
+    "source": "```python\nprint(1)\nprint(2)\n```\n\n> quoted\n> more\n",
+    "stable": false,
+    "cpp_prism_sha256": "cc2d806d0498e7a4af0fd48fa49f537a199cbf86865accb86d17de85050d097e",
+    "cpp_encoded_sha256": {
+      "markdown": "3ff6a7864a7bd5fca8d43522898522c354aa96650205065d862c8314656a9593",
+      "html": "b33d20dcde5794bfaaad9623c6c2f858577e8ec68f408c187608c5cc9db316d6"
+    }
+  },
+  {
+    "name": "markdown_code_block_with_backticks_round_trips",
+    "codec": "markdown",
+    "source": "````\n```\nnested fence inside\n```\n````\n",
+    "cpp_prism_sha256": "9651978f01762e29974dccfcb373e26541fbd726ea97e3b73137851218207fba",
+    "cpp_encoded_sha256": {
+      "markdown": "0d1e2af13564e6d284900ee41ae48cc9c363d9c18e790c20a72c74a049f00443",
+      "html": "113d584ac2736da18b2a36ccdd2e048a1cff1e6ab25876fdbed7f7e6701688d6"
+    }
+  },
+  {
+    "name": "markdown_nested_lists_parse_and_round_trip",
+    "codec": "markdown",
+    "source": "- a\n  - b\n  - c\n- d\n",
+    "cpp_prism_sha256": "92a0114fee8734af72ae194c15530d363a0922d93368c938b6207e0d0db0252f",
+    "cpp_encoded_sha256": {
+      "markdown": "867011af13aad8ec6c7d255b407b2b0e39908beb6ddfe95f796212b744fb4a3e",
+      "html": "8651a938198ed358156becca774781a7c06cf59bf5819adbfc312a465b134c97"
+    }
+  },
+  {
+    "name": "markdown_malformed_input_is_defined",
+    "codec": "markdown",
+    "source": "```python\nprint(1)\nno closing fence\n",
+    "reject": true
+  },
+  {
+    "name": "markdown_malformed_input_is_defined",
+    "codec": "markdown",
+    "source": "> a quote with no blank line\nstill going\n",
+    "stable": false,
+    "cpp_prism_sha256": "fdf9a5c750e0ed95b1d4df85e49dc4b203892932acc2cd8b5e10fe0cdf2153be",
+    "cpp_encoded_sha256": {
+      "markdown": "92f80e203c57bf7e156c45eb03c8e53935f6d563d0761047c1fd00d3a0206f87",
+      "html": "6e6887195b64ae565a60c1a7f62290a208f88260f7e7f88c127a975ce1a805e3"
+    }
+  },
+  {
+    "name": "markdown_malformed_input_is_defined",
+    "codec": "markdown",
+    "source": "- item\n   continued\n      deeper\n",
+    "stable": false,
+    "cpp_prism_sha256": "cc90a87c4408c733c6f82824e3dc0013e5ad47b8f7b687dc04ad0f811c8c3a61",
+    "cpp_encoded_sha256": {
+      "markdown": "f799ed0565707ac44b8cb413ce4d3984365ea2f5ae179063fd90a4044c73168b",
+      "html": "195d30b913910f52bb2de3fdba9fcab325bb8fecfd81d107a6e232c562af93d3"
+    }
+  },
+  {
+    "name": "markdown_malformed_input_is_defined",
+    "codec": "markdown",
+    "source": "[unclosed link](\n",
+    "stable": false,
+    "cpp_prism_sha256": "7820a6a32b4314e97b6cf1eb4ab47f3cf38973e9b83f18f264f0d83d0d0e5267",
+    "cpp_encoded_sha256": {
+      "markdown": "4fb2a88b91ece3e5ec301a027a63b5dea5c97799b054d46a029417d568c668ba",
+      "html": "713e26022466ca7399dda19d485934702ccea8a386f5ce7aa8ead11ea40288bf"
+    }
+  },
+  {
+    "name": "markdown_malformed_input_is_defined",
+    "codec": "markdown",
+    "source": "###### ####### too many hashes",
+    "stable": false,
+    "cpp_prism_sha256": "43dc6e700e340f315bd17c880773a1704ac34ab8727238b4f7dd18f024d676cb",
+    "cpp_encoded_sha256": {
+      "markdown": "14dea24e62f88fbfcb310e82e6c8a59e7ef8081b8de022f5fcd9b59b567e0963",
+      "html": "262b9071def01db99dab6eb4c80056ab10f03b88fdec7c0898ee1eae01c61156"
+    }
+  },
+  {
+    "name": "markdown_malformed_input_is_defined",
+    "codec": "markdown",
+    "source": "",
+    "stable": false,
+    "cpp_prism_sha256": "913f2378a0d0f276e0329f852eb14bc633d5f370612a8dc227446de3f5cda3c5",
+    "cpp_encoded_sha256": {
+      "markdown": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "html": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  {
+    "name": "markdown_degrades_doc_v1_constructs_as_documented",
+    "codec": "html",
+    "source": "<dl><dt>Document</dt><dd>The truth.</dd></dl>",
+    "cpp_prism_sha256": "fa4fbab05bfd0bc650d6fc87385cd9389e6f83d1d75f3e3d922e675f5e8ece34",
+    "cpp_encoded_sha256": {
+      "markdown": "90dec4ae5f61db61d8680804e0fddd16ce86560573bb384448db3a50e1ac1b0a",
+      "html": "c9964d969a5de2eabea3018c4119bbb80a75cc7235b8b61c92e00a2a6326a691"
+    }
+  },
+  {
+    "name": "markdown_degrades_doc_v1_constructs_as_documented",
+    "codec": "html",
+    "source": "<figure><figcaption>A caption.</figcaption></figure>",
+    "cpp_prism_sha256": "f4e622e36b169cd71f211ca903609037f4d5d5ca8c4e4dd0e091ce04fc3f23f6",
+    "cpp_encoded_sha256": {
+      "markdown": "fe05bc720ea1818b777d86cb324fe6a0c93617d38b4a6adbcc32fcf220d008a9",
+      "html": "5862f3aabd643e5efcbdafc121877b726e3ea65fb6942a128ffa06623103b573"
+    }
+  },
+  {
+    "name": "markdown_degrades_doc_v1_constructs_as_documented",
+    "codec": "html",
+    "source": "<div class=\"note\"><p>Heads up.</p></div>",
+    "cpp_prism_sha256": "97e46f94724c1255b9a1e2b41440e35576cfdb08a2091a7282e60cd3f1e0d29e",
+    "cpp_encoded_sha256": {
+      "markdown": "b873c493642f3728e8520a265c8b5479a518a3f60c30b95bd88bc1faf49334f9",
+      "html": "454c4bf0135dbcfc76da80f2d2b4bd4622d16e2b9c8c2e2459846272c60d05c0"
+    }
+  },
+  {
+    "name": "markdown_degrades_doc_v1_constructs_as_documented",
+    "codec": "html",
+    "source": "<svg><rect/></svg>",
+    "cpp_prism_sha256": "72902efee62bf783ca3c55e2ad1631af3307916cb8518e03f8a152eac377e760",
+    "cpp_encoded_sha256": {
+      "markdown": "cd925523dd406c0a2ed1c8c8d03bca2b91c1ad12f17b49ec5aa4fafd929241b2",
+      "html": "cd925523dd406c0a2ed1c8c8d03bca2b91c1ad12f17b49ec5aa4fafd929241b2"
+    }
+  },
+  {
+    "name": "markdown_round_trip_is_stable",
+    "codec": "markdown",
+    "source": "# Heading\n\nA paragraph with **bold** and *italic* and `code`.\n\n- alpha\n- beta\n\n1. first\n2. second\n\n> a quote\n\n```\nraw code\n```\n",
+    "cpp_prism_sha256": "80e7abf8e914e8fe7c452ab6eb818d60d3345cdd8b1b3bb2ffd489e6787f820a",
+    "cpp_encoded_sha256": {
+      "markdown": "94fe8d03f17b69bfda3d979842c45b384a1581ee6b2633815dce74f71024baf4",
+      "html": "cbf22cc86d1c501a20d2f0c6866aac4876bcd406916199a5371769c1a2fe791e"
+    }
+  },
+  {
+    "name": "markdown_encode_escapes_inline_syntax",
+    "codec": "html",
+    "source": "<p>price 3*4 and a_b and `tick` and [bracket] and a|pipe and a\\slash</p>",
+    "shared_model": true,
+    "cpp_prism_sha256": "f43c7d10012610821b0b1360abbb069e3790da6735f3d1cbdd72673cd76cc0c2",
+    "cpp_encoded_sha256": {
+      "markdown": "393c5e720ca06e8bb956229c72783b14ad7b638925e20ccfa0cb8dc8930a05c8",
+      "html": "10cbf22a3ecdd7d2a87d0b999dd8fad06cc32e54090a19e02b9a48d57abb866e"
+    }
+  },
+  {
+    "name": "markdown_encode_escapes_leading_block_markers",
+    "codec": "html",
+    "source": "<p># not a heading</p>",
+    "shared_model": true,
+    "cpp_prism_sha256": "2789a6dbcbfade4c50859d6137cded293ba50ffada2af2d223f3a58af12c346a",
+    "cpp_encoded_sha256": {
+      "markdown": "b4c7eca635934de3a841aa16f3d614dc198f47490be7e775dcdca8b20fd261fd",
+      "html": "5169f1da54e9a9f95278caef47455eeaf7d2c8b5e2186fabc4364c228ba76a63"
+    }
+  },
+  {
+    "name": "markdown_encode_escapes_leading_block_markers",
+    "codec": "html",
+    "source": "<p>> not a quote</p>",
+    "shared_model": true,
+    "cpp_prism_sha256": "9d8e8e5f429a04af3b3ca29328f67e4342bb573833590e4b17f068ab06e13c71",
+    "cpp_encoded_sha256": {
+      "markdown": "ecba7b2c6b72b6966d683e018bf4dd5045a1291cd321e261083acedc869d35ce",
+      "html": "ec515f3a28022e4d5398dedcb56ca6242ad4007bcabf7267bd00dfa33cc63406"
+    }
+  },
+  {
+    "name": "markdown_encode_escapes_leading_block_markers",
+    "codec": "html",
+    "source": "<p>- not a list</p>",
+    "shared_model": true,
+    "cpp_prism_sha256": "0df72b0d7a757bc2fb59e6c800a3dfd20b886bbb2010bb7aecca79f7196205e3",
+    "cpp_encoded_sha256": {
+      "markdown": "7f28792503733fe43f78bda6e70f58a83498655648002de15fba18c7946f61b4",
+      "html": "5372fe0c6056036a9e30f00b79d168fe13a16b9b435459bd8bb7c5820f9489e9"
+    }
+  },
+  {
+    "name": "markdown_encode_escapes_leading_block_markers",
+    "codec": "html",
+    "source": "<p>1. not ordered</p>",
+    "shared_model": true,
+    "cpp_prism_sha256": "632b38a8c655e2df2fd935ab74d27c66c13a35a65e4c080bda9cb5100ea1f116",
+    "cpp_encoded_sha256": {
+      "markdown": "ac4e1e99a7891aecd70c774994813720a920b5d64ed0d861bde2adcd67c1203f",
+      "html": "25c506f697ca65f97a801ce53e508c7850338307d61e04cfc7b5808622b9e5ff"
+    }
+  },
+  {
+    "name": "markdown_encode_escapes_leading_block_markers",
+    "codec": "html",
+    "source": "<p>+ not a bullet</p>",
+    "shared_model": true,
+    "cpp_prism_sha256": "d4370579ed9e6145aa797fc1b3468532fd4fd11de5b683c188c0a1f456aff537",
+    "cpp_encoded_sha256": {
+      "markdown": "b702faf7625f06c0909a1d1b49f3ed15ce6bad7bc30561efb7d140fa464609be",
+      "html": "e01300e83e9116994656dab86ecc78d41ad26f72118103435cea911f02b405ee"
+    }
+  },
+  {
+    "name": "markdown_code_span_with_backtick_round_trips",
+    "codec": "html",
+    "source": "<p>use <code>a`b``c</code> here</p>",
+    "shared_model": true,
+    "cpp_prism_sha256": "bddbbb41366ca24a0fb29a79a68cb967c01147e3b58d1933eec93e512b3e806b",
+    "cpp_encoded_sha256": {
+      "markdown": "3684d0952040d97926efdb24c6e7fadd57ab98d71d7689626a400a5fd41e3f69",
+      "html": "894a1dde2f84ef32ea45a0f7c979dd0994b9b32b0c0aa37e6ad76c2a8eee5797"
+    }
+  },
+  {
+    "name": "markdown_tables_parse_render_and_round_trip",
+    "codec": "markdown",
+    "source": "Before.\n\n| Name | Note |\n|---|---|\n| Core | the `model` |\n| UI | **render** |\n\nAfter.\n",
+    "shared_model": true,
+    "cpp_prism_sha256": "d5c7a1aafb619e34948efb80d4feaf70cee0f644d8e89dec3be6f28ecb9b1282",
+    "cpp_encoded_sha256": {
+      "markdown": "5fc22f4bc0931c0a4c346aa8793d4627ebcc0e3d320e4ebc508c0b0ec53de614",
+      "html": "968edf5a3ef89e8ce3c25317a08e34e94890b61500dce94962a1bf3181ab3315"
+    }
+  },
+  {
+    "name": "json_round_trips_through_the_hierarchy",
+    "codec": "json",
+    "source": "{\"name\":\"gear\",\"teeth\":24,\"metric\":true}",
+    "cpp_prism_sha256": "ca055bc77d85f9f94ffad66c7e83536ba79bd9136cf8f30aee7023e606f8023f",
+    "cpp_encoded_sha256": {
+      "json": "8dbf517a68269e7f16e45a345bfcf9fcee0df650700961404a7122a7464089a2"
+    }
+  },
+  {
+    "name": "json_round_trips_through_the_hierarchy",
+    "codec": "json",
+    "source": "{\"part\":{\"id\":7,\"sub\":{\"deep\":1.5}}}",
+    "cpp_prism_sha256": "6a3a3d8c40a3a79d5afa2b63ca3238c2fc8ba71e20e4171b28bb3568b0a93896",
+    "cpp_encoded_sha256": {
+      "json": "e4b652cf2d5208fc970c624802101b1e38a570beaa5dc3400be3e0568e9d60e7"
+    }
+  },
+  {
+    "name": "json_round_trips_through_the_hierarchy",
+    "codec": "json",
+    "source": "[1,2,[3,4],{\"k\":\"v\"}]",
+    "cpp_prism_sha256": "4cdd1f94f57aedf66dc607f98e22a5eb5bcdf43328e1ed3b80f1d118682dbcef",
+    "cpp_encoded_sha256": {
+      "json": "afb505e1e8c90cbb1b05250a713214c8b183e37ec090a6f70c5f1ab51134229b"
+    }
+  },
+  {
+    "name": "json_round_trips_through_the_hierarchy",
+    "codec": "json",
+    "source": "{\"a\":null,\"b\":[null,1,null],\"c\":\"\"}",
+    "cpp_prism_sha256": "96f8d62bac5b13d0e579e1f5f05960566d7eece6471101af4c3eb9de9d953295",
+    "cpp_encoded_sha256": {
+      "json": "e5e8b891ca4fc245926720dbd84f04cfb5426345e6d4c76f841448c6faa8aeb8"
+    }
+  },
+  {
+    "name": "json_round_trips_through_the_hierarchy",
+    "codec": "json",
+    "source": "\"bare scalar\"",
+    "cpp_prism_sha256": "7f2452cff4adeb1b41adfb78fdb93c31be64b6a77c12f0ed095ab69079c00eb8",
+    "cpp_encoded_sha256": {
+      "json": "b0e34bd33d919d7bbc8a5eaeace65939a21775f03f061591c148d71ec4ff1ede"
+    }
+  },
+  {
+    "name": "json_round_trips_through_the_hierarchy",
+    "codec": "json",
+    "source": "{}",
+    "cpp_prism_sha256": "7850b040b6cb614244971653199a6463a03d528462b6d9a0fbaa8ecb5bb5d236",
+    "cpp_encoded_sha256": {
+      "json": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    }
+  },
+  {
+    "name": "json_round_trips_through_the_hierarchy",
+    "codec": "json",
+    "source": "[]",
+    "cpp_prism_sha256": "9a241fa87624b3caaa89792de6a401574f03610826e1a3f7b710be588e3eae9e",
+    "cpp_encoded_sha256": {
+      "json": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    }
+  },
+  {
+    "name": "json_unicode_escapes_decode_to_utf8",
+    "codec": "json",
+    "source": "{\"accent\":\"caf\\u00e9\",\"face\":\"\\uD83D\\uDE00\"}",
+    "cpp_prism_sha256": "7b865dd56ebc0f80ca47ed672ae7dc70c5ef7274e4f38831000c0effb9235681",
+    "cpp_encoded_sha256": {
+      "json": "07eca9788552725340790439bba9cf72e3369f386f34b9627c9c111ce0d33fa2"
+    }
+  },
+  {
+    "name": "decode_builds_a_navigable_hierarchy",
+    "codec": "json",
+    "source": "{\"name\":\"gear\",\"part\":{\"id\":7},\"tags\":[\"a\",\"b\"]}",
+    "cpp_prism_sha256": "a399e1111ee71a4cdff335c92b0d579c432bc9024d82044e4c36fe3582f11866",
+    "cpp_encoded_sha256": {
+      "json": "21b62261356bd548c4ff4e1e1190a87ba7d19b9ab1fe7f56ebd4bc8ddb3c2934"
+    }
+  },
+  {
+    "name": "json_codec_via_the_seam_and_rejects_garbage",
+    "codec": "json",
+    "source": "{not valid",
+    "reject": true
+  },
+  {
+    "name": "unsafe_child_keys_fail_closed_not_corrupt",
+    "codec": "json",
+    "source": "{\"a.b\":{\"x\":1}}",
+    "reject": true
+  },
+  {
+    "name": "unsafe_child_keys_fail_closed_not_corrupt",
+    "codec": "json",
+    "source": "{\"a/b\":{\"x\":1}}",
+    "reject": true
+  },
+  {
+    "name": "unsafe_child_keys_fail_closed_not_corrupt",
+    "codec": "json",
+    "source": "{\"\":{\"x\":1}}",
+    "reject": true
+  },
+  {
+    "name": "unsafe_child_keys_fail_closed_not_corrupt",
+    "codec": "json",
+    "source": "{\"a.b\":1,\"a/b\":2,\"\":3}",
+    "cpp_prism_sha256": "35a74bae77cac7c1bef4c8f945d247b8a70f8ac41c0041a8e7bd519ce1fc5adf",
+    "cpp_encoded_sha256": {
+      "json": "dc5096f5151240a937fdfeda37bfb485a27523684ce3afc1a265093429245ef4"
+    }
+  },
+  {
+    "name": "svg_decodes_into_a_structural_element_tree",
+    "codec": "svg",
+    "source": "<svg viewBox=\"0 0 10 10\" width=\"10\"><rect x=\"1\" y=\"2\" width=\"4\"/><g><circle cx=\"5\"/></g></svg>",
+    "cpp_prism_sha256": "c6d45e96df770794cd4a5d1d37988d5a4bca557e344f02eb7847224b6a807fa4",
+    "cpp_encoded_sha256": {
+      "svg": "1a6ddf6d75310294a68ab4ed47f0599b627a9b442f32e8318baea2c93402266c"
+    }
+  },
+  {
+    "name": "svg_text_labels_become_visible_text_prims",
+    "codec": "svg",
+    "source": "<svg><text x=\"40\" y=\"68\">/circle</text></svg>",
+    "cpp_prism_sha256": "a8c969631f057e6895eeb72601128a6822e0d304785deb0efb5b7b08ec1b033b",
+    "cpp_encoded_sha256": {
+      "svg": "13b94d80e7dc9959c37ba59fa44bfbe4137bf864caca2a87987c92ae22fcfc18"
+    }
+  },
+  {
+    "name": "svg_round_trip_is_stable",
+    "codec": "svg",
+    "source": "<svg viewBox=\"0 0 520 196\" role=\"img\"><defs><marker id=\"ah\" markerWidth=\"8\" orient=\"auto\"><path d=\"M0 0 L6 3 L0 6 Z\"/></marker></defs><rect x=\"24\" y=\"42\" width=\"132\" rx=\"8\"/><text x=\"40\" y=\"68\">/circle</text><circle cx=\"156\" cy=\"92\" r=\"4\"/></svg>",
+    "cpp_prism_sha256": "74a6376d0e81214a25092bb2137dda737eb01efa4c2e28e6444a78cd9dde5cc8",
+    "cpp_encoded_sha256": {
+      "svg": "923eae5b2d096e06175888d1ab0d6175a20acfbd451f6c543cb5216a76950a2c"
+    }
+  },
+  {
+    "name": "svg_self_closing_and_comments_and_prolog",
+    "codec": "svg",
+    "source": "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- a diagram -->\n<svg><rect width=\"4\"/></svg>",
+    "cpp_prism_sha256": "53d2f8b1af1e2135161efd4304fd650c2ae6e441eb57161cc9390fd4eb3470cd",
+    "cpp_encoded_sha256": {
+      "svg": "9fb5cd492ff464cac5282fb1a8e0078a7666cac02aa9ea0a5562bdda89adc351"
+    }
+  },
+  {
+    "name": "svg_malformed_input_fails_closed",
+    "codec": "svg",
+    "source": "",
+    "reject": true
+  },
+  {
+    "name": "svg_malformed_input_fails_closed",
+    "codec": "svg",
+    "source": "   \n<!-- only a comment -->\n",
+    "reject": true
+  },
+  {
+    "name": "svg_malformed_input_fails_closed",
+    "codec": "svg",
+    "source": "<svg><rect/>",
+    "reject": true
+  },
+  {
+    "name": "svg_malformed_input_fails_closed",
+    "codec": "svg",
+    "source": "<svg><g><rect/>",
+    "reject": true
+  },
+  {
+    "name": "svg_malformed_input_fails_closed",
+    "codec": "svg",
+    "source": "<svg",
+    "reject": true
+  },
+  {
+    "name": "svg_entities_round_trip_in_text_and_attrs",
+    "codec": "svg",
+    "source": "<svg><text aria-label=\"a &amp; b\">x &lt; y</text></svg>",
+    "cpp_prism_sha256": "cd885688b7d4245c3a928a82140e846af39ed6e3b17431f4d5354a7bb6ba4d16",
+    "cpp_encoded_sha256": {
+      "svg": "dc3926eee315907bf3d0c71f70efc9b6919bc04124a4042fa1be886070b8d453"
+    }
+  },
+  {
+    "name": "text_codec_round_trips_byte_exact",
+    "codec": "text",
+    "source": "",
+    "cpp_prism_sha256": "f2cc575bcf05f6d6d3f6c15ec2fa551a4b8a038876dbef35f843663395ad5371",
+    "cpp_encoded_sha256": {
+      "text": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  {
+    "name": "text_codec_round_trips_byte_exact",
+    "codec": "text",
+    "source": "one line",
+    "cpp_prism_sha256": "61a8aa1ec3b576277fdcd739219a5b494362cfebd9bd49e0d753b6dd2d0d4658",
+    "cpp_encoded_sha256": {
+      "text": "6ddd8602957a761a8582bd6db6366f1cad4ece9326ef0dccb21528e531321b99"
+    }
+  },
+  {
+    "name": "text_codec_round_trips_byte_exact",
+    "codec": "text",
+    "source": "a\nb\nc\n",
+    "cpp_prism_sha256": "7f75d09155f21b235602ee527ab070abefbb86067f85cef086fc15a93752aa69",
+    "cpp_encoded_sha256": {
+      "text": "880553fca8fcea94e325ee2cfb48e5a985cc797f39a14cc6d3cedecfeb2ae4d2"
+    }
+  },
+  {
+    "name": "text_codec_round_trips_byte_exact",
+    "codec": "text",
+    "source": "crlf\r\nlines\r\n",
+    "cpp_prism_sha256": "eea045b0377a5e29868ab7572a9049617adb54dced8d81a3d96031cf0c4e9c90",
+    "cpp_encoded_sha256": {
+      "text": "e3b9880907edc02f612b721f3aeb80bdb8e14ae9963d619658aa8875b24ad7de"
+    }
+  },
+  {
+    "name": "text_codec_round_trips_byte_exact",
+    "codec": "text",
+    "source": "# Markdown\n\n* item\n",
+    "cpp_prism_sha256": "0c14b822701dde92e141db2378a473a0ef0abbc02b35df145fe9a9b9b0f9817d",
+    "cpp_encoded_sha256": {
+      "text": "966657ce8f8a0e81f315b24baa6d407ae2ccb1f49055623906c74e643a54ca4c"
+    }
+  },
+  {
+    "name": "blob_codec_round_trips_byte_exact",
+    "codec": "blob",
+    "source": "",
+    "source_hex": "0029527ba4cdf61f48719ac3ec153e6790b9e20b345d86afd8012a537ca5cef72049729bc4ed163f6891bae30c355e87b0d9022b547da6cff8214a739cc5ee17406992bbe40d365f88b1da032c557ea7d0f9224b749dc6ef18416a93bce50e376089b2db042d567fa8d1fa234c759ec7f019426b94bde60f38618ab3dc052e5780a9d2fb244d769fc8f11a436c95bee71039628bb4dd062f5881aad3fc254e77a0c9f21b446d96bfe8113a638cb5de07305982abd4fd264f78a1caf31c456e97c0e9123b648db6df08315a83acd5fe275079a2cbf41d466f98c1ea133c658eb7e009325b84add6ff28517aa3ccf51e477099c2eb143d668fb8e10a335c85aed70029527ba4cdf61f48719ac3ec153e6790b9e20b345d86afd8012a537ca5cef72049729bc4ed163f6891bae30c355e87b0d9022b547da6cff8214a739cc5ee17406992bbe40d365f88b1da032c557ea7d0f9224b749dc6ef18416a93bce50e376089b2db042d567fa8d1fa234c759ec7f019426b94bde60f38618ab3dc052e5780a9d2fb244d769fc8f11a436c95bee71039628bb4dd062f5881aad3fc254e77a0c9f21b446d96bfe8113a638cb5de07305982abd4fd264f78a1caf31c456e97c0e9123b648db6df08315a83acd5fe275079a2cbf41d466f98c1ea133c658eb7e009325b84add6ff28517aa3ccf51e477099c2eb143d668fb8e10a335c85aed7",
+    "cpp_prism_sha256": "0c8d2e62425e3368524f13187d62aa90e144128e6402fd857897393ec58b2e01",
+    "cpp_encoded_sha256": {
+      "blob": "61b8f990cf64d29a13fe5d2e0aab58791aea75b633e1c4a9d4ce9cbeb7678874"
+    }
+  }
+]

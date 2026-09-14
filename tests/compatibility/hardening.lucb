@@ -1,0 +1,232 @@
+import prism
+import interop
+import memory
+import strings
+import math
+from compatibility.serialization import roundtrip
+
+func reject(bytes: const u8[]) -> !:
+    let doc = prism.Document.decode(bytes) catch failure:
+        return
+    doc.release()
+    assert(false)
+
+func old_text_version_loads_and_upgrades_on_resave() -> !:
+    for version in 1..=4:
+        var scratch: u8[128]
+        let doc = try prism.Document.parse(try format(scratch, f"#prisma {version}.0\ndef object \"a\" {{ float v = 3 }}"))
+        defer doc.release()
+        let encoded = try doc.value().encode(prism.Encoding.text)
+        defer encoded.release()
+        assert(strings.starts_with(try encoded.value().text(), "#prisma 4.0\n"))
+        let back = try roundtrip(doc, 1)
+        defer back.release()
+
+func future_text_version_is_rejected_cleanly() -> !:
+    try reject(b"#prisma 99.0\ndef \"a\" {}")
+
+func text_parser_rejects_unknown_format_version() -> !:
+    try reject(b"#prisma 0.0\n")
+    try reject(b"#prisma 9.0\n")
+    try reject(b"#prisma -1.0\n")
+
+func binary_round_trips_at_current_version() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef object \"a\" { float v = 3 }")
+    defer doc.release()
+    let binary = try doc.value().encode()
+    defer binary.release()
+    assert(binary.value().bytes()[6] == 4 and binary.value().bytes()[7] == 0)
+    let back = try roundtrip(doc, 1)
+    defer back.release()
+
+func tampered_or_truncated_binary_is_rejected_cleanly() -> !:
+    let doc = try prism.Document.load("tests/fixtures/serialization-scene.prisma")
+    defer doc.release()
+    let binary = try doc.value().encode()
+    defer binary.release()
+    let raw = binary.value().bytes()
+    let bytes = try alloc u8[raw.length + 1] in memory.heap
+    defer free(bytes) in memory.heap
+    memory.copy(bytes, raw, raw.length)
+    bytes[6] = 99
+    try reject(bytes[..<raw.length])
+    bytes[6] = 4
+    bytes[raw.length] = 88
+    try reject(bytes)
+    for cut in 0..<raw.length:
+        try reject(raw[..<cut])
+
+func binary_crate_rejects_malformed() -> !:
+    try reject(b"PRSMC\0")
+    let bytes = try alloc u8[64] in memory.heap
+    defer free(bytes) in memory.heap
+    for i in 0..<bytes.length:
+        bytes[i] = 255
+    try reject(bytes)
+
+func binary_parser_rejects_implausible_count_fields() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\n")
+    defer doc.release()
+    let binary = try doc.value().encode()
+    defer binary.release()
+    let raw = binary.value().bytes()
+    let bytes = try alloc u8[raw.length] in memory.heap
+    defer free(bytes) in memory.heap
+    memory.copy(bytes, raw, raw.length)
+    # String table count immediately follows the uncompressed 10-byte header.
+    for i in 10..<(usize)14:
+        bytes[i] = 255
+    try reject(bytes)
+
+func detect_sniffs_encoding_from_leading_bytes() -> !:
+    assert(prism.detect(b" \n\t#prisma 4.0\n") == prism.Encoding.text)
+    assert(prism.detect(b"PRSMC\0") == prism.Encoding.binary)
+    assert(prism.detect(b"PRSMZ\0") == prism.Encoding.package)
+    assert(prism.detect(b"random") == prism.Encoding.unknown)
+
+func text_parser_caps_nesting_depth() -> !:
+    var source = try strings.Builder.create()
+    defer source.destroy()
+    try source.put("#prisma 4.0\n")
+    for i in 0..<512:
+        try source.put("def \"x\" { ")
+    for i in 0..<512:
+        try source.put(" } ")
+    try reject(source.view().bytes)
+
+func root_only_and_empty_typeless_prims_round_trip() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef \"standalone\" {} def group \"empty\" {}")
+    defer doc.release()
+    for mode in 0..<(usize)5:
+        let back = try roundtrip(doc, mode)
+        defer back.release()
+        assert(back.value().element_count() == 2 and try back.value().type_at("/standalone") == "")
+
+func deeply_nested_hierarchy_round_trips() -> !:
+    var source = try strings.Builder.create()
+    defer source.destroy()
+    try source.put("#prisma 4.0\n")
+    for i in 0..<50:
+        try source.put("def group \"x\" { ")
+    for i in 0..<50:
+        try source.put(" } ")
+    let doc = try prism.Document.parse(source.view())
+    defer doc.release()
+    for mode in 0..<(usize)5:
+        let back = try roundtrip(doc, mode)
+        defer back.release()
+        assert(back.value().element_count() == 50)
+
+func connection_fanout_survives_round_trip() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef material \"mat\" { float out = 7 }")
+    defer doc.release()
+    for i in 0..<100:
+        var path: u8[32]
+        var slot: u8[32]
+        try doc.value().add(try format(path, f"/n{i}"), "object")
+        try doc.value().connect("/mat.out", try format(slot, f"/n{i}.in"))
+    for mode in 0..<(usize)5:
+        let back = try roundtrip(doc, mode)
+        defer back.release()
+        assert(back.value().connection_count() == 100)
+        for i in 0..<100:
+            var slot: u8[32]
+            assert(try back.value().source(try format(slot, f"/n{i}.in")) == "/mat.out")
+
+func serialize_nonfinite_clamps_to_zero() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef \"n\" {}")
+    defer doc.release()
+    var bits: u64 = 9218868437227405312
+    let infinity = try prism.Value.number(memory.read[f64](&bits))
+    defer infinity.release()
+    try doc.value().set("/n", "bad", infinity)
+    for encoding in [prism.Encoding.text, prism.Encoding.binary, prism.Encoding.package]:
+        let bytes = try doc.value().encode(encoding)
+        defer bytes.release()
+        let back = try prism.Document.decode(bytes.value().bytes())
+        defer back.release()
+        let value = try back.value().get("/n", "bad")
+        defer value.release()
+        assert(try value.value().number_at() == 0.0)
+
+func connect_rejects_slotless_endpoints() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef \"a\" {} def \"b\" {}")
+    defer doc.release()
+    var failures = 0
+    doc.value().connect("/a", "/b.in") catch failure:
+        failures += 1
+    doc.value().connect("/a.out", "/b") catch failure:
+        failures += 1
+    assert(failures == 2 and doc.value().connection_count() == 0)
+    try doc.value().connect("/a.out", "/b.in")
+    assert(doc.value().connection_count() == 1)
+
+func bezier_interp_uses_auto_tangent_when_handles_absent() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef \"a\" { float x = 0 float x.timeSamples = { 0: 0 (interp = bezier), 10: 100 (interp = bezier) } }")
+    defer doc.release()
+    for i in 0..=2:
+        let value = try doc.value().resolve("/a", "x", (f64)i * 5.0)
+        defer value.release()
+        assert(math.abs(try value.value().number_at() - (f64)i * 50.0) < 0.0001)
+
+func timesamples_rejects_nonfinite_time() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef \"a\" { float64 x = 1 float64 x.timeSamples = { 0: 1, 10: 2 } }")
+    defer doc.release()
+    var bits: u64 = 9221120237041090560
+    let nine = try prism.Value.number(9.0)
+    defer nine.release()
+    var failed = false
+    doc.value().set_sample("/a", "x", memory.read[f64](&bits), nine) catch failure:
+        failed = true
+    assert(failed and try doc.value().sample_count("/a", "x") == 2)
+    let mid = try doc.value().resolve("/a", "x", 5.0)
+    defer mid.release()
+    assert(try mid.value().number_at() == 1.5)
+
+func affine_inverse_of_singular_is_identity() -> !:
+    let matrix = prism.Affine2(2.0,0.0,0.0,0.0,5.0,5.0)
+    let point = matrix.inverse().apply(prism.Vec2(3.0,4.0))
+    assert(point.x == 3.0 and point.y == 4.0)
+
+func non_uniform_scale_then_rotation_produces_shear() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"g\" { float2 scale = (2,1) def object \"o\" { float rotation = 1.57079632679 } }")
+    defer doc.release()
+    let matrix = try prism.world_matrix(doc, "/g/o")
+    assert(math.abs(matrix.b) > 0.001 and math.abs(matrix.c) > 0.001)
+    assert(math.abs(math.abs(matrix.b) - math.abs(matrix.c)) > 0.001)
+
+func evaluator_unknown_type_and_property_fallback() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef noSuchNodeType \"src\" { float val = 8 }")
+    defer doc.release()
+    let registry = try interop.Reference[prism.NodeRegistry].adopt(try new prism.NodeRegistry() in memory.heap, prism.registry_type, memory.heap)
+    defer registry.release()
+    var evaluator = try prism.Evaluator(doc, registry)
+    defer evaluator.close()
+    let value = try evaluator.output("/src.val")
+    defer value.release()
+    assert(try value.value().number_at() == 8.0 and try evaluator.bake("/src") == 0)
+    let absent = try evaluator.output("/src.missing")
+    defer absent.release()
+    assert(try absent.value().number_at() == 0.0)
+
+pub func run() -> !:
+    try old_text_version_loads_and_upgrades_on_resave()
+    try future_text_version_is_rejected_cleanly()
+    try text_parser_rejects_unknown_format_version()
+    try binary_round_trips_at_current_version()
+    try tampered_or_truncated_binary_is_rejected_cleanly()
+    try binary_crate_rejects_malformed()
+    try binary_parser_rejects_implausible_count_fields()
+    try detect_sniffs_encoding_from_leading_bytes()
+    try text_parser_caps_nesting_depth()
+    try root_only_and_empty_typeless_prims_round_trip()
+    try deeply_nested_hierarchy_round_trips()
+    try connection_fanout_survives_round_trip()
+    try serialize_nonfinite_clamps_to_zero()
+    try connect_rejects_slotless_endpoints()
+    try bezier_interp_uses_auto_tangent_when_handles_absent()
+    try timesamples_rejects_nonfinite_time()
+    try affine_inverse_of_singular_is_identity()
+    try non_uniform_scale_then_rotation_produces_shear()
+    try evaluator_unknown_type_and_property_fallback()
+    print("PASS 19 legacy hardening, migration and topology cases")

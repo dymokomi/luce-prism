@@ -1,0 +1,154 @@
+## Arithmetic surface expressions lower to canonical operation elements and wires.
+import strings
+import memory
+from luce_prism.model import DocumentData
+from luce_prism.value import scalar_bits
+from luce_prism.types import DType, invalid, limit_exceeded, max_items, max_depth
+from luce_prism.storage import Buffer, List, text_copy
+from luce_prism.path import joined
+from luce_prism.authoring.names import unique_path
+from luce_prism.codecs.common import whitespace, put
+
+struct Node:
+    var kind: u8
+    var left: usize
+    var right: usize
+    var number: f64
+    var reference: str = ""
+
+struct Parser:
+    var source: str = ""
+    var offset: usize
+    var nodes: List[Node]
+
+    mutating func peek() -> u8:
+        while self.offset < self.source.length and whitespace(self.source.bytes[self.offset]):
+            self.offset += 1
+        return self.source.bytes[self.offset] if self.offset < self.source.length else 0
+
+    mutating func append(node: Node) -> usize!:
+        if self.nodes.count >= max_items:
+            error(limit_exceeded, "Prism math expression is too large")
+        let index = self.nodes.count
+        try self.nodes.push(node)
+        return index
+
+    mutating func factor(depth: usize) -> usize!:
+        if depth > max_depth:
+            error(limit_exceeded, "Prism math expression is too deep")
+        let byte = self.peek()
+        if byte == '-':
+            self.offset += 1
+            return try self.append(Node(kind = 'n', left = try self.factor(depth + 1)))
+        if byte == '(':
+            self.offset += 1
+            let node = try self.expression(depth + 1)
+            if self.peek() != ')':
+                error(invalid, "expected a closing parenthesis in Prism math")
+            self.offset += 1
+            return node
+        let start = self.offset
+        if (byte >= '0' and byte <= '9') or byte == '.':
+            while self.offset < self.source.length:
+                let current = self.source.bytes[self.offset]
+                if (current < '0' or current > '9') and current != '.':
+                    break
+                self.offset += 1
+            let number = try strings.parse_f64((str)self.source.bytes[start..<self.offset])
+            return try self.append(Node(kind = 'l', number = number))
+        while self.offset < self.source.length:
+            let current = self.source.bytes[self.offset]
+            if not ((current >= 'a' and current <= 'z') or (current >= 'A' and current <= 'Z') or (current >= '0' and current <= '9') or current == '_' or current == '.'):
+                break
+            self.offset += 1
+        if self.offset == start:
+            error(invalid, "expected an operand in Prism math")
+        return try self.append(Node(kind = 'r', reference = (str)self.source.bytes[start..<self.offset]))
+
+    mutating func term(depth: usize) -> usize!:
+        var node = try self.factor(depth)
+        while self.peek() == '*' or self.peek() == '/':
+            let op = self.peek()
+            self.offset += 1
+            let right = try self.factor(depth)
+            node = try self.append(Node(kind = op, left = node, right = right))
+        return node
+
+    mutating func expression(depth: usize) -> usize!:
+        var node = try self.term(depth)
+        while self.peek() == '+' or self.peek() == '-':
+            let op = self.peek()
+            self.offset += 1
+            let right = try self.term(depth)
+            node = try self.append(Node(kind = op, left = node, right = right))
+        return node
+
+struct Operand:
+    var reference: Buffer
+    var number: f64
+
+pub func set_number(doc: DocumentData*, path: str, name: str, number: f64) -> !:
+    var native = number
+    var value = try scalar_bits(DType.float64, memory.read[u64](&native))
+    defer value.close()
+    try put(doc, path, name, &value)
+
+func input(doc: DocumentData*, path: str, name: str, operand: const Operand*) -> !:
+    if operand.reference.used == 0:
+        try set_number(doc, path, name, operand.number)
+        return
+    var target = try text_copy(path)
+    defer target.close()
+    try target.text(".")
+    try target.text(name)
+    try doc.connect(operand.reference.view(), target.view())
+
+func emit(doc: DocumentData*, nodes: const Node[], index: usize, root: str, counter: usize*, is_root: bool, depth: usize) -> Operand!:
+    if depth > max_depth:
+        error(limit_exceeded, "Prism math expression is too deep")
+    let node = &nodes[index]
+    if node.kind == 'l':
+        return Operand(number = node.number)
+    if node.kind == 'r':
+        return Operand(reference = try joined("/", node.reference))
+    var path: Buffer
+    defer path.close()
+    if is_root:
+        path = try text_copy(root)
+    else:
+        var scratch: u8[32]
+        path = try joined(root, try format(scratch, f"[{counter[0]}]"))
+        counter[0] += 1
+    let kind = "neg" if node.kind == 'n' else ("add" if node.kind == '+' else ("sub" if node.kind == '-' else ("mul" if node.kind == '*' else "div")))
+    try doc.insert(path.view(), kind)
+    var a = try emit(doc, nodes, node.left, root, counter, false, depth + 1)
+    defer a.reference.close()
+    try input(doc, path.view(), "a", &a)
+    if node.kind != 'n':
+        var b = try emit(doc, nodes, node.right, root, counter, false, depth + 1)
+        defer b.reference.close()
+        try input(doc, path.view(), "b", &b)
+    try path.text(".out")
+    return Operand(reference = try path.copy())
+
+pub func compile(doc: DocumentData*, name: str, expression: str) -> !:
+    var parser = Parser(source = expression)
+    defer parser.nodes.close()
+    let root_node = try parser.expression(0)
+    if parser.peek() != 0:
+        error(invalid, "unexpected text after Prism math expression")
+    var requested = try joined("/", name)
+    defer requested.close()
+    var path = try unique_path(doc, requested.view())
+    defer path.close()
+    var counter: usize = 0
+    let kind = parser.nodes.items[root_node].kind
+    if kind == 'l' or kind == 'r':
+        try doc.insert(path.view(), "add")
+        var a = try emit(doc, parser.nodes.span(), root_node, path.view(), &counter, false, 0)
+        defer a.reference.close()
+        try input(doc, path.view(), "a", &a)
+        try set_number(doc, path.view(), "b", 0.0)
+    else:
+        var output = try emit(doc, parser.nodes.span(), root_node, path.view(), &counter, true, 0)
+        output.reference.close()

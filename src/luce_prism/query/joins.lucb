@@ -1,0 +1,145 @@
+## Hash and connection joins over owned row snapshots.
+import interop
+import memory
+import luce_prism.query.scalars as scalars
+from luce_prism.collections.index import Index
+from luce_prism.query.results import Selection, Row, copy_row
+from luce_prism.query.query import Query
+from luce_prism.document import Document
+from luce_prism.model import Element
+from luce_prism.animation import resolve_property
+from luce_prism.storage import List, Buffer, find_pair
+from luce_prism.path import element_path
+from luce_prism.types import invalid
+
+pub enum JoinType as u8:
+    inner = 0
+    left = 1
+    right = 2
+    outer = 3
+    anti = 4
+
+struct Pair:
+    var left: usize?
+    var right: usize?
+
+pub struct JoinResult:
+    var left_rows: Selection = Selection()
+    var right_rows: Selection = Selection()
+    var pairs: List[Pair]
+
+    pub func init():
+        return
+
+    pub func count() -> usize:
+        return self.pairs.count
+
+    func at(index: usize) -> Pair!:
+        if index >= self.pairs.count:
+            error(invalid, "join row index is out of bounds")
+        return self.pairs.items[index]
+
+    pub func left_path(index: usize) -> str?!:
+        let row = (try self.at(index)).left else return none
+        return try self.left_rows.path_at(row)
+
+    pub func right_path(index: usize) -> str?!:
+        let row = (try self.at(index)).right else return none
+        return try self.right_rows.path_at(row)
+
+    pub func left_row(index: usize) -> interop.Reference[Row]?!:
+        let row = (try self.at(index)).left else return none
+        return try self.left_rows.row(row)
+
+    pub func right_row(index: usize) -> interop.Reference[Row]?!:
+        let row = (try self.at(index)).right else return none
+        return try self.right_rows.row(row)
+
+    pub mutating func close():
+        self.left_rows.close()
+        self.right_rows.close()
+        self.pairs.close()
+
+pub let join_result_type = interop.Type[JoinResult]("Prism join result", JoinResult.close, closeable = true)
+
+func key(element: const Element*, field: str) -> Buffer?!:
+    let position = element.property(field) else return none
+    var value = try resolve_property(&element.properties.items[position], 0.0)
+    defer value.close()
+    return try scalars.key(&value)
+
+pub func join_on(left: interop.Reference[Query], left_field: str, right: interop.Reference[Query], right_field: str, kind: JoinType = JoinType.inner) -> interop.Reference[JoinResult]!:
+    let left_selection = try (try left.get()).select()
+    defer left_selection.release()
+    let right_selection = try (try right.get()).select()
+    defer right_selection.release()
+    let left_rows = (try left_selection.get()).view_data()
+    let right_rows = (try right_selection.get()).view_data()
+    var index: Index
+    defer index.close()
+    var used: List[bool]
+    defer used.close()
+    for row in 0..<right_rows.count:
+        try used.push(false)
+        if let result = try key(&right_rows.items[row], right_field):
+            var value = result
+            defer value.close()
+            discard(try index.add(value.view(), row))
+    var result = JoinResult()
+    errdefer result.close()
+    for element in left_rows.span():
+        try result.left_rows.append(&element)
+    for element in right_rows.span():
+        try result.right_rows.append(&element)
+    for row in 0..<left_rows.count:
+        var bucket: usize? = none
+        if let found = try key(&left_rows.items[row], left_field):
+            var value = found
+            defer value.close()
+            bucket = index.find(value.view())
+        if let position = bucket:
+            for other in index.buckets.items[position].rows.span():
+                used.items[other] = true
+                if kind != JoinType.anti:
+                    try result.pairs.push(Pair(left = row, right = other))
+        elif kind == JoinType.left or kind == JoinType.outer or kind == JoinType.anti:
+            try result.pairs.push(Pair(left = row))
+    if kind == JoinType.right or kind == JoinType.outer:
+        # Legacy right/full joins include only keyable right-hand rows.
+        for bucket in index.buckets.span():
+            for row in bucket.rows.span():
+                if not used.items[row]:
+                    try result.pairs.push(Pair(right = row))
+    let owned = result
+    result = JoinResult()
+    return try own_join(owned)
+
+pub func join_by_connection(doc: interop.Reference[Document], left: interop.Reference[Query], slot: str) -> interop.Reference[JoinResult]!:
+    let selected = try (try left.get()).select()
+    defer selected.release()
+    let data = (try doc.get()).view_data()
+    var result = JoinResult()
+    errdefer result.close()
+    for element in (try selected.get()).view_data().span():
+        var target: Buffer
+        defer target.close()
+        try target.text(element.path.view())
+        try target.byte('.')
+        try target.text(slot)
+        if let source = data.incoming(target.view()):
+            if let position = data.find(element_path(source)):
+                let index = result.pairs.count
+                try result.left_rows.append(&element)
+                try result.right_rows.append(&data.elements.items[position])
+                try result.pairs.push(Pair(left = index, right = index))
+    let owned = result
+    result = JoinResult()
+    return try own_join(owned)
+
+func own_join(result: JoinResult) -> interop.Reference[JoinResult]!:
+    var owned = result
+    let native = new JoinResult() in memory.heap catch failure:
+        owned.close()
+        error(failure.code, failure.message)
+    native[0] = owned
+    return try interop.Reference[JoinResult].adopt(native, join_result_type, memory.heap)

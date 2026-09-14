@@ -1,0 +1,81 @@
+## Detect competing layer writes without modifying either proposal.
+from luce_prism.model import DocumentData
+from luce_prism.animation import equal_properties
+from luce_prism.storage import Buffer, List, find_pair, has_name, equal_names, text_copy
+from luce_prism.path import is_descendant
+
+pub struct Conflict:
+    pub var path: Buffer
+    pub var detail: Buffer
+
+    pub mutating func close():
+        self.path.close()
+        self.detail.close()
+
+pub func close_conflicts(conflicts: List[Conflict]*):
+    for i in 0..<conflicts.count:
+        conflicts.items[i].close()
+    conflicts.close()
+
+func append(output: List[Conflict]*, path: str, category: str, name: str = "", suffix: str = "") -> !:
+    var conflict: Conflict
+    errdefer conflict.close()
+    conflict.path = try text_copy(path)
+    try conflict.detail.text(category)
+    if name != "":
+        try conflict.detail.text(" '")
+        try conflict.detail.text(name)
+        try conflict.detail.text("'")
+    try conflict.detail.text(suffix)
+    try output.push(conflict)
+
+func deleted(output: List[Conflict]*, a: const DocumentData*, b: const DocumentData*) -> !:
+    for root in a.deletions.span():
+        for element in b.elements.span():
+            if is_descendant(element.path.view(), root.view()):
+                try append(output, element.path.view(), "delete vs edit")
+
+pub func collect(a: const DocumentData*, b: const DocumentData*) -> List[Conflict]!:
+    var output: List[Conflict]
+    errdefer close_conflicts(&output)
+    for element in a.elements.span():
+        let index = b.find(element.path.view()) else continue
+        let other = &b.elements.items[index]
+        for prop in element.properties.span():
+            if let position = other.property(prop.name.view()):
+                if not equal_properties(&prop, &other.properties.items[position]):
+                    try append(&output, element.path.view(), "property", prop.name.view())
+        for removed in element.removed_properties.span():
+            if other.property(removed.view()) != none:
+                try append(&output, element.path.view(), "property", removed.view(), " (remove vs edit)")
+        for removed in other.removed_properties.span():
+            if element.property(removed.view()) != none:
+                try append(&output, element.path.view(), "property", removed.view(), " (edit vs remove)")
+        for meta in element.metadata.span():
+            if let value = find_pair(&other.metadata, meta.key.view()):
+                if value != meta.value.view():
+                    try append(&output, element.path.view(), "metadata", meta.key.view())
+        for removed in element.removed_metadata.span():
+            if find_pair(&other.metadata, removed.view()) != none:
+                try append(&output, element.path.view(), "metadata", removed.view(), " (remove vs edit)")
+        for removed in other.removed_metadata.span():
+            if find_pair(&element.metadata, removed.view()) != none:
+                try append(&output, element.path.view(), "metadata", removed.view(), " (edit vs remove)")
+    try deleted(&output, a, b)
+    try deleted(&output, b, a)
+    for connection in a.connections.span():
+        if has_name(&a.disconnections, connection.key.view()):
+            continue
+        if has_name(&b.disconnections, connection.key.view()):
+            try append(&output, connection.key.view(), "connection")
+        elif let value = find_pair(&b.connections, connection.key.view()):
+            if value != connection.value.view():
+                try append(&output, connection.key.view(), "connection")
+    for target in a.disconnections.span():
+        if not has_name(&b.disconnections, target.view()) and find_pair(&b.connections, target.view()) != none:
+            try append(&output, target.view(), "connection")
+    for order in a.reorders.span():
+        for other in b.reorders.span():
+            if order.parent.view() == other.parent.view() and not equal_names(&order.children, &other.children):
+                try append(&output, order.parent.view(), "reorder")
+    return output

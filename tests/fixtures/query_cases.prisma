@@ -1,0 +1,35 @@
+#prisma 3.0
+# Shared fixture for the query() tests — loaded by BOTH tests/query_test.cpp and the Python
+# tests/test_kinogaki.py so the C++ and Python implementations assert against one source of truth.
+# Exercises: mixed types (issue/note), open/done status, high/med/low sev, a missing sev (d), an int
+# property (weight) for ordering + numeric compare, an F32 property (score) for the F32-vs-int trap,
+# and string METADATA (owner) on two issues for the meta()/hasMeta() predicates.
+def tracker "t" {
+    str title = "fixture"
+    def issue "a" {
+        str status = "open"
+        str sev = "high"
+        int64 weight = 5
+        float score = 1.0
+        string owner = "dy"
+    }
+    def issue "b" {
+        str status = "open"
+        str sev = "low"
+        int64 weight = 2
+    }
+    def issue "c" {
+        str status = "done"
+        str sev = "med"
+        int64 weight = 9
+        float score = 3.5
+        string owner = "kim"
+    }
+    def issue "d" {
+        str status = "open"
+        int64 weight = 2
+    }
+    def note "n1" {
+        str status = "open"
+    }
+}

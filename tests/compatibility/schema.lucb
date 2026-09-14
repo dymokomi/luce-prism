@@ -1,0 +1,68 @@
+import prism
+import interop
+
+func validate(source: str) -> interop.Reference[prism.Violations]!:
+    let doc = try prism.Document.parse(source)
+    defer doc.release()
+    var schema = prism.Schema()
+    defer schema.close()
+    try schema.add_field("issue", "status", prism.DType.string, required = true)
+    try schema.add_field("issue", "id", prism.DType.int64, required = true, unique = true)
+    return try schema.validate(doc)
+
+func valid_document_has_no_violations() -> !:
+    let result = try validate("#prisma 4.0\ndef table \"t\" { def issue \"i1\" { str status = \"open\" int64 id = 1 } def issue \"i2\" { str status = \"done\" int64 id = 2 } def memo \"note\" { str text = \"unconstrained\" } }")
+    defer result.release()
+    assert(result.value().count() == 0)
+
+func missing_required_field_violates() -> !:
+    let result = try validate("#prisma 4.0\ndef table \"t\" { def issue \"i1\" { int64 id = 1 } }")
+    defer result.release()
+    assert(result.value().count() == 1)
+    assert(try result.value().path_at(0) == "/t/i1")
+    assert(try result.value().message_at(0) == "missing required property 'status'")
+
+func wrong_dtype_violates() -> !:
+    let result = try validate("#prisma 4.0\ndef table \"t\" { def issue \"i1\" { str status = \"open\" str id = \"oops\" } }")
+    defer result.release()
+    assert(result.value().count() == 1)
+    assert(try result.value().message_at(0) == "property 'id' is str, expected i64")
+
+func duplicate_unique_violates() -> !:
+    let result = try validate("#prisma 4.0\ndef table \"t\" { def issue \"i1\" { str status = \"open\" int64 id = 7 } def issue \"i2\" { str status = \"done\" int64 id = 7 } }")
+    defer result.release()
+    assert(result.value().count() == 1)
+    assert(try result.value().path_at(0) == "/t/i2")
+    assert(try result.value().message_at(0) == "duplicate value for unique property 'id' (also at /t/i1)")
+
+func large_distinct_ids_are_not_false_duplicates() -> !:
+    let distinct = try validate("#prisma 4.0\ndef table \"t\" { def issue \"i1\" { str status = \"open\" int64 id = 9007199254740992 } def issue \"i2\" { str status = \"done\" int64 id = 9007199254740993 } }")
+    defer distinct.release()
+    assert(distinct.value().count() == 0)
+    let duplicate = try validate("#prisma 4.0\ndef table \"t\" { def issue \"i1\" { str status = \"open\" int64 id = 9007199254740993 } def issue \"i2\" { str status = \"done\" int64 id = 9007199254740993 } }")
+    defer duplicate.release()
+    assert(duplicate.value().count() == 1)
+    assert(try duplicate.value().path_at(0) == "/t/i2")
+
+func optional_array_and_cross_type_rules() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef row \"a\" { int32[2] x = [1,2] } def row \"b\" { int32[2] x = [1,2] } def other \"c\" { int x = 1 } def row \"d\" {}")
+    defer doc.release()
+    var schema = prism.Schema()
+    defer schema.close()
+    try schema.add_field("row", "x", prism.DType.int32, unique = true)
+    let result = try schema.validate(doc)
+    defer result.release()
+    assert(result.value().count() == 0)
+    try schema.add_field("row", "x", prism.DType.float32, required = true)
+    let replaced = try schema.validate(doc)
+    defer replaced.release()
+    assert(replaced.value().count() == 3)
+
+pub func run() -> !:
+    try valid_document_has_no_violations()
+    try missing_required_field_violates()
+    try wrong_dtype_violates()
+    try duplicate_unique_violates()
+    try large_distinct_ids_are_not_false_duplicates()
+    try optional_array_and_cross_type_rules()
+    print("PASS 5 legacy schema cases, exact diagnostics and optional array rules")

@@ -1,0 +1,7 @@
+import compatibility.codecs as codecs
+import compatibility.bundle as bundle
+
+pub func main(arguments: str[]) -> i32!:
+    try codecs.run()
+    try bundle.run()
+    return 0

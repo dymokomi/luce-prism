@@ -1,0 +1,104 @@
+import prism
+
+func textprojection_starts_as_empty_prisma() -> !:
+    var projection = try prism.TextProjection()
+    defer projection.close()
+    assert(projection.codec() == prism.Codec.prisma and projection.text_parses())
+    let text = try projection.text()
+    assert((str)text.bytes[..<7] == "#prisma")
+
+func textprojection_source_keeps_markdown_verbatim_and_derives_document() -> !:
+    var projection = try prism.TextProjection()
+    defer projection.close()
+    let source = "# Title\n\nhello *world*\n"
+    assert(try projection.set_source(source, prism.Codec.markdown))
+    assert(try projection.text() == source and projection.codec() == prism.Codec.markdown)
+    let doc = try projection.document()
+    defer doc.release()
+    assert(doc.value().contains("/document"))
+
+func textprojection_settext_updates_document_when_it_parses() -> !:
+    var projection = try prism.TextProjection()
+    defer projection.close()
+    assert(try projection.set_source("# One\n", prism.Codec.markdown))
+    let before = try projection.document()
+    defer before.release()
+    assert(try projection.set_text("# One\n\nand a paragraph\n"))
+    let after = try projection.document()
+    defer after.release()
+    assert(projection.text_parses() and not try before.value().equals(after))
+
+func textprojection_parse_error_keeps_last_good_document() -> !:
+    var projection = try prism.TextProjection()
+    defer projection.close()
+    assert(try projection.set_text("#prisma 4.0\ndef group \"world\" {\n}\n"))
+    let before = try projection.document()
+    defer before.release()
+    let broken = "#prisma 4.0\ndef group \"world\" {\n"
+    assert(not try projection.set_text(broken))
+    assert(not projection.text_parses() and projection.line() == 3 and projection.column() == 1)
+    assert(projection.error_message().length > 0 and try projection.text() == broken)
+    let after = try projection.document()
+    defer after.release()
+    assert(try before.value().equals(after))
+    let result = try prism.decode_diagnosed(broken.bytes)
+    defer result.release()
+    assert(not result.value().ok() and result.value().line() == 3 and result.value().column() == 1)
+
+func textprojection_codec_switch_rerenders_same_document() -> !:
+    var projection = try prism.TextProjection()
+    defer projection.close()
+    let source = "#   Title\n\n\n\nbody   here\n"
+    assert(try projection.set_source(source, prism.Codec.markdown))
+    let before = try projection.document()
+    defer before.release()
+    assert(try projection.set_codec(prism.Codec.prism))
+    assert(projection.codec() == prism.Codec.prisma)
+    let native = try projection.text()
+    assert((str)native.bytes[..<7] == "#prisma")
+    assert(try projection.set_codec(prism.Codec.markdown))
+    assert(try projection.text() == source)
+    let after = try projection.document()
+    defer after.release()
+    assert(try before.value().equals(after))
+
+func textprojection_setdocument_with_view_renders_canonical_form() -> !:
+    let source = "#   Title\n\n\n\nbody   here\n"
+    let doc = try prism.decode(source.bytes, prism.Codec.markdown)
+    defer doc.release()
+    let canonical = try prism.encode(doc, prism.Codec.markdown)
+    defer canonical.release()
+    var projection = try prism.TextProjection()
+    defer projection.close()
+    assert(try projection.set_document(doc, prism.Codec.markdown))
+    assert(try projection.text() == try canonical.value().text())
+    assert(try projection.set_codec(prism.Codec.prisma))
+    assert(try projection.set_codec(prism.Codec.markdown))
+    assert(try projection.text() == try canonical.value().text())
+
+func textprojection_declining_codec_leaves_state_unchanged() -> !:
+    var projection = try prism.TextProjection()
+    defer projection.close()
+    assert(try projection.set_text("#prisma 4.0\ndef group \"world\" {}"))
+    let before = try projection.document()
+    defer before.release()
+    assert(not try projection.set_codec(prism.Codec.svg))
+    assert(projection.codec() == prism.Codec.prisma and projection.text_parses())
+    let after = try projection.document()
+    defer after.release()
+    assert(try before.value().equals(after))
+    assert(not try projection.set_source("not a document", prism.Codec.prisma))
+    assert(not try projection.set_source("#prisma 4.0", prism.Codec.auto))
+    assert(not try projection.set_source("#prisma 4.0", prism.Codec.prism))
+    assert(not try projection.set_document(before, prism.Codec.svg))
+    assert(projection.codec() == prism.Codec.prisma)
+
+pub func run() -> !:
+    try textprojection_starts_as_empty_prisma()
+    try textprojection_source_keeps_markdown_verbatim_and_derives_document()
+    try textprojection_settext_updates_document_when_it_parses()
+    try textprojection_parse_error_keeps_last_good_document()
+    try textprojection_codec_switch_rerenders_same_document()
+    try textprojection_setdocument_with_view_renders_canonical_form()
+    try textprojection_declining_codec_leaves_state_unchanged()
+    print("PASS 7 legacy editor projection cases, exact view restoration and located parse errors")

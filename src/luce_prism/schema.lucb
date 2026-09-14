@@ -1,0 +1,138 @@
+## Optional per-type constraints with exact, scalar uniqueness.
+import interop
+import memory
+import luce_prism.query.scalars as scalars
+from luce_prism.collections.index import Index
+from luce_prism.document import Document
+from luce_prism.animation import resolve_property
+from luce_prism.storage import List, Buffer, Pair, text_copy
+from luce_prism.types import DType, invalid
+
+struct Rule:
+    var type_name: Buffer
+    var field: Buffer
+    var dtype: DType
+    var required: bool
+    var unique: bool
+
+    mutating func close():
+        self.type_name.close()
+        self.field.close()
+
+pub struct Violations:
+    var entries: List[Pair]
+
+    pub func init():
+        return
+
+    pub func count() -> usize:
+        return self.entries.count
+
+    pub func path_at(index: usize) -> str!:
+        if index >= self.entries.count:
+            error(invalid, "violation index is out of bounds")
+        return self.entries.items[index].key.view()
+
+    pub func message_at(index: usize) -> str!:
+        if index >= self.entries.count:
+            error(invalid, "violation index is out of bounds")
+        return self.entries.items[index].value.view()
+
+    mutating func append(path: str, parts: const str[]) -> !:
+        var entry: Pair
+        errdefer entry.close()
+        entry.key = try text_copy(path)
+        for part in parts:
+            try entry.value.text(part)
+        try self.entries.push(entry)
+
+    pub mutating func close():
+        for i in 0..<self.entries.count:
+            self.entries.items[i].close()
+        self.entries.close()
+
+pub let violations_type = interop.Type[Violations]("Prism schema violations", Violations.close, closeable = true)
+
+func dtype_name(dtype: DType) -> str:
+    let names = ["bool", "char", "i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64", "f32", "f64", "str", "f16"]
+    return names[(usize)dtype]
+
+pub struct Schema:
+    var rules: List[Rule]
+
+    pub func init():
+        return
+
+    pub mutating func add_field(type_name: str, field: str, dtype: DType, required: bool = false, unique: bool = false) -> !:
+        var rule = Rule(dtype = dtype, required = required, unique = unique)
+        errdefer rule.close()
+        rule.type_name = try text_copy(type_name)
+        rule.field = try text_copy(field)
+        for i in 0..<self.rules.count:
+            if self.rules.items[i].type_name.view() == type_name and self.rules.items[i].field.view() == field:
+                self.rules.items[i].close()
+                self.rules.items[i] = rule
+                return
+        try self.rules.push(rule)
+
+    pub func validate(doc: interop.Reference[Document]) -> interop.Reference[Violations]!:
+        let data = (try doc.get()).view_data()
+        var by_type: Index
+        defer by_type.close()
+        var seen: List[Index]
+        defer close_indexes(&seen)
+        for i in 0..<self.rules.count:
+            discard(try by_type.add(self.rules.items[i].type_name.view(), i))
+            try seen.push(Index())
+        var result = Violations()
+        errdefer result.close()
+        for row in 0..<data.elements.count:
+            let element = &data.elements.items[row]
+            let type_index = by_type.find(element.kind.view()) else continue
+            for index in by_type.buckets.items[type_index].rows.span():
+                let rule = &self.rules.items[index]
+                let name = rule.field.view()
+                let position = element.property(name)
+                if position == none:
+                    if rule.required:
+                        try result.append(element.path.view(), ["missing required property '", name, "'"])
+                    continue
+                var value = try resolve_property(&element.properties.items[position else 0], 0.0)
+                defer value.close()
+                if value.kind != rule.dtype:
+                    let actual = dtype_name(value.kind)
+                    let expected = dtype_name(rule.dtype)
+                    try result.append(element.path.view(), ["property '", name, "' is ", actual, ", expected ", expected])
+                if rule.unique:
+                    if let found = try scalars.key(&value):
+                        var key = found
+                        defer key.close()
+                        if let previous = seen.items[index].find(key.view()):
+                            let first = seen.items[index].buckets.items[previous].rows.items[0]
+                            let path = data.elements.items[first].path.view()
+                            try result.append(element.path.view(), ["duplicate value for unique property '", name, "' (also at ", path, ")"])
+                        else:
+                            discard(try seen.items[index].add(key.view(), row))
+        let owned = result
+        result = Violations()
+        return try own_violations(owned)
+
+    pub mutating func close():
+        for i in 0..<self.rules.count:
+            self.rules.items[i].close()
+        self.rules.close()
+
+pub let schema_type = interop.Type[Schema]("Prism schema", Schema.close, closeable = true)
+
+func close_indexes(indexes: List[Index]*):
+    for i in 0..<indexes.count:
+        indexes.items[i].close()
+    indexes.close()
+
+func own_violations(result: Violations) -> interop.Reference[Violations]!:
+    var owned = result
+    let native = new Violations() in memory.heap catch failure:
+        owned.close()
+        error(failure.code, failure.message)
+    native[0] = owned
+    return try interop.Reference[Violations].adopt(native, violations_type, memory.heap)

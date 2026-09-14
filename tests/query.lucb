@@ -1,0 +1,33 @@
+import prism
+import interop
+import memory
+import compatibility.query as queries
+import compatibility.query_data as query_data
+import compatibility.schema as schema
+import compatibility.columnar as columnar
+import compatibility.allocations as allocations
+import compatibility.indexes as indexes
+
+pub func main(arguments: str[]) -> i32!:
+    try queries.run()
+    try query_data.run()
+    try schema.run()
+    try columnar.run()
+    try indexes.run()
+    try allocations.run()
+    let doc = try prism.Document.parse("#prisma 4.0\ndef row \"a\" { int x = 2 } def row \"b\" { int x = 1 } def row \"c\" {}")
+    defer doc.release()
+    var query = try prism.Query(doc)
+    defer query.close()
+    assert(try query.count() == 3)
+    let ordered = try query.order_by("x")
+    defer ordered.release()
+    assert(try ordered.value().first() == "/b")
+    assert(try query.aggregate("x", prism.Aggregate.sum) == 3.0)
+    assert(try query.distinct_count("x") == 2)
+    let predicate = try prism.Predicate.exists("x")
+    defer predicate.release()
+    let filtered = try query.filter(predicate)
+    defer filtered.release()
+    assert(try filtered.value().count() == 2)
+    return 0

@@ -1,0 +1,150 @@
+## Extract bound subtrees and instantiate independent copies with remapped wiring.
+from luce_prism.model import DocumentData
+from luce_prism.collections.index import Index
+from luce_prism.authoring.paths import Paths
+from luce_prism.storage import Buffer, List, text_copy, close_names
+from luce_prism.path import is_descendant, element_path, parent_path, path_name, joined, valid_path
+from luce_prism.types import invalid
+
+pub func reparent(path: str, old: str, replacement: str) -> Buffer!:
+    if not is_descendant(path, old):
+        return try text_copy(path)
+    if old == "/" and replacement == "/":
+        return try text_copy(path)
+    var output: Buffer
+    errdefer output.close()
+    if replacement != "/":
+        try output.text(replacement)
+    try output.put(path.bytes[(0 if old == "/" else old.length)..])
+    if output.used == 0:
+        try output.byte('/')
+    return output
+
+pub func extract(doc: const DocumentData*, path: str) -> DocumentData!:
+    if not valid_path(path):
+        error(invalid, "invalid Prism extraction path")
+    let root = element_path(path)
+    let base = parent_path(root)
+    var keep: Index
+    defer keep.close()
+    for element in doc.elements.span():
+        if is_descendant(element.path.view(), root):
+            discard(try keep.add(element.path.view(), 0))
+    # Preserve the original one-pass inclusion of sources bound into the subtree.
+    for connection in doc.connections.span():
+        if keep.find(element_path(connection.key.view())) != none:
+            discard(try keep.add(element_path(connection.value.view()), 0))
+    var output = DocumentData()
+    errdefer output.close()
+    for element in doc.elements.span():
+        if keep.find(element.path.view()) == none:
+            continue
+        var copy = try element.copy()
+        defer copy.close()
+        var rebased = try reparent(element.path.view(), base, "/")
+        copy.path.close()
+        copy.path = rebased
+        rebased = Buffer()
+        try output.insert_copy(&copy)
+    for connection in doc.connections.span():
+        if keep.find(element_path(connection.key.view())) != none and keep.find(element_path(connection.value.view())) != none:
+            var target = try reparent(connection.key.view(), base, "/")
+            defer target.close()
+            var source = try reparent(connection.value.view(), base, "/")
+            defer source.close()
+            try output.connect(source.view(), target.view())
+    for asset in doc.assets.span():
+        if keep.find(asset.path.view()) != none:
+            var rebased = try reparent(asset.path.view(), base, "/")
+            defer rebased.close()
+            try output.set_asset(rebased.view(), asset.bytes.bytes(), asset.mime.view())
+    return output
+
+struct Mapping:
+    var index: Index
+    var paths: List[Buffer]
+
+    mutating func add(source: str, destination: str) -> !:
+        try self.paths.reserve(self.paths.count + 1)
+        var owned = try text_copy(destination)
+        errdefer owned.close()
+        discard(try self.index.add(source, self.paths.count))
+        try self.paths.push(owned)
+
+    func find(source: str) -> str?:
+        let bucket = self.index.find(source) else return none
+        return self.paths.items[self.index.buckets.items[bucket].rows.items[0]].view()
+
+    func slot(source: str) -> Buffer?!:
+        let base = element_path(source)
+        let mapped = self.find(base) else return none
+        var result = try text_copy(mapped)
+        errdefer result.close()
+        try result.put(source.bytes[base.length..])
+        return result
+
+    mutating func close():
+        self.index.close()
+        close_names(&self.paths)
+
+func top(path: str) -> str:
+    for i in 1..<path.length:
+        if path.bytes[i] == '/':
+            return (str)path.bytes[..<i]
+    return path
+
+pub func instantiate(doc: DocumentData*, fragment: const DocumentData*, parent: str) -> Paths!:
+    if not valid_path(parent) or element_path(parent) != parent:
+        error(invalid, "invalid Prism instance parent")
+    var mapping: Mapping
+    defer mapping.close()
+    var taken: Index
+    defer taken.close()
+    var roots = Paths()
+    errdefer roots.close()
+    for element in fragment.elements.span():
+        if parent_path(element.path.view()) != "/":
+            continue
+        let leaf = path_name(element.path.view())
+        var suffix: usize = 0
+        while true:
+            var destination = try joined(parent, leaf)
+            defer destination.close()
+            if suffix > 0:
+                var scratch: u8[32]
+                try destination.text(try format(scratch, f"_{suffix}"))
+            if not doc.contains(destination.view()) and taken.find(destination.view()) == none:
+                discard(try taken.add(destination.view(), 0))
+                try mapping.add(element.path.view(), destination.view())
+                try roots.append(destination.view())
+                break
+            suffix += 1
+    for element in fragment.elements.span():
+        if mapping.find(element.path.view()) != none:
+            continue
+        let root = top(element.path.view())
+        let mapped = mapping.find(root) else continue
+        var destination = try reparent(element.path.view(), root, mapped)
+        defer destination.close()
+        try mapping.add(element.path.view(), destination.view())
+    for element in fragment.elements.span():
+        let destination = mapping.find(element.path.view()) else continue
+        if doc.contains(destination):
+            error(invalid, "Prism instance collides with a sparse descendant")
+        var copy = try element.copy()
+        defer copy.close()
+        copy.path.close()
+        copy.path = try text_copy(destination)
+        try doc.insert_copy(&copy)
+    for connection in fragment.connections.span():
+        let source_path = try mapping.slot(connection.value.view()) else continue
+        var source = source_path
+        defer source.close()
+        let target_path = try mapping.slot(connection.key.view()) else continue
+        var target = target_path
+        defer target.close()
+        try doc.connect(source.view(), target.view())
+    for asset in fragment.assets.span():
+        if let destination = mapping.find(asset.path.view()):
+            try doc.set_asset(destination, asset.bytes.bytes(), asset.mime.view())
+    return roots

@@ -1,0 +1,135 @@
+## Shared document-model helpers for the foreign codecs.
+import memory
+from luce_prism.model import DocumentData
+from luce_prism.value import ValueData, scalar_bits
+from luce_prism.animation import Property
+from luce_prism.storage import Buffer, Reader, List, text_copy
+from luce_prism.types import DType, invalid
+from luce_prism.path import parent_path
+
+pub func whitespace(byte: u8) -> bool:
+    return byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n' or byte == 11 or byte == 12
+
+pub func blank(text: str) -> bool:
+    for byte in text.bytes:
+        if not whitespace(byte):
+            return false
+    return true
+
+pub func trim(text: str) -> str:
+    var start: usize = 0
+    var end = text.length
+    while start < end and whitespace(text.bytes[start]):
+        start += 1
+    while end > start and whitespace(text.bytes[end - 1]):
+        end -= 1
+    return (str)text.bytes[start..<end]
+
+pub func find(text: str, needle: str, start: usize = 0) -> usize?:
+    if needle.length > text.length or start > text.length - needle.length:
+        return none
+    for i in start..=text.length - needle.length:
+        if (str)text.bytes[i..<i + needle.length] == needle:
+            return i
+    return none
+
+pub func starts(text: str, prefix: str) -> bool:
+    return text.length >= prefix.length and (str)text.bytes[..<prefix.length] == prefix
+
+pub func lower(text: str) -> Buffer!:
+    var output: Buffer
+    errdefer output.close()
+    for byte in text.bytes:
+        try output.byte(byte + 32 if byte >= 'A' and byte <= 'Z' else byte)
+    return output
+
+pub func segment(text: str) -> bool:
+    if text.length == 0:
+        return false
+    for byte in text.bytes:
+        if not ((byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or (byte >= '0' and byte <= '9') or byte == '_'):
+            return false
+    return true
+
+pub func child_path(parent: str, name: str) -> Buffer!:
+    var output = try text_copy(parent)
+    errdefer output.close()
+    if parent != "/":
+        try output.text("/")
+    try output.text(name)
+    return output
+
+pub func append(doc: DocumentData*, parent: str, kind: str, anonymous: bool = true) -> Buffer!:
+    let count = doc.child_count(parent)
+    var digits: u8[32]
+    let name = try format(digits, f"[{count}]") if anonymous else try format(digits, f"{count}")
+    var path = try child_path(parent, name)
+    errdefer path.close()
+    try doc.add(path.view(), kind)
+    return path
+
+pub func put(doc: DocumentData*, path: str, name: str, value: const ValueData*) -> !:
+    # Property names deliberately allow arbitrary UTF-8, including an empty key.
+    var prop = Property()
+    defer prop.close()
+    prop.name = try text_copy(name)
+    prop.value = try value.copy()
+    try doc.elements.items[try doc.require(path)].put_property(&prop)
+
+pub func set_text(doc: DocumentData*, path: str, name: str, text: str) -> !:
+    var value = ValueData(kind = DType.string)
+    defer value.close()
+    try value.payload.sized(text)
+    try put(doc, path, name, &value)
+
+pub func set_integer(doc: DocumentData*, path: str, name: str, number: i32) -> !:
+    var signed_number = number
+    var value = try scalar_bits(DType.int32, (u64)memory.read[u32](&signed_number))
+    defer value.close()
+    try put(doc, path, name, &value)
+
+pub func set_boolean(doc: DocumentData*, path: str, name: str, boolean: bool) -> !:
+    var value = try scalar_bits(DType.boolean, 1 if boolean else 0)
+    defer value.close()
+    try put(doc, path, name, &value)
+
+pub func get_value(doc: const DocumentData*, path: str, name: str) -> const ValueData*?:
+    let index = doc.find(path) else return none
+    let element = &doc.elements.items[index]
+    let prop = element.property(name) else return none
+    return &element.properties.items[prop].value
+
+pub func get_text(doc: const DocumentData*, path: str, name: str, fallback: str = "") -> str:
+    let value = get_value(doc, path, name) else return fallback
+    if value.kind != DType.string or value.count() == 0:
+        return fallback
+    var reader = Reader(data = value.payload.bytes())
+    return reader.text() catch failure:
+        return fallback
+
+pub func get_number(doc: const DocumentData*, path: str, name: str, fallback: f64 = 0.0) -> f64:
+    let value = get_value(doc, path, name) else return fallback
+    return value.number(0) catch failure:
+        return fallback
+
+pub func type_of(doc: const DocumentData*, path: str) -> str:
+    return doc.type_at(path) catch failure:
+        return ""
+
+pub func utf8(output: Buffer*, codepoint: u32) -> !:
+    if codepoint > 1114111 or (codepoint >= 55296 and codepoint <= 57343):
+        error(invalid, "invalid Unicode scalar in codec input")
+    if codepoint < 128:
+        try output.byte((u8)codepoint)
+    elif codepoint < 2048:
+        try output.byte((u8)(192 | (codepoint >> 6)))
+        try output.byte((u8)(128 | (codepoint & 63)))
+    elif codepoint < 65536:
+        try output.byte((u8)(224 | (codepoint >> 12)))
+        try output.byte((u8)(128 | ((codepoint >> 6) & 63)))
+        try output.byte((u8)(128 | (codepoint & 63)))
+    else:
+        try output.byte((u8)(240 | (codepoint >> 18)))
+        try output.byte((u8)(128 | ((codepoint >> 12) & 63)))
+        try output.byte((u8)(128 | ((codepoint >> 6) & 63)))
+        try output.byte((u8)(128 | (codepoint & 63)))

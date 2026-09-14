@@ -1,63 +1,44 @@
-# Port boundary and architecture
+# Package architecture and reference scope
 
-The reference is kinogaki-core commit
-`ce92a4b37887d4ebb14194ca2ba4084af657c34a`. Its `CANONICAL.md` describes four strata:
-format-independent storage; bundle/filesystem conventions; shared content schemas;
-foreign-format codecs. The Luce port starts at storage, preserving the wire format.
-The charter's document/image/vector/scene vocabularies are content conventions,
-not special cases in a `Value` or `Document` implementation.
+The compatibility reference is kinogaki-core commit
+`ce92a4b37887d4ebb14194ca2ba4084af657c34a`, pinned in
+`bootstrap/KINOGAKI_CORE`. This is a native implementation; no C++ library is linked
+into applications. Import `prism` from the `luce_prism` package in Base or Luce.
 
-| C++ area | luce-prism status |
+| Modules under `src/luce_prism` | Responsibility |
 | --- | --- |
-| `Path`, named and anonymous `[N]` identity | Implemented; absolute paths and slot paths, boundary-aware subtree edits |
-| `Value`, all 14 dtype codes, rank 0–16 | Implemented; float16/32/64, signed and unsigned integers, byte characters, booleans and UTF-8 strings |
-| `Element`, properties and metadata | Implemented; ordered elements, sorted property/metadata names, copied value ownership |
-| `TimeSamples` | Authored keys and handles preserved; held and floating linear resolution implemented; Bézier evaluation deferred |
-| Concrete connections | Stored, rewritten on subtree edits, chain evaluation with cycle errors |
-| Binary `PRSMC` v4 | Reader/writer, string table, property aliases, all layer records and tagged trailing sections |
-| LZSS compression | Compatible encoder/decoder; output size bounded; encoder uses a fixed hash table |
-| Text `#prisma` | Reads version headers 1.0–4.0; writes 4.0; general shapes, legacy roles, catalog aliases and layer syntax |
-| `PRSMZ` packages and `AssetStore` | Reader/writer; byte-preserving assets, MIME types, overlap/duplicate checks |
-| Overrides, unset/delete/disconnect, reorder, glob links | Authored data preserved; application/expansion of these opinions deferred |
-| `Compose`, references, overlay, diff, merge | Reference arcs preserved as metadata; composition, resolver, overlay/diff/merge execution deferred |
-| NodeRegistry, Evaluate, Compute, Logic, EvalCache | Registered behavior, graph execution and caching deferred; `eval` only resolves concrete property chains |
-| Schema, Query, Search, PathPattern | Schema validation, indexed queries and wildcard expansion deferred |
-| Columnar, Spatial, Scene, Transform, Surface | Derived views and domain mathematics deferred |
-| JSON/Markdown/HTML/SVG/text/blob codecs | Deferred; no dependency on another agent's `luce-image` implementation |
-| Bundle filesystem import/export, AppSettings, EventLog, TextProjection, Highlight | Deferred consumers/services |
-| C ABI | Not ported; use ordinary Base imports and Luce interop |
+| `prism.lucb` | Public types and functions; no parser or codec implementation |
+| `types`, `storage`, `value`, `animation`, `path`, `pattern` | Wire types, bounded owned buffers, arrays, interpolation, paths and patterns |
+| `model`, `document`, `comparison`, `collections/` | Indexed element identity/topology, mutation, snapshots and content equality |
+| `serialization/` | Binary crates, ASCII syntax, catalog types, compression, packages and located errors |
+| `authoring/` | Unique names, paths, durable handles, extraction, instantiation and moves |
+| `composition/` | Overlay, diff, merge, layer compaction, explicit references, event-log replay |
+| `codecs/` | JSON, Markdown, HTML, SVG, text/blob, bundles, custom adapters and diagnostics |
+| `evaluation/` | Node registration, owned callbacks, bake contexts, graph evaluation and caches |
+| `geometry/`, `scene` | Legacy float32 affine transforms, visibility and evaluated scene snapshots |
+| `query/`, `indexes/` | Predicates, lazy queries, aggregation, groups, joins, field/text/spatial/vector indexes |
+| `schema`, `columnar` | Authored schemas, violations, typed columns and row masks |
+| `logic/`, `surface/` | Facts, grounded rules, priorities, defeasible proofs, math/logic surface syntax |
+| `editor/`, `io` | Text projections, codec view restoration, highlighting, settings and durable file replacement |
 
-The document remains the authored source of truth. No GPU handles, image-library
-objects, UI references, executable callbacks or compiler internals are serialized.
-`Value.array` is the initial bridge for external buffers: it copies a typed,
-shaped little-endian payload. A future zero-copy or mapped-storage interface needs
-an explicit lifetime and immutability contract; this port does not imply one.
+The authored document remains the persistence boundary. Callbacks, derived
+indexes, UI objects and GPU resources are not serialized. Generic values do not
+require content-specific renderer objects. Codecs translate domain conventions
+into the same element/property model.
 
-## Deliberate differences
+`Document.copy()` currently copies owned storage eagerly. Element/path/ID and
+parent lookup use hash indexes; ordered children preserve document order. Binary
+string-table construction and some field scans remain linear. The port does not
+claim the C++ implementation's global interning, O(1) copy-on-write snapshots,
+memory mapping, or concurrent access contract. Those are implementation choices,
+not new wire features. Public objects follow Luce interop ownership.
 
-- Connected-value cycles produce an error. The old evaluator sometimes substituted
-  defaults; applications should not mistake a cycle for a successfully evaluated value.
-- Decode rejects unknown flags, duplicate records and trailing compressed bytes.
-  Some corresponding legacy paths were permissive. Rejection never drops unknown data.
-- Noncanonical/sparse anonymous indices, missing explicit ancestors, varying sample
-  dtypes/shapes and non-ASCII byte characters can be retained in binary. Text encoding
-  reports a limitation when it cannot preserve their meaning.
-- Public shape arguments use `i64[]` for Luce interoperability and are validated
-  into uint32 storage. Unsigned 64-bit scalar access is currently a Base API; Luce
-  can preserve such values and their raw bytes without converting them to `int`.
-- Stored UTF-8 strings are validated on decode. Numeric/asset payloads remain bytes.
-- Package decode keeps assets on `Document`. Encoding an asset-bearing document as
-  plain text/binary errors, so callers cannot silently lose package contents.
+Ordinary loading does not resolve references. An explicit `ReferenceLibrary.compose`
+or `compose_file` request performs composition. In-memory libraries allow a host
+to control exactly which documents are available, with no implicit filesystem I/O.
 
-## Next work
-
-1. Composition/resolver and overlay execution, with independent C++ semantic fixtures.
-2. Complete animation evaluation and an authored handle-editing API.
-3. Shared content schemas and a `luce-image` adapter, coordinated with that package's API.
-4. Indexed lookup, mapped buffers and streaming I/O based on real document workloads.
-5. Query/compute and editor integrations driven by consumers.
-
-Current record lookup and string interning use linear scans. The implementation is
-an initial compatibility foundation, not a claim of the C++ core's performance or
-its complete feature set. Threading and GPU work should enter through separate
-services after profiling, rather than being embedded into persistence.
+[The compatibility inventory](../tests/compatibility/inventory.json) retains all
+417 named tests from the pinned reference. Its native gate covers 373 cases. The
+40 C ABI tests and four C++ global-interner tests are separately scoped with
+reasons, rather than reported as native passes. See [validation](VALIDATION.md)
+and [behavioral/API differences](LEGACY-DIFFERENCES.md).

@@ -1,0 +1,235 @@
+## Composable, null-aware predicates; field values resolve at time zero.
+import memory
+import interop
+import ownership
+import luce_prism.query.scalars as scalars
+from luce_prism.query.results import Row, copy_row
+from luce_prism.storage import Buffer, List, text_copy, find_pair
+from luce_prism.model import Element
+from luce_prism.value import Value, ValueData
+from luce_prism.animation import resolve_property
+from luce_prism.codecs.common import find, starts
+from luce_prism.path import valid_path, is_descendant, element_path, path_name
+from luce_prism.types import invalid, limit_exceeded
+
+pub enum Comparison as u8:
+    equal = 0
+    not_equal = 1
+    less = 2
+    less_equal = 3
+    greater = 4
+    greater_equal = 5
+
+struct Rule:
+    var operation: usize
+    var comparison: Comparison
+    var name: Buffer
+    var text: Buffer
+    var value: ValueData = ValueData()
+    var left: usize
+    var right: usize
+    var callback: interop.Callback[interop.Reference[Row], bool]?
+
+    func copy() -> Rule!:
+        var result = Rule(operation = self.operation, comparison = self.comparison, left = self.left, right = self.right)
+        errdefer result.close()
+        result.name = try self.name.copy()
+        result.text = try self.text.copy()
+        result.value = try self.value.copy()
+        if let callback = self.callback:
+            result.callback = callback.clone()
+        return result
+
+    mutating func close():
+        self.name.close()
+        self.text.close()
+        self.value.close()
+        if let callback = self.callback:
+            callback.release()
+        self.callback = none
+
+pub struct Predicate:
+    var rules: List[Rule]
+
+    pub func init():
+        self.rules = List[Rule]()
+
+    pub func copy() -> Predicate!:
+        var result = Predicate()
+        errdefer result.close()
+        try result.rules.reserve(self.rules.count)
+        for rule in self.rules.span():
+            try result.rules.push(try rule.copy())
+        return result
+
+    static func single(operation: usize, name: str, text: str = "") -> Predicate!:
+        var result = Predicate()
+        errdefer result.close()
+        var rule = Rule(operation = operation)
+        errdefer rule.close()
+        rule.name = try text_copy(name)
+        rule.text = try text_copy(text)
+        try result.rules.push(rule)
+        return result
+
+    pub static func field(name: str, comparison: Comparison, value: interop.Reference[Value]) -> interop.Reference[Predicate]!:
+        var result = try Predicate.single(1, name)
+        errdefer result.close()
+        result.rules.items[0].comparison = comparison
+        result.rules.items[0].value = try (try value.get()).view_data().copy()
+        let owned = result
+        result = Predicate()
+        return try own_predicate(owned)
+
+    pub static func contains(name: str, text: str) -> interop.Reference[Predicate]!:
+        return try own_predicate(try Predicate.single(2, name, text))
+
+    pub static func starts_with(name: str, text: str) -> interop.Reference[Predicate]!:
+        return try own_predicate(try Predicate.single(3, name, text))
+
+    pub static func exists(name: str) -> interop.Reference[Predicate]!:
+        return try own_predicate(try Predicate.single(4, name))
+
+    pub static func is_null(name: str) -> interop.Reference[Predicate]!:
+        return try own_predicate(try Predicate.single(5, name))
+
+    pub static func by_type(name: str) -> interop.Reference[Predicate]!:
+        return try own_predicate(try Predicate.single(6, name))
+
+    pub static func under(path: str) -> interop.Reference[Predicate]!:
+        return try own_predicate(try Predicate.single(7, path))
+
+    pub static func name_is(name: str) -> interop.Reference[Predicate]!:
+        return try own_predicate(try Predicate.single(8, name))
+
+    pub static func has_metadata(name: str) -> interop.Reference[Predicate]!:
+        return try own_predicate(try Predicate.single(9, name))
+
+    pub static func metadata(name: str, text: str) -> interop.Reference[Predicate]!:
+        return try own_predicate(try Predicate.single(10, name, text))
+
+    pub static func custom(callback: interop.Callback[interop.Reference[Row], bool]) -> interop.Reference[Predicate]!:
+        var result = try Predicate.single(14, "")
+        result.rules.items[0].callback = callback.clone()
+        return try own_predicate(result)
+
+    func combined(other: const Predicate*, operation: usize) -> Predicate!:
+        var result = try self.copy()
+        errdefer result.close()
+        if result.rules.count == 0:
+            try result.rules.push(Rule())
+        let left = result.rules.count - 1
+        let offset = result.rules.count
+        if other.rules.count == 0:
+            try result.rules.push(Rule())
+        else:
+            try result.rules.reserve(result.rules.count + other.rules.count + 1)
+            for source in other.rules.span():
+                var rule = try source.copy()
+                if rule.operation >= 11 and rule.operation <= 13:
+                    rule.left += offset
+                    rule.right += offset
+                try result.rules.push(rule)
+        let right = result.rules.count - 1
+        try result.rules.push(Rule(operation = operation, left = left, right = right))
+        return result
+
+    pub func both(other: interop.Reference[Predicate]) -> interop.Reference[Predicate]!:
+        return try own_predicate(try self.combined(try other.get(), 11))
+
+    pub func either(other: interop.Reference[Predicate]) -> interop.Reference[Predicate]!:
+        return try own_predicate(try self.combined(try other.get(), 12))
+
+    pub func negate() -> interop.Reference[Predicate]!:
+        var result = try self.copy()
+        errdefer result.close()
+        if result.rules.count == 0:
+            try result.rules.push(Rule())
+        try result.rules.push(Rule(operation = 13, left = result.rules.count - 1))
+        let owned = result
+        result = Predicate()
+        return try own_predicate(owned)
+
+    func evaluate(element: const Element*, index: usize, depth: usize) -> bool!:
+        if depth > 128:
+            error(limit_exceeded, "Prism predicate nesting exceeds 128")
+        let rule = &self.rules.items[index]
+        let op = rule.operation
+        let name = rule.name.view()
+        if op == 0:
+            return true
+        if op == 11:
+            return try self.evaluate(element, rule.left, depth + 1) and try self.evaluate(element, rule.right, depth + 1)
+        if op == 12:
+            return try self.evaluate(element, rule.left, depth + 1) or try self.evaluate(element, rule.right, depth + 1)
+        if op == 13:
+            return not try self.evaluate(element, rule.left, depth + 1)
+        if op == 14:
+            let callback = rule.callback else error(invalid, "custom predicate callback is missing")
+            let row = try copy_row(element)
+            defer row.release()
+            let result = callback.invoke(row)
+            defer result.release()
+            return try result.get()
+        if op == 6:
+            return element.kind.view() == name
+        if op == 7:
+            return valid_path(name) and element.path.view() != element_path(name) and is_descendant(element.path.view(), element_path(name))
+        if op == 8:
+            return path_name(element.path.view()) == name
+        if op == 9:
+            return find_pair(&element.metadata, name) != none
+        if op == 10:
+            let text = find_pair(&element.metadata, name) else return false
+            return text == rule.text.view()
+        let position = element.property(name)
+        if op == 4:
+            return position != none
+        if op == 5:
+            return position == none
+        let property = position else return false
+        var value = try resolve_property(&element.properties.items[property], 0.0)
+        defer value.close()
+        if op == 2 or op == 3:
+            let text = scalars.string(&value) else return false
+            return find(text, rule.text.view()) != none if op == 2 else starts(text, rule.text.view())
+        if rule.comparison == Comparison.equal or rule.comparison == Comparison.not_equal:
+            let equal = try scalars.equal(&value, &rule.value)
+            return equal if rule.comparison == Comparison.equal else not equal
+        let order = scalars.compare(&value, &rule.value) else return false
+        if rule.comparison == Comparison.less:
+            return order < 0
+        if rule.comparison == Comparison.less_equal:
+            return order <= 0
+        if rule.comparison == Comparison.greater:
+            return order > 0
+        return order >= 0
+
+    pub func accepts_row(element: const Element*) -> bool!:
+        return true if self.rules.count == 0 else try self.evaluate(element, self.rules.count - 1, 0)
+
+    pub func has_callback() -> bool:
+        for rule in self.rules.span():
+            if rule.operation == 14:
+                return true
+        return false
+
+    pub mutating func close():
+        for i in 0..<self.rules.count:
+            self.rules.items[i].close()
+        self.rules.close()
+
+    pub func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        for rule in self.rules.span():
+            if let callback = rule.callback:
+                callback.trace(visit, context)
+
+pub let predicate_type = interop.Type[Predicate]("Prism predicate", Predicate.close, Predicate.trace, closeable = true)
+
+pub func own_predicate(predicate: Predicate) -> interop.Reference[Predicate]!:
+    var owned = predicate
+    let native = new Predicate() in memory.heap catch failure:
+        owned.close()
+        error(failure.code, failure.message)
+    native.rules = owned.rules
+    return try interop.Reference[Predicate].adopt(native, predicate_type, memory.heap)

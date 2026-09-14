@@ -1,0 +1,99 @@
+import prism
+import strings
+
+func populated() -> prism.Bundle!:
+    var bundle = try prism.Bundle()
+    errdefer bundle.close()
+    assert(try bundle.add_folder("/bundle", "site") == "/bundle/site")
+    discard(try bundle.add_file("/bundle/site", "index.html", b"<h1>Home</h1><p>hi</p>"))
+    discard(try bundle.add_folder("/bundle/site", "assets"))
+    discard(try bundle.add_file("/bundle/site/assets", "diagram.svg", b"<svg viewBox=\"0 0 4 4\"><rect x=\"1\"/></svg>"))
+    discard(try bundle.add_file("/bundle/site/assets", "style.css", b"body{color:red}"))
+    return bundle
+
+func bundle_builds_a_typed_filesystem_tree() -> !:
+    var bundle = try populated()
+    defer bundle.close()
+    assert(bundle.is_folder("/bundle/site"))
+    assert(try bundle.entry_count("/bundle/site") == 2)
+    assert(try bundle.entry_count("/bundle/site/assets") == 2)
+    let first = try bundle.entry_at("/bundle/site/assets", 0)
+    let second = try bundle.entry_at("/bundle/site/assets", 1)
+    assert(bundle.file_name(first) == "diagram.svg")
+    assert(bundle.file_name(second) == "style.css")
+    assert(bundle.is_file(first) and bundle.is_file(second))
+    let doc = try bundle.document()
+    defer doc.release()
+    assert(try doc.value().type_at(first) == "svg")
+    assert(try doc.value().type_at(second) == "blob")
+    assert(try bundle.add_file("/bundle/site/assets", "style.css", b"two") == "/bundle/site/assets/style_css_2")
+    assert(try bundle.add_file("/bundle/site/assets", "style-css", b"three") == "/bundle/site/assets/style_css_3")
+
+func bundle_blob_is_byte_exact_through_binary() -> !:
+    var bundle = try prism.Bundle()
+    defer bundle.close()
+    var input: u8[256]
+    for i in 0..<input.length:
+        input[i] = (u8)i
+    discard(try bundle.add_file("/bundle", "logo.png", input))
+    let doc = try bundle.document()
+    defer doc.release()
+    for encoding in [prism.Encoding.text, prism.Encoding.binary, prism.Encoding.package]:
+        let bytes = try doc.value().encode(encoding, encoding != prism.Encoding.text)
+        defer bytes.release()
+        let restored = try prism.Document.decode(bytes.value().bytes())
+        defer restored.release()
+        let imported = try prism.Bundle.from_document(restored)
+        defer imported.release()
+        let materialized = try imported.value().materialize("/bundle/logo_png")
+        defer materialized.release()
+        let output = materialized.value().bytes()
+        assert(output.length == input.length)
+        for i in 0..<input.length:
+            assert(output[i] == input[i])
+
+func bundle_document_renders_as_html_then_markdown() -> !:
+    var bundle = try prism.Bundle()
+    defer bundle.close()
+    discard(try bundle.add_file("/bundle", "page.html", b"<h1>Title</h1><p>body</p>"))
+    let html = try bundle.materialize("/bundle/page_html")
+    defer html.release()
+    assert(try html.value().text() == "<h1>Title</h1>\n<p>body</p>\n")
+    try bundle.set_file_name("/bundle/page_html", "page.md")
+    let md = try bundle.materialize("/bundle/page_html")
+    defer md.release()
+    assert(try md.value().text() == "# Title\n\nbody\n")
+
+func bundle_svg_file_is_structural() -> !:
+    var bundle = try prism.Bundle()
+    defer bundle.close()
+    discard(try bundle.add_file("/bundle", "d.svg", b"<svg><text>/circle</text></svg>"))
+    let doc = try bundle.document()
+    defer doc.release()
+    assert(try doc.value().type_at("/bundle/d_svg/0") == "text")
+    let text = try doc.value().get("/bundle/d_svg/0/0", "text")
+    defer text.release()
+    assert(try text.value().text_at() == "/circle")
+    let svg = try bundle.materialize("/bundle/d_svg")
+    defer svg.release()
+    assert(try svg.value().text() == "<svg name=\"d.svg\"><text>/circle</text></svg>")
+
+func bundle_whole_tree_round_trips_through_kinogaki() -> !:
+    var bundle = try populated()
+    defer bundle.close()
+    let doc = try bundle.document()
+    defer doc.release()
+    for encoding in [prism.Encoding.text, prism.Encoding.binary, prism.Encoding.package]:
+        let bytes = try doc.value().encode(encoding)
+        defer bytes.release()
+        let restored = try prism.Document.decode(bytes.value().bytes())
+        defer restored.release()
+        assert(try doc.value().equals(restored))
+
+pub func run() -> !:
+    try bundle_builds_a_typed_filesystem_tree()
+    try bundle_blob_is_byte_exact_through_binary()
+    try bundle_document_renders_as_html_then_markdown()
+    try bundle_svg_file_is_structural()
+    try bundle_whole_tree_round_trips_through_kinogaki()
+    print("PASS 5 bundle cases, collision handling and all Prism encodings")

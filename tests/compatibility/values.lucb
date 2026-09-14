@@ -1,0 +1,145 @@
+import prism
+import interop
+
+func read(source: str, field: str = "a") -> interop.Reference[prism.Value]!:
+    let doc = try prism.Document.parse(source)
+    defer doc.release()
+    return try doc.value().get("/v", field)
+
+func value_types() -> !:
+    let doc = try prism.Document.load("tests/fixtures/serialization-scene.prisma")
+    defer doc.release()
+    let scalar = try doc.value().get("/world/sphere", "rotation")
+    defer scalar.release()
+    assert(scalar.value().dtype() == prism.DType.float32 and scalar.value().rank() == 0)
+    let vector = try doc.value().get("/world/sphere", "position")
+    defer vector.release()
+    assert(vector.value().dtype() == prism.DType.float32 and try vector.value().dimension(0) == 2)
+    let spectrum = try doc.value().get("/world/sphere", "reflectance")
+    defer spectrum.release()
+    assert(spectrum.value().dtype() == prism.DType.float32 and try spectrum.value().dimension(0) == 32)
+    let one = try prism.Value.number(2.0)
+    defer one.release()
+    let equal = try prism.Value.number(2.0)
+    defer equal.release()
+    let unequal = try prism.Value.number(3.0)
+    defer unequal.release()
+    assert(try one.value().equals(equal) and not try one.value().equals(unequal))
+
+func value_general_dtypes() -> !:
+    let byte = try read("#prisma 4.0\ndef \"v\" { uint8 a = 255 }")
+    defer byte.release()
+    assert(byte.value().dtype() == prism.DType.uint8 and byte.value().rank() == 0 and try byte.value().unsigned_at() == 255)
+    let wide = try prism.Value.number(1.25)
+    defer wide.release()
+    assert(wide.value().dtype() == prism.DType.float64 and try wide.value().number_at() == 1.25)
+    let character = try read("#prisma 4.0\ndef \"v\" { char a = 'A' }")
+    defer character.release()
+    assert(character.value().dtype() == prism.DType.character and try character.value().unsigned_at() == 65)
+    let word = try prism.Value.text("hello")
+    defer word.release()
+    assert(word.value().dtype() == prism.DType.string and word.value().count() == 1 and try word.value().text_at() == "hello")
+
+func value_arrays_and_multidim() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef \"v\" { int32[3] a = [10,20,30] int32[2,3] m = [[1,2,3],[4,5,6]] int32[3,2] transposed = [[1,2],[3,4],[5,6]] str[2] words = [\"a\",\"bc\"] }")
+    defer doc.release()
+    let vector = try doc.value().get("/v", "a")
+    defer vector.release()
+    assert(vector.value().dtype() == prism.DType.int32 and vector.value().rank() == 1 and vector.value().count() == 3)
+    assert(try vector.value().integer_at(2) == 30)
+    let matrix = try doc.value().get("/v", "m")
+    defer matrix.release()
+    let transposed = try doc.value().get("/v", "transposed")
+    defer transposed.release()
+    assert(matrix.value().rank() == 2 and try matrix.value().dimension(1) == 3 and try matrix.value().integer_at(5) == 6)
+    assert(not try matrix.value().equals(transposed))
+    let words = try doc.value().get("/v", "words")
+    defer words.release()
+    assert(words.value().count() == 2 and try words.value().text_at(1) == "bc")
+
+func lerp(source: str, expected: str) -> !:
+    let a = try read(source, "a")
+    defer a.release()
+    let b = try read(source, "b")
+    defer b.release()
+    let target = try read(expected)
+    defer target.release()
+    let result = try prism.Value.lerp(a, b, 0.5)
+    defer result.release()
+    assert(try result.value().equals(target))
+
+func value_array_lerp() -> !:
+    try lerp("#prisma 4.0\ndef \"v\" { float2[] a = [(0,0),(10,10)] float2[] b = [(0,0),(20,30)] }", "#prisma 4.0\ndef \"v\" { float2[] a = [(0,0),(15,20)] }")
+    try lerp("#prisma 4.0\ndef \"v\" { float2[] a = [(0,0),(10,10)] float2[] b = [(0,0)] }", "#prisma 4.0\ndef \"v\" { float2[] a = [(0,0),(10,10)] }")
+    try lerp("#prisma 4.0\ndef \"v\" { int[] a = [0,1,2] int[] b = [3,4,5] }", "#prisma 4.0\ndef \"v\" { int[] a = [0,1,2] }")
+    try lerp("#prisma 4.0\ndef \"v\" { float[] a = [0,10] float[] b = [0,20] }", "#prisma 4.0\ndef \"v\" { float[] a = [0,15] }")
+
+func value_lerp() -> !:
+    try lerp("#prisma 4.0\ndef \"v\" { float a = 0 float b = 10 }", "#prisma 4.0\ndef \"v\" { float a = 5 }")
+    try lerp("#prisma 4.0\ndef \"v\" { int a = 0 int b = 10 }", "#prisma 4.0\ndef \"v\" { int a = 0 }")
+    try lerp("#prisma 4.0\ndef \"v\" { bool a = false bool b = true }", "#prisma 4.0\ndef \"v\" { bool a = false }")
+    try lerp("#prisma 4.0\ndef \"v\" { float3 a = (0,0,0) float3 b = (2,4,6) }", "#prisma 4.0\ndef \"v\" { float3 a = (1,2,3) }")
+    try lerp("#prisma 4.0\ndef \"v\" { float a = 1 int b = 2 }", "#prisma 4.0\ndef \"v\" { float a = 1 }")
+
+func resolved(doc: interop.Reference[prism.Document], name: str, time: f64, expected: f64) -> !:
+    let value = try doc.value().resolve("/v", name, time)
+    defer value.release()
+    assert(try value.value().number_at() == expected)
+
+func timesamples_resolve_linear_and_held() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef \"v\" { float a = 0 float a.timeSamples = { 0: 0, 10: 100 } float b = 1 float b.timeSamples = { 0: 1 (interp = held), 10: 2 } }")
+    defer doc.release()
+    try resolved(doc, "a", -5.0, 0.0)
+    try resolved(doc, "a", 0.0, 0.0)
+    try resolved(doc, "a", 5.0, 50.0)
+    try resolved(doc, "a", 10.0, 100.0)
+    try resolved(doc, "a", 99.0, 100.0)
+    try resolved(doc, "b", 9.0, 1.0)
+
+func timesamples_sorted_insert_and_replace() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef \"v\" { float64 a = 42 }")
+    defer doc.release()
+    let times: f64[3] = [10.0,0.0,5.0]
+    for time in times:
+        let value = try prism.Value.number(time / 10.0)
+        defer value.release()
+        try doc.value().set_sample("/v", "a", time, value)
+    assert(try doc.value().sample_count("/v", "a") == 3)
+    for i in 0..<(usize)3:
+        assert(try doc.value().sample_time_at("/v", "a", i) == (f64)i * 5.0)
+    let nine = try prism.Value.number(9.0)
+    defer nine.release()
+    try doc.value().set_sample("/v", "a", 5.0, nine)
+    assert(try doc.value().sample_count("/v", "a") == 3)
+    try resolved(doc, "a", 5.0, 9.0)
+    try doc.value().remove_sample("/v", "a", 5.0)
+    assert(try doc.value().sample_count("/v", "a") == 2)
+
+func property_static_vs_animated() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef \"v\" { float64 a = 42 }")
+    defer doc.release()
+    assert(try doc.value().sample_count("/v", "a") == 0)
+    try resolved(doc, "a", 0.0, 42.0)
+    try resolved(doc, "a", 100.0, 42.0)
+    let zero = try prism.Value.number(0.0)
+    defer zero.release()
+    let twenty = try prism.Value.number(20.0)
+    defer twenty.release()
+    try doc.value().set_sample("/v", "a", 0.0, zero)
+    try doc.value().set_sample("/v", "a", 10.0, twenty)
+    try resolved(doc, "a", 5.0, 10.0)
+    try doc.value().remove_sample("/v", "a", 0.0)
+    try doc.value().remove_sample("/v", "a", 10.0)
+    assert(try doc.value().sample_count("/v", "a") == 0)
+    try resolved(doc, "a", 5.0, 42.0)
+
+pub func run() -> !:
+    try value_types()
+    try value_general_dtypes()
+    try value_arrays_and_multidim()
+    try value_array_lerp()
+    try value_lerp()
+    try timesamples_resolve_linear_and_held()
+    try timesamples_sorted_insert_and_replace()
+    try property_static_vs_animated()
+    print("PASS 8 legacy value and animation cases")

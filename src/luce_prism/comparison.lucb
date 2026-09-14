@@ -1,0 +1,42 @@
+## Authored equality includes element order, aliases, keyframes and layer records.
+from luce_prism.model import DocumentData, Element
+from luce_prism.animation import equal_properties
+from luce_prism.storage import List, Pair, equal_names, equal_bytes
+
+func equal_pairs(a: const List[Pair]*, b: const List[Pair]*) -> bool:
+    if a.count != b.count:
+        return false
+    for i in 0..<a.count:
+        if a.items[i].key.view() != b.items[i].key.view() or a.items[i].value.view() != b.items[i].value.view():
+            return false
+    return true
+
+pub func equal_elements(a: const Element*, b: const Element*) -> bool:
+    if a.path.view() != b.path.view() or a.kind.view() != b.kind.view() or a.override != b.override:
+        return false
+    if not equal_pairs(&a.metadata, &b.metadata) or not equal_names(&a.removed_properties, &b.removed_properties) or not equal_names(&a.removed_metadata, &b.removed_metadata):
+        return false
+    if a.properties.count != b.properties.count:
+        return false
+    for i in 0..<a.properties.count:
+        if a.properties.items[i].name.view() != b.properties.items[i].name.view() or not equal_properties(&a.properties.items[i], &b.properties.items[i]):
+            return false
+    return true
+
+pub func equal_documents(a: const DocumentData*, b: const DocumentData*) -> bool:
+    if a.elements.count != b.elements.count or a.reorders.count != b.reorders.count or a.assets.count != b.assets.count:
+        return false
+    if not equal_pairs(&a.connections, &b.connections) or not equal_pairs(&a.globs, &b.globs) or not equal_names(&a.deletions, &b.deletions) or not equal_names(&a.disconnections, &b.disconnections):
+        return false
+    for i in 0..<a.elements.count:
+        if not equal_elements(&a.elements.items[i], &b.elements.items[i]):
+            return false
+    for i in 0..<a.reorders.count:
+        if a.reorders.items[i].parent.view() != b.reorders.items[i].parent.view() or not equal_names(&a.reorders.items[i].children, &b.reorders.items[i].children):
+            return false
+    for i in 0..<a.assets.count:
+        let x = &a.assets.items[i]
+        let y = &b.assets.items[i]
+        if x.path.view() != y.path.view() or x.mime.view() != y.mime.view() or not equal_bytes(x.bytes.bytes(), y.bytes.bytes()):
+            return false
+    return true

@@ -1,0 +1,94 @@
+## Logic syntax is a projection of atom children, never an opaque rule string.
+import luce_prism.logic.builders as builders
+from luce_prism.logic.atoms import AtomData, RuleKind
+from luce_prism.model import DocumentData
+from luce_prism.storage import List, text_copy
+from luce_prism.codecs.common import trim, find
+from luce_prism.types import invalid, max_depth, limit_exceeded
+
+pub func split(text: str) -> List[str]!:
+    var parts: List[str]
+    errdefer parts.close()
+    var start: usize = 0
+    var depth: usize = 0
+    for i in 0..<text.length:
+        let byte = text.bytes[i]
+        if byte == '(':
+            depth += 1
+            if depth > max_depth:
+                error(limit_exceeded, "Prism logic expression is too deep")
+        elif byte == ')':
+            if depth == 0:
+                error(invalid, "unexpected closing parenthesis in Prism logic")
+            depth -= 1
+        elif byte == ',' and depth == 0:
+            let part = trim((str)text.bytes[start..<i])
+            if part.length == 0:
+                error(invalid, "empty term in Prism logic")
+            try parts.push(part)
+            start = i + 1
+    if depth != 0:
+        error(invalid, "unclosed parenthesis in Prism logic")
+    let last = trim((str)text.bytes[start..])
+    if last.length > 0:
+        try parts.push(last)
+    elif start > 0:
+        error(invalid, "empty trailing term in Prism logic")
+    return parts
+
+pub func atom(text: str) -> AtomData!:
+    var result: AtomData
+    errdefer result.close()
+    var source = trim(text)
+    if source.length > 0 and source.bytes[0] == '-':
+        result.negative = true
+        source = trim((str)source.bytes[1..])
+    if let opening = find(source, "("):
+        if source.bytes[source.length - 1] != ')':
+            error(invalid, "expected a closing parenthesis in Prism atom")
+        result.predicate = try text_copy(trim((str)source.bytes[..<opening]))
+        var arguments = try split((str)source.bytes[opening + 1..<source.length - 1])
+        defer arguments.close()
+        for argument in arguments.span():
+            try result.append(argument, argument.bytes[0] >= 'A' and argument.bytes[0] <= 'Z')
+    else:
+        if find(source, ")") != none or find(source, ",") != none:
+            error(invalid, "invalid Prism atom")
+        result.predicate = try text_copy(source)
+    if result.predicate.used == 0:
+        error(invalid, "empty predicate in Prism atom")
+    return result
+
+func close_body(body: List[AtomData]*):
+    for j in 0..<body.count:
+        body.items[j].close()
+    body.close()
+
+pub func compile(doc: DocumentData*, name: str, source: str) -> !:
+    let text = trim(source)
+    let arrows: str[3] = ["=>", "->", "~>"]
+    let kinds: RuleKind[3] = [RuleKind.defeasible, RuleKind.strict, RuleKind.defeater]
+    for i in 0..<(usize)3:
+        if let offset = find(text, arrows[i]):
+            var head = try atom((str)text.bytes[offset + 2..])
+            defer head.close()
+            var parts = try split((str)text.bytes[..<offset])
+            defer parts.close()
+            var body: List[AtomData]
+            defer close_body(&body)
+            for part in parts.span():
+                var item = try atom(part)
+                errdefer item.close()
+                try body.push(item)
+            try builders.add_rule(doc, name, kinds[i], &head, &body)
+            return
+    if let offset = find(text, ">"):
+        let superior = trim((str)text.bytes[..<offset])
+        let inferior = trim((str)text.bytes[offset + 1..])
+        if superior.length == 0 or inferior.length == 0:
+            error(invalid, "expected both rule names in Prism superiority")
+        try builders.add_superiority(doc, name, superior, inferior)
+        return
+    var head = try atom(text)
+    defer head.close()
+    try builders.add_fact(doc, name, &head)

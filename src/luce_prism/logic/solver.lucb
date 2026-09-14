@@ -1,0 +1,109 @@
+## Ambiguity-blocking defeasible inference with team defeat and explicit priorities.
+from luce_prism.logic.theory import Theory, GroundRule
+from luce_prism.logic.atoms import ProofTag, RuleKind
+
+pub func applicable(theory: const Theory*, rule: const GroundRule*) -> bool:
+    for body in rule.body.span():
+        if not theory.literals.items[body].proof:
+            return false
+    return true
+
+pub func discarded(theory: const Theory*, rule: const GroundRule*) -> bool:
+    for body in rule.body.span():
+        if theory.literals.items[body].refute:
+            return true
+    return false
+
+func plus(theory: const Theory*, index: usize) -> bool:
+    let literal = &theory.literals.items[index]
+    let opposite = &theory.literals.items[literal.complement]
+    if literal.definite:
+        return true
+    if opposite.definite:
+        return false
+    var supported = false
+    for id in literal.supporters.span():
+        if applicable(theory, &theory.rules.items[id]):
+            supported = true
+            break
+    if not supported:
+        return false
+    for id in opposite.rules.span():
+        let attacker = &theory.rules.items[id]
+        if discarded(theory, attacker):
+            continue
+        var defeated = false
+        for support in literal.supporters.span():
+            let defender = &theory.rules.items[support]
+            if applicable(theory, defender) and theory.superior(defender.name, attacker.name):
+                defeated = true
+                break
+        if not defeated:
+            return false
+    return true
+
+func minus(theory: const Theory*, index: usize) -> bool:
+    let literal = &theory.literals.items[index]
+    let opposite = &theory.literals.items[literal.complement]
+    if literal.definite:
+        return false
+    if opposite.definite:
+        return true
+    var all_discarded = true
+    for id in literal.supporters.span():
+        if not discarded(theory, &theory.rules.items[id]):
+            all_discarded = false
+            break
+    if all_discarded:
+        return true
+    for id in opposite.rules.span():
+        let attacker = &theory.rules.items[id]
+        if not applicable(theory, attacker):
+            continue
+        var undefeated = true
+        for support in literal.supporters.span():
+            let defender = &theory.rules.items[support]
+            if not discarded(theory, defender) and theory.superior(defender.name, attacker.name):
+                undefeated = false
+                break
+        if undefeated:
+            return true
+    return false
+
+pub func solve(theory: Theory*):
+    for i in 0..<theory.literals.count:
+        theory.literals.items[i].definite = theory.literals.items[i].fact
+    var changed = true
+    while changed:
+        changed = false
+        for rule in theory.rules.span():
+            if rule.kind != RuleKind.strict or theory.literals.items[rule.head].definite:
+                continue
+            var proven = true
+            for id in rule.body.span():
+                if not theory.literals.items[id].definite:
+                    proven = false
+                    break
+            if proven:
+                theory.literals.items[rule.head].definite = true
+                changed = true
+    changed = true
+    while changed:
+        changed = false
+        for id in theory.order.span():
+            if not theory.literals.items[id].proof and plus(theory, id):
+                theory.literals.items[id].proof = true
+                changed = true
+            if not theory.literals.items[id].refute and minus(theory, id):
+                theory.literals.items[id].refute = true
+                changed = true
+
+pub func tag(theory: const Theory*, index: usize) -> ProofTag:
+    let literal = &theory.literals.items[index]
+    if literal.definite:
+        return ProofTag.definite_proof
+    if literal.proof:
+        return ProofTag.defeasible_proof
+    if theory.literals.items[literal.complement].definite:
+        return ProofTag.definite_refute
+    return ProofTag.defeasible_refute

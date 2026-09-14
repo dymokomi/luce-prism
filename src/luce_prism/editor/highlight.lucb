@@ -1,0 +1,188 @@
+## Line-local byte spans; applications choose colors and typography.
+import interop
+import memory
+from luce_prism.codecs.api import Codec
+from luce_prism.codecs.common import find
+from luce_prism.storage import List
+from luce_prism.types import invalid
+
+pub enum TokenClass as u8:
+    normal = 0
+    heading = 1
+    emphasis = 2
+    code = 3
+    marker = 4
+    comment = 5
+    keyword = 6
+    string = 7
+    number = 8
+    entity = 9
+    note = 10
+
+pub struct TokenSpan:
+    pub var start: usize
+    pub var end: usize
+    pub var kind: TokenClass
+
+pub struct TokenSpans:
+    var spans: List[TokenSpan]
+
+    pub func init():
+        return
+
+    pub func count() -> usize:
+        return self.spans.count
+
+    pub func at(index: usize) -> TokenSpan!:
+        if index >= self.spans.count:
+            error(invalid, "Prism token span index is out of bounds")
+        return self.spans.items[index]
+
+    pub func class_at(column: usize) -> TokenClass:
+        for span in self.spans.span():
+            if column >= span.start and column < span.end:
+                return span.kind
+        return TokenClass.normal
+
+    mutating func add(start: usize, end: usize, kind: TokenClass) -> !:
+        try self.spans.push(TokenSpan(start, end, kind))
+
+    pub mutating func close():
+        self.spans.close()
+
+pub let token_spans_type = interop.Type[TokenSpans]("Prism token spans", TokenSpans.close, closeable = true)
+
+func digit(byte: u8) -> bool:
+    return byte >= '0' and byte <= '9'
+
+func alpha(byte: u8) -> bool:
+    return (byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z')
+
+func word(byte: u8) -> bool:
+    return alpha(byte) or digit(byte) or byte == '_'
+
+func markdown_inline(line: str, start: usize, output: TokenSpans*) -> !:
+    var i = start
+    while i < line.length:
+        if line.bytes[i] == '`':
+            if let end = find(line, "`", i + 1):
+                try output.add(i, end + 1, TokenClass.code)
+                i = end + 1
+                continue
+        if i + 1 < line.length and (str)line.bytes[i..<i + 2] == "**":
+            if let end = find(line, "**", i + 2):
+                try output.add(i, end + 2, TokenClass.emphasis)
+                i = end + 2
+                continue
+        i += 1
+
+func markdown(line: str, output: TokenSpans*) -> !:
+    var i: usize = 0
+    let n = line.length
+    while i < n and line.bytes[i] == ' ':
+        i += 1
+    if i < n and line.bytes[i] == '#':
+        var h = i
+        while h < n and line.bytes[h] == '#':
+            h += 1
+        if h - i <= 6 and (h == n or line.bytes[h] == ' '):
+            try output.add(i, h, TokenClass.marker)
+            if h < n:
+                try output.add(h, n, TokenClass.heading)
+            return
+    if i + 2 < n and (str)line.bytes[i..<i + 3] == "```":
+        try output.add(i, n, TokenClass.marker)
+        return
+    if i < n and line.bytes[i] == '>':
+        try output.add(i, i + 1, TokenClass.marker)
+        if i + 1 < n:
+            try output.add(i + 1, n, TokenClass.comment)
+        return
+    if i + 1 < n and (line.bytes[i] == '-' or line.bytes[i] == '*' or line.bytes[i] == '+') and line.bytes[i + 1] == ' ':
+        try output.add(i, i + 1, TokenClass.marker)
+        try markdown_inline(line, i + 2, output)
+        return
+    var d = i
+    while d < n and digit(line.bytes[d]):
+        d += 1
+    if d > i and d + 1 < n and line.bytes[d] == '.' and line.bytes[d + 1] == ' ':
+        try output.add(i, d + 1, TokenClass.marker)
+        try markdown_inline(line, d + 2, output)
+        return
+    try markdown_inline(line, i, output)
+
+func source(line: str, json: bool, output: TokenSpans*) -> !:
+    var i: usize = 0
+    var first = true
+    let n = line.length
+    while i < n:
+        let byte = line.bytes[i]
+        if not json and byte == '#':
+            try output.add(i, n, TokenClass.comment)
+            return
+        if byte == '"':
+            var j = i + 1
+            while j < n and line.bytes[j] != '"':
+                if json and line.bytes[j] == '\\':
+                    j += 1
+                j += 1
+            let end = j + 1 if j < n else n
+            var k = end
+            while k < n and line.bytes[k] == ' ':
+                k += 1
+            try output.add(i, end, TokenClass.keyword if json and k < n and line.bytes[k] == ':' else TokenClass.string)
+            i = end
+            continue
+        if not json and byte == '<':
+            if let end = find(line, ">", i + 1):
+                try output.add(i, end + 1, TokenClass.marker)
+                i = end + 1
+                continue
+        if digit(byte) or (byte == '-' and i + 1 < n and digit(line.bytes[i + 1])):
+            var j = i + 1 if byte == '-' else i
+            while j < n:
+                let c = line.bytes[j]
+                if not alpha(c) and not digit(c) and c != '.' and not (json and (c == '+' or c == '-')):
+                    break
+                j += 1
+            try output.add(i, j, TokenClass.number)
+            i = j
+            continue
+        if alpha(byte) if json else word(byte):
+            var j = i
+            while j < n and (alpha(line.bytes[j]) if json else (word(line.bytes[j]) or line.bytes[j] == '.')):
+                j += 1
+            let token = (str)line.bytes[i..<j]
+            if (token == "true" or token == "false" or token == "null") if json else (first or token == "def" or token == "over"):
+                try output.add(i, j, TokenClass.keyword)
+            first = false
+            i = j
+            continue
+        i += 1
+
+func html(line: str, output: TokenSpans*) -> !:
+    var i: usize = 0
+    while i < line.length:
+        if line.bytes[i] == '<':
+            let comment = i + 4 <= line.length and (str)line.bytes[i..<i + 4] == "<!--"
+            var end = line.length
+            if let position = find(line, "-->" if comment else ">", i + 1):
+                end = position + (3 if comment else 1)
+            try output.add(i, end, TokenClass.comment if comment else TokenClass.marker)
+            i = end
+        else:
+            i += 1
+
+pub func highlight_line(line: str, codec: Codec) -> interop.Reference[TokenSpans]!:
+    var spans = TokenSpans()
+    errdefer spans.close()
+    if codec == Codec.markdown:
+        try markdown(line, &spans)
+    elif codec == Codec.prisma or codec == Codec.prism or codec == Codec.json:
+        try source(line, codec == Codec.json, &spans)
+    elif codec == Codec.html or codec == Codec.svg:
+        try html(line, &spans)
+    let owned = try new TokenSpans() in memory.heap
+    owned[0] = spans
+    spans = TokenSpans()
+    return try interop.Reference[TokenSpans].adopt(owned, token_spans_type, memory.heap)

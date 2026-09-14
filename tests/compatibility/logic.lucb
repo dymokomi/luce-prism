@@ -1,0 +1,157 @@
+import prism
+import interop
+import memory
+
+pub func atom(predicate: str, args: const str[], negative: bool = false, variables: bool = false) -> interop.Reference[prism.Atom]!:
+    let result = try interop.Reference[prism.Atom].adopt(try new prism.Atom(predicate, negative) in memory.heap, prism.atom_type, memory.heap)
+    errdefer result.release()
+    for arg in args:
+        if variables:
+            try result.value().variable(arg)
+        else:
+            try result.value().constant(arg)
+    return result
+
+pub func policy() -> interop.Reference[prism.Document]!:
+    let doc = try prism.Document.parse("#prisma 4.0\n")
+    errdefer doc.release()
+    let statements: str[9] = ["employee(alice)", "contractor(bob)", "document(q3plan)", "confidential(q3plan)", "employee(U), document(D) => can_view(U, D)", "contractor(U), document(D) => -can_view(U, D)", "confidential(D), document(D) => -can_view(U, D)", "owns(U, D) -> can_view(U, D)", "p3 > p1"]
+    let names: str[9] = ["f1", "f2", "f3", "f4", "p1", "p2", "p3", "p4", "sup_conf"]
+    for i in 0..<(usize)9:
+        try doc.value().compile_logic(names[i], statements[i])
+    return doc
+
+pub func clearance() -> interop.Reference[prism.Document]!:
+    return try prism.parse_surface("logic \"f5\" { cleared(alice) } logic \"p5\" { cleared(U), confidential(D), document(D) => can_view(U, D) } logic \"sup_clear\" { p5 > p3 }")
+
+pub func view(doc: interop.Reference[prism.Document], person: str, negative: bool = false) -> prism.ProofTag!:
+    let args: str[2] = [person, "q3plan"]
+    let query = try atom("can_view", args, negative)
+    defer query.release()
+    return try prism.conclude(doc, query)
+
+func structured_rule_round_trips_to_the_canonical_form() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\n")
+    defer doc.release()
+    let head_args: str[2] = ["U", "D"]
+    let head = try atom("can_view", head_args, variables = true)
+    defer head.release()
+    let first_args: str[1] = ["U"]
+    let second_args: str[1] = ["D"]
+    let first = try atom("employee", first_args, variables = true)
+    defer first.release()
+    let second = try atom("document", second_args, variables = true)
+    defer second.release()
+    let body = try interop.Reference[prism.Atoms].adopt(try new prism.Atoms() in memory.heap, prism.atoms_type, memory.heap)
+    defer body.release()
+    try body.value().append(first)
+    try body.value().append(second)
+    try doc.value().add_rule("p1", prism.RuleKind.defeasible, head, body)
+    assert(try doc.value().type_at("/p1") == "defeasible")
+    assert(try doc.value().type_at("/p1/head") == "atom")
+    assert(try doc.value().type_at("/p1/head/[0]") == "var")
+    assert(doc.value().child_count("/p1") == 3)
+    let bytes = try doc.value().encode()
+    defer bytes.release()
+    let decoded = try prism.Document.decode(bytes.value().bytes())
+    defer decoded.release()
+    assert(try decoded.value().equals(doc))
+
+func base_policy_blocks_employee_on_confidential_doc() -> !:
+    let doc = try policy()
+    defer doc.release()
+    assert(try view(doc, "alice") == prism.ProofTag.defeasible_refute)
+    assert(try view(doc, "bob") == prism.ProofTag.defeasible_refute)
+    assert(try view(doc, "alice", true) == prism.ProofTag.defeasible_proof)
+
+func a_clearance_layer_defeats_the_confidentiality_block() -> !:
+    let base = try policy()
+    defer base.release()
+    let layer = try clearance()
+    defer layer.release()
+    let doc = try base.value().overlay(layer)
+    defer doc.release()
+    assert(try view(doc, "alice") == prism.ProofTag.defeasible_proof)
+    assert(try view(doc, "bob") == prism.ProofTag.defeasible_refute)
+    let args: str[2] = ["alice", "q3plan"]
+    let query = try atom("can_view", args)
+    defer query.release()
+    let why = try prism.why(doc, query)
+    defer why.release()
+    var fired = false
+    var defeated = false
+    for i in 0..<why.value().fired_count():
+        fired = fired or try why.value().fired_at(i) == "p5"
+    for i in 0..<why.value().defeated_count():
+        defeated = defeated or try why.value().defeated_at(i) == "p3"
+    assert(fired and defeated)
+
+func retracting_the_clearance_rule_reverts_the_conclusion() -> !:
+    let base = try policy()
+    defer base.release()
+    let layer = try clearance()
+    defer layer.release()
+    let doc = try base.value().overlay(layer)
+    defer doc.release()
+    let revoke = try prism.Document.parse("#prisma 4.0\ndelete \"/p5\"")
+    defer revoke.release()
+    let reverted = try doc.value().overlay(revoke)
+    defer reverted.release()
+    assert(try view(reverted, "alice") == prism.ProofTag.defeasible_refute)
+
+func strict_rule_yields_a_definite_conclusion() -> !:
+    let doc = try prism.parse_surface("logic \"f\" { owns(alice, q3plan) } logic \"r\" { owns(U, D) -> can_view(U, D) }")
+    defer doc.release()
+    assert(try view(doc, "alice") == prism.ProofTag.definite_proof)
+    assert(try view(doc, "alice", true) == prism.ProofTag.definite_refute)
+
+func derive_materializes_provable_conclusions() -> !:
+    let base = try policy()
+    defer base.release()
+    let doc = try prism.derive(base)
+    defer doc.release()
+    var denial = false
+    for i in 0..<doc.value().child_count("/derived"):
+        let child = doc.value().child_at("/derived", i) else error(prism.invalid, "missing derived child")
+        let pred = try doc.value().get(child, "pred")
+        defer pred.release()
+        assert(try pred.value().text_at() != "employee")
+        if try pred.value().text_at() == "can_view":
+            let args = doc.value().child_at(child, 0) else error(prism.invalid, "missing derived argument")
+            let arg = try doc.value().get(args, "name")
+            defer arg.release()
+            if try arg.value().text_at() == "alice":
+                let neg = try doc.value().get(child, "neg")
+                defer neg.release()
+                denial = try neg.value().number_at() != 0.0
+    assert(denial)
+
+func cycles_defeaters_and_empty_universe() -> !:
+    let doc = try prism.parse_surface("logic \"a\" { p => q } logic \"b\" { q => p } logic \"c\" { => allowed } logic \"d\" { ~> -allowed } logic \"e\" { seen(X) => known(X) }")
+    defer doc.release()
+    let unused: str[1] = [""]
+    let args = unused[..<0]
+    let p = try atom("p", args)
+    defer p.release()
+    let allowed = try atom("allowed", args)
+    defer allowed.release()
+    let denial = try atom("allowed", args, true)
+    defer denial.release()
+    assert(try prism.conclude(doc, p) == prism.ProofTag.defeasible_refute)
+    assert(try prism.conclude(doc, allowed) == prism.ProofTag.defeasible_refute)
+    assert(try prism.conclude(doc, denial) == prism.ProofTag.defeasible_refute)
+    let solved = try interop.Reference[prism.Logic].adopt(try new prism.Logic(doc) in memory.heap, prism.logic_type, memory.heap)
+    defer solved.release()
+    try doc.value().compile_logic("priority", "c > d")
+    assert(try prism.conclude(doc, allowed) == prism.ProofTag.defeasible_proof)
+    assert(try solved.value().conclude(allowed) == prism.ProofTag.defeasible_refute)
+
+pub func run() -> !:
+    try structured_rule_round_trips_to_the_canonical_form()
+    try base_policy_blocks_employee_on_confidential_doc()
+    try a_clearance_layer_defeats_the_confidentiality_block()
+    try retracting_the_clearance_rule_reverts_the_conclusion()
+    try strict_rule_yields_a_definite_conclusion()
+    try derive_materializes_provable_conclusions()
+    try cycles_defeaters_and_empty_universe()
+    print("PASS 6 legacy logic cases, cycles, defeaters, and owned theory snapshots")

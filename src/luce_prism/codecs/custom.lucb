@@ -1,0 +1,83 @@
+## Owned foreign-codec callbacks and the partial-document rebase contract.
+import interop
+import ownership
+from luce_prism.document import Document, own_document
+from luce_prism.model import DocumentData
+from luce_prism.storage import Buffer, Blob, text_copy, find_pair
+from luce_prism.path import parent_path, is_descendant, element_path
+from luce_prism.types import invalid
+
+pub func rebase(previous: const DocumentData*, next: DocumentData*) -> !:
+    for root in previous.elements.span():
+        let path = root.path.view()
+        if parent_path(path) != "/":
+            continue
+        if not next.contains(path):
+            for element in previous.elements.span():
+                if is_descendant(element.path.view(), path):
+                    try next.insert_copy(&element)
+        else:
+            let element = &next.elements.items[try next.require(path)]
+            for metadata in root.metadata.span():
+                if find_pair(&element.metadata, metadata.key.view()) == none:
+                    try next.set_metadata(path, metadata.key.view(), metadata.value.view())
+    for connection in previous.connections.span():
+        if next.contains(element_path(connection.key.view())) and next.contains(element_path(connection.value.view())):
+            try next.connect(connection.value.view(), connection.key.view())
+
+pub struct CodecAdapter:
+    var label: Buffer
+    var encoder: interop.Callback[interop.Reference[Document], interop.Reference[Blob]]?
+    var decoder: interop.Callback[interop.Reference[Blob], interop.Reference[Document]]?
+    var whole: bool
+
+    pub func init(name: str, encoder: interop.Callback[interop.Reference[Document], interop.Reference[Blob]], decoder: interop.Callback[interop.Reference[Blob], interop.Reference[Document]], whole_document: bool = true) -> !:
+        self.label = try text_copy(name)
+        self.encoder = encoder.clone()
+        self.decoder = decoder.clone()
+        self.whole = whole_document
+
+    pub func name() -> str:
+        return self.label.view()
+
+    pub func whole_document() -> bool:
+        return self.whole
+
+    pub func encode(document: interop.Reference[Document]) -> interop.Reference[Blob]!:
+        let callback = self.encoder else error(invalid, "Prism codec is closed")
+        let result = callback.invoke(document)
+        defer result.release()
+        return (try result.get()).clone()
+
+    pub func decode(bytes: interop.Reference[Blob]) -> interop.Reference[Document]!:
+        let callback = self.decoder else error(invalid, "Prism codec is closed")
+        let result = callback.invoke(bytes)
+        defer result.release()
+        return (try result.get()).clone()
+
+    pub func rebase_document(previous: interop.Reference[Document], next: interop.Reference[Document]) -> interop.Reference[Document]!:
+        if self.whole:
+            return try (try next.get()).copy()
+        var data = try (try next.get()).view_data().copy()
+        errdefer data.close()
+        try rebase((try previous.get()).view_data(), &data)
+        let owned = data
+        data = DocumentData()
+        return try own_document(owned)
+
+    pub func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        if let callback = self.encoder:
+            callback.trace(visit, context)
+        if let callback = self.decoder:
+            callback.trace(visit, context)
+
+    pub mutating func close():
+        self.label.close()
+        if let callback = self.encoder:
+            callback.release()
+        if let callback = self.decoder:
+            callback.release()
+        self.encoder = none
+        self.decoder = none
+
+pub let codec_adapter_type = interop.Type[CodecAdapter]("Prism codec adapter", CodecAdapter.close, CodecAdapter.trace, closeable = true)

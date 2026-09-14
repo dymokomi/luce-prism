@@ -139,12 +139,10 @@ func mutations() -> !:
     assert(try middle.value().number_at() == 2.5)
     try document.connect("/out.y", "/out.x")
     try document.connect("/out.x", "/out.y")
-    let cycle: interop.Reference[prism.Value]? = document.eval("/out.x") catch failure:
-        assert(failure.code == prism.invalid)
-        recover none
-    if let unexpected = cycle:
-        unexpected.release()
-        assert(false)
+    let cycle = try document.eval("/out.x")
+    defer cycle.release()
+    assert(try cycle.value().number_at() == 0.0)
+    assert(cycle.value().dtype() == prism.DType.float32)
 
 func malformed() -> !:
     for source in ["", "#prisma 9.0\n", "#prisma 4.0\ndef x {", "#prisma 4.0\ndef x { uint8 p = 256 }", "#prisma 4.0\ndef x { int32[2,2] p = [[1,2],[3]] }", "#prisma 4.0\ndef x { str p = \"bad }", "#prisma 4.0\ndef x { float64[4294967295,4294967295,2] p = [] }", "#prisma 4.0\ndef x { str p = true }"]:

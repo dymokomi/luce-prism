@@ -1,0 +1,149 @@
+## Line and block recognizers shared by the Markdown reader and writer.
+from luce_prism.storage import Buffer, List, close_names, text_copy
+from luce_prism.codecs.common import trim, find
+
+pub func lines(source: str) -> List[str]!:
+    var output: List[str]
+    errdefer output.close()
+    var start: usize = 0
+    for i in 0..=source.length:
+        if i == source.length or source.bytes[i] == '\n':
+            let end = i - 1 if i > start and source.bytes[i - 1] == '\r' else i
+            try output.push((str)source.bytes[start..<end])
+            start = i + 1
+    if output.count > 0 and output.items[output.count - 1].length == 0:
+        output.count -= 1
+    return output
+
+pub func rstrip(text: str) -> str:
+    var end = text.length
+    while end > 0 and (text.bytes[end - 1] == ' ' or text.bytes[end - 1] == '\t' or text.bytes[end - 1] == '\r'):
+        end -= 1
+    return (str)text.bytes[..<end]
+
+pub func indent(text: str) -> usize:
+    var i: usize = 0
+    while i < text.length and (text.bytes[i] == ' ' or text.bytes[i] == '\t'):
+        i += 1
+    return i
+
+pub func blank(text: str) -> bool:
+    return indent(text) == text.length
+
+pub func heading(text: str) -> usize:
+    let i = indent(text)
+    var count: usize = 0
+    while i + count < text.length and text.bytes[i + count] == '#':
+        count += 1
+    return count if count > 0 and count <= 6 and i + count < text.length and text.bytes[i + count] == ' ' else 0
+
+pub func thematic(text: str) -> bool:
+    var marker: u8 = 0
+    var count: usize = 0
+    for byte in text.bytes:
+        if byte == ' ' or byte == '\t':
+            continue
+        if marker == 0:
+            marker = byte
+        if byte != marker or (byte != '-' and byte != '*' and byte != '_'):
+            return false
+        count += 1
+    return count >= 3
+
+pub struct Fence:
+    pub var marker: u8
+    pub var length: usize
+    pub var language: str
+
+pub func fence(text: str) -> Fence?:
+    let start = indent(text)
+    if start == text.length or (text.bytes[start] != '`' and text.bytes[start] != '~'):
+        return none
+    let marker = text.bytes[start]
+    var end = start
+    while end < text.length and text.bytes[end] == marker:
+        end += 1
+    if end - start < 3:
+        return none
+    let rest = rstrip((str)text.bytes[end..])
+    var first: usize = 0
+    while first < rest.length and rest.bytes[first] == ' ':
+        first += 1
+    return Fence(marker = marker, length = end - start, language = (str)rest.bytes[first..])
+
+pub func closes(text: str, opening: Fence) -> bool:
+    let start = indent(text)
+    var end = start
+    while end < text.length and text.bytes[end] == opening.marker:
+        end += 1
+    return end - start >= opening.length and rstrip((str)text.bytes[end..]).length == 0
+
+pub func quote(text: str) -> bool:
+    let start = indent(text)
+    return start < text.length and text.bytes[start] == '>'
+
+pub struct Marker:
+    pub var ordered: bool
+    pub var column: usize
+
+pub func list_marker(text: str) -> Marker?:
+    let start = indent(text)
+    if start == text.length:
+        return none
+    let byte = text.bytes[start]
+    if byte == '-' or byte == '*' or byte == '+':
+        if start + 1 < text.length and text.bytes[start + 1] == ' ':
+            return Marker(column = start + 2)
+        return none
+    var end = start
+    while end < text.length and text.bytes[end] >= '0' and text.bytes[end] <= '9':
+        end += 1
+    if end > start and end + 1 < text.length and (text.bytes[end] == '.' or text.bytes[end] == ')') and text.bytes[end + 1] == ' ':
+        return Marker(ordered = true, column = end + 2)
+    return none
+
+pub func block_start(text: str) -> bool:
+    return heading(text) > 0 or thematic(text) or fence(text) != none or quote(text) or list_marker(text) != none
+
+pub func table_separator(text: str) -> bool:
+    let trimmed = trim(text)
+    if find(trimmed, "|") == none:
+        return false
+    var dash = false
+    for byte in trimmed.bytes:
+        if byte == '-':
+            dash = true
+        elif byte != '|' and byte != ':' and byte != ' ' and byte != '\t':
+            return false
+    return dash
+
+pub func table_start(text: const str[], index: usize) -> bool:
+    return index + 1 < text.length and not blank(text[index]) and find(text[index], "|") != none and not table_separator(text[index]) and table_separator(text[index + 1])
+
+pub func table_cells(text: str) -> List[Buffer]!:
+    let trimmed = trim(text)
+    var output: List[Buffer]
+    errdefer close_names(&output)
+    var cell: Buffer
+    defer cell.close()
+    var i: usize = 0
+    while i <= trimmed.length:
+        if i < trimmed.length and trimmed.bytes[i] == '\\' and i + 1 < trimmed.length and trimmed.bytes[i + 1] == '|':
+            try cell.byte('|')
+            i += 2
+            continue
+        if i == trimmed.length or trimmed.bytes[i] == '|':
+            var value = try text_copy(trim(cell.view()))
+            errdefer value.close()
+            try output.push(value)
+            cell.used = 0
+        else:
+            try cell.byte(trimmed.bytes[i])
+        i += 1
+    if output.count > 0 and output.items[0].used == 0:
+        output.items[0].close()
+        output.remove(0)
+    if output.count > 0 and output.items[output.count - 1].used == 0:
+        output.items[output.count - 1].close()
+        output.count -= 1
+    return output

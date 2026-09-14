@@ -1,0 +1,36 @@
+## Legacy name allocation, including frozen anonymous labels after deletion.
+from luce_prism.model import DocumentData
+from luce_prism.path import parent_path, path_name, joined, require_element, valid_path, element_path
+from luce_prism.storage import Buffer, text_copy
+from luce_prism.types import invalid
+
+pub func unique_path(doc: const DocumentData*, path: str, excluding: str = "") -> Buffer!:
+    try require_element(path)
+    if path == excluding or not doc.contains(path):
+        return try text_copy(path)
+    let parent = parent_path(path)
+    let leaf = path_name(path)
+    var suffix: usize = 1
+    while true:
+        var name: Buffer
+        defer name.close()
+        try name.text(leaf)
+        var scratch: u8[32]
+        try name.text(try format(scratch, f"_{suffix}"))
+        var candidate = try joined(parent, name.view())
+        if candidate.view() == excluding or not doc.contains(candidate.view()):
+            return candidate
+        candidate.close()
+        suffix += 1
+
+pub func anonymous_path(doc: const DocumentData*, parent: str) -> Buffer!:
+    if not valid_path(parent) or element_path(parent) != parent:
+        error(invalid, "expected a Prism parent path")
+    var index = doc.child_count(parent)
+    while true:
+        var scratch: u8[32]
+        var path = try joined(parent, try format(scratch, f"[{index}]"))
+        if not doc.contains(path.view()):
+            return path
+        path.close()
+        index += 1

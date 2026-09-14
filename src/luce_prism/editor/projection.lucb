@@ -1,0 +1,302 @@
+## Text remains authoritative while typing; failed parses retain the last good model.
+import interop
+import memory
+import ownership
+import luce_prism.codecs.api as codecs
+from luce_prism.codecs.custom import CodecAdapter
+from luce_prism.codecs.diagnostics import decode_diagnosed
+from luce_prism.document import Document
+from luce_prism.storage import Buffer, Blob, List, text_copy, copied, own_blob
+from luce_prism.types import invalid
+
+struct View:
+    var name: Buffer
+    var text: Buffer
+    var canonical: Buffer
+
+    mutating func close():
+        self.name.close()
+        self.text.close()
+        self.canonical.close()
+
+func clear_views(views: List[View]*):
+    for i in 0..<views.count:
+        views.items[i].close()
+    views.close()
+
+func render(doc: interop.Reference[Document], codec: codecs.Codec, adapter: interop.Reference[CodecAdapter]?) -> Buffer!:
+    let snapshot = try (try doc.get()).copy()
+    defer snapshot.release()
+    let output = try (try (adapter else error(invalid, "missing codec adapter")).get()).encode(snapshot) if adapter != none else try codecs.encode(snapshot, codec)
+    defer output.release()
+    return try copied((try output.get()).bytes())
+
+pub struct TextProjection:
+    var source: interop.Reference[Document]?
+    var custom: interop.Reference[CodecAdapter]?
+    var current: codecs.Codec
+    var buffer: Buffer
+    var message: Buffer
+    var error_line: usize
+    var error_column: usize
+    var parsed: bool
+    var views: List[View]
+    var busy: bool
+    var close_pending: bool
+
+    pub func init() -> !:
+        let doc = try Document.parse("#prisma 4.0\n")
+        errdefer doc.release()
+        let text = try render(doc, codecs.Codec.prisma, none)
+        self.source = doc
+        self.buffer = text
+        self.current = codecs.Codec.prisma
+        self.parsed = true
+        self.custom = none
+        self.message = Buffer()
+        self.error_line = 0
+        self.error_column = 0
+        self.views = List[View]()
+        self.busy = false
+        self.close_pending = false
+
+    pub func codec() -> codecs.Codec:
+        return self.current
+
+    pub func codec_name() -> str!:
+        if let custom = self.custom:
+            return (try custom.get()).name()
+        return codecs.codec_name(self.current)
+
+    pub func text() -> str!:
+        return try str(self.buffer.bytes())
+
+    pub func document() -> interop.Reference[Document]!:
+        return try (try (self.source else error(invalid, "Prism text projection is closed")).get()).copy()
+
+    pub func text_parses() -> bool:
+        return self.parsed
+
+    pub func error_message() -> str:
+        return self.message.view()
+
+    pub func line() -> usize:
+        return self.error_line
+
+    pub func column() -> usize:
+        return self.error_column
+
+    mutating func enter() -> !:
+        if self.busy:
+            error(invalid, "Prism projection callback cannot mutate its active projection")
+        self.busy = true
+
+    mutating func leave():
+        self.busy = false
+        if self.close_pending:
+            self.close_pending = false
+            self.close()
+
+    mutating func clear_error():
+        self.message.close()
+        self.error_line = 0
+        self.error_column = 0
+        self.parsed = true
+
+    mutating func replace(doc: interop.Reference[Document], text: Buffer):
+        if let previous = self.source:
+            previous.release()
+        self.source = doc
+        self.buffer.close()
+        self.buffer = text
+        self.clear_error()
+
+    pub mutating func set_document(document: interop.Reference[Document], view: codecs.Codec = codecs.Codec.auto) -> bool!:
+        try self.enter()
+        defer self.leave()
+        let next = try (try document.get()).copy()
+        errdefer next.release()
+        var codec = self.current if view == codecs.Codec.auto else (codecs.Codec.prisma if view == codecs.Codec.prism else view)
+        let adapter = self.custom if view == codecs.Codec.auto else none
+        var represented = true
+        var output = render(next, codec, adapter) catch failure:
+            if failure.code == memory.exhausted:
+                error(failure.code, failure.message)
+            represented = false
+            codec = codecs.Codec.prisma
+            recover try render(next, codec, none)
+        self.replace(next, output)
+        if view != codecs.Codec.auto or not represented:
+            if let previous = self.custom:
+                previous.release()
+            self.custom = none
+        self.current = codec
+        clear_views(&self.views)
+        return represented
+
+    mutating func switch_view(codec: codecs.Codec, adapter: interop.Reference[CodecAdapter]?) -> bool!:
+        let doc = self.source else error(invalid, "Prism text projection is closed")
+        var output = render(doc, codec, adapter) catch failure:
+            if failure.code == memory.exhausted:
+                error(failure.code, failure.message)
+            return false
+        defer output.close()
+        let next_name = (try (adapter else error(invalid, "missing codec adapter")).get()).name() if adapter != none else codecs.codec_name(codec)
+        var remembered: View
+        defer remembered.close()
+        if self.parsed:
+            remembered.canonical = try render(doc, self.current, self.custom)
+            remembered.name = try text_copy(try self.codec_name())
+            remembered.text = try self.buffer.copy()
+        var restored: Buffer
+        errdefer restored.close()
+        var found = false
+        for view in self.views.span():
+            if view.name.view() == next_name and view.canonical.view() == output.view():
+                restored = try view.text.copy()
+                found = true
+                break
+        if not found:
+            restored = try output.copy()
+        if self.parsed:
+            var replaced = false
+            for i in 0..<self.views.count:
+                if self.views.items[i].name.view() == remembered.name.view():
+                    self.views.items[i].close()
+                    self.views.items[i] = remembered
+                    replaced = true
+                    break
+            if not replaced:
+                try self.views.push(remembered)
+            remembered = View()
+        let retained = (adapter else error(invalid, "missing codec adapter")).clone() if adapter != none else none
+        if let previous = self.custom:
+            previous.release()
+        self.custom = retained
+        self.current = codec
+        self.buffer.close()
+        self.buffer = restored
+        self.clear_error()
+        return true
+
+    pub mutating func set_codec(codec: codecs.Codec) -> bool!:
+        if codec == codecs.Codec.auto:
+            return false
+        try self.enter()
+        defer self.leave()
+        return try self.switch_view(codecs.Codec.prisma if codec == codecs.Codec.prism else codec, none)
+
+    pub mutating func set_adapter(adapter: interop.Reference[CodecAdapter]) -> bool!:
+        try self.enter()
+        defer self.leave()
+        return try self.switch_view(codecs.Codec.auto, adapter)
+
+    pub mutating func set_text(text: str) -> bool!:
+        try self.enter()
+        defer self.leave()
+        var next_text = try text_copy(text)
+        defer next_text.close()
+        var next: interop.Reference[Document]? = none
+        defer release_document(next)
+        var diagnosis: Buffer
+        defer diagnosis.close()
+        var line: usize = 0
+        var column: usize = 0
+        if let custom = self.custom:
+            let bytes = try own_blob(try next_text.copy())
+            defer bytes.release()
+            next = (try custom.get()).decode(bytes) catch failure:
+                if failure.code == memory.exhausted:
+                    error(failure.code, failure.message)
+                diagnosis = try text_copy(failure.message)
+                line = 1
+                column = 1
+                recover none
+            if let decoded = next:
+                let rebased = try (try custom.get()).rebase_document(self.source else error(invalid, "missing projection document"), decoded)
+                decoded.release()
+                next = rebased
+        else:
+            let result = try decode_diagnosed(next_text.bytes(), self.current)
+            defer result.release()
+            if (try result.get()).ok():
+                next = try (try result.get()).document()
+            else:
+                diagnosis = try text_copy((try result.get()).error_message())
+                line = (try result.get()).line()
+                column = (try result.get()).column()
+        self.buffer.close()
+        self.buffer = next_text
+        next_text = Buffer()
+        self.message.close()
+        self.message = diagnosis
+        diagnosis = Buffer()
+        self.error_line = line
+        self.error_column = column
+        self.parsed = next != none
+        if let doc = next:
+            if let previous = self.source:
+                previous.release()
+            self.source = doc
+            next = none
+        return self.parsed
+
+    pub mutating func set_source(bytes: str, codec: codecs.Codec) -> bool!:
+        if codec == codecs.Codec.auto or codec == codecs.Codec.prism:
+            return false
+        try self.enter()
+        defer self.leave()
+        let doc = codecs.decode(bytes.bytes, codec) catch failure:
+            if failure.code == memory.exhausted:
+                error(failure.code, failure.message)
+            return false
+        errdefer doc.release()
+        var output = try text_copy(bytes)
+        self.replace(doc, output)
+        if let previous = self.custom:
+            previous.release()
+        self.custom = none
+        self.current = codec
+        clear_views(&self.views)
+        return true
+
+    pub mutating func amend(document: interop.Reference[Document]) -> !:
+        try self.enter()
+        defer self.leave()
+        let next = try (try document.get()).copy()
+        errdefer next.release()
+        var before = try render(self.source else error(invalid, "missing projection document"), self.current, self.custom)
+        defer before.close()
+        var after = try render(next, self.current, self.custom)
+        defer after.close()
+        if before.view() != after.view():
+            error(invalid, "Prism projection amendment changes the rendered text")
+        if let previous = self.source:
+            previous.release()
+        self.source = next
+
+    pub func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        if let doc = self.source:
+            doc.trace(visit, context)
+        if let adapter = self.custom:
+            adapter.trace(visit, context)
+
+    pub mutating func close():
+        if self.busy:
+            self.close_pending = true
+            return
+        if let doc = self.source:
+            doc.release()
+        if let adapter = self.custom:
+            adapter.release()
+        self.source = none
+        self.custom = none
+        self.buffer.close()
+        self.message.close()
+        clear_views(&self.views)
+
+func release_document(doc: interop.Reference[Document]?):
+    if let reference = doc:
+        reference.release()
+
+pub let text_projection_type = interop.Type[TextProjection]("Prism text projection", TextProjection.close, TextProjection.trace, closeable = true)

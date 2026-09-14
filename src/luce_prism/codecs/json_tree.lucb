@@ -1,0 +1,252 @@
+## Insertion-ordered JSON syntax tree. One arena owns nodes; indices survive growth.
+import strings
+import math
+from luce_prism.storage import Buffer, List
+from luce_prism.types import invalid, limit_exceeded
+from luce_prism.codecs.common import utf8
+
+pub enum Kind as u8:
+    null = 0
+    boolean = 1
+    number = 2
+    string = 3
+    array = 4
+    object = 5
+
+pub struct Entry:
+    pub var key: Buffer
+    pub var node: usize
+
+pub struct Node:
+    pub var kind: Kind
+    pub var text: Buffer
+    pub var number: f64
+    pub var boolean: bool
+    pub var children: List[Entry]
+
+    pub mutating func close():
+        self.text.close()
+        for i in 0..<self.children.count:
+            self.children.items[i].key.close()
+        self.children.close()
+
+pub struct Tree:
+    pub var nodes: List[Node]
+
+    pub mutating func close():
+        for i in 0..<self.nodes.count:
+            self.nodes.items[i].close()
+        self.nodes.close()
+
+struct Parser:
+    var text: str
+    var pos: usize
+    var tree: Tree
+
+    mutating func space():
+        while self.pos < self.text.length:
+            let c = self.text.bytes[self.pos]
+            if c != ' ' and c != '\t' and c != '\n' and c != '\r':
+                return
+            self.pos += 1
+
+    mutating func take(byte: u8) -> bool:
+        self.space()
+        if self.pos < self.text.length and self.text.bytes[self.pos] == byte:
+            self.pos += 1
+            return true
+        return false
+
+    mutating func expect(byte: u8) -> !:
+        if not self.take(byte):
+            error(invalid, "malformed JSON delimiter")
+
+    mutating func hex4() -> u32!:
+        if self.text.length - self.pos < 4:
+            error(invalid, "truncated JSON Unicode escape")
+        var output: u32 = 0
+        for i in 0..<4:
+            let c = self.text.bytes[self.pos]
+            self.pos += 1
+            var digit: u32 = 16
+            if c >= '0' and c <= '9':
+                digit = (u32)(c - '0')
+            elif c >= 'a' and c <= 'f':
+                digit = (u32)(c - 'a' + 10)
+            elif c >= 'A' and c <= 'F':
+                digit = (u32)(c - 'A' + 10)
+            if digit == 16:
+                error(invalid, "invalid JSON Unicode escape")
+            output = output * 16 + digit
+        return output
+
+    mutating func string() -> Buffer!:
+        try self.expect('"')
+        var output: Buffer
+        errdefer output.close()
+        while self.pos < self.text.length:
+            let c = self.text.bytes[self.pos]
+            self.pos += 1
+            if c == '"':
+                discard(try str(output.bytes()))
+                return output
+            if c == '\\':
+                if self.pos == self.text.length:
+                    error(invalid, "truncated JSON escape")
+                let escape = self.text.bytes[self.pos]
+                self.pos += 1
+                if escape == '"' or escape == '\\' or escape == '/':
+                    try output.byte(escape)
+                elif escape == 'n':
+                    try output.byte('\n')
+                elif escape == 'r':
+                    try output.byte('\r')
+                elif escape == 't':
+                    try output.byte('\t')
+                elif escape == 'b':
+                    try output.byte(8)
+                elif escape == 'f':
+                    try output.byte(12)
+                elif escape == 'u':
+                    var cp = try self.hex4()
+                    if cp >= 55296 and cp <= 56319:
+                        if self.text.length - self.pos < 6 or self.text.bytes[self.pos] != '\\' or self.text.bytes[self.pos + 1] != 'u':
+                            error(invalid, "unpaired JSON high surrogate")
+                        self.pos += 2
+                        let low = try self.hex4()
+                        if low < 56320 or low > 57343:
+                            error(invalid, "invalid JSON surrogate pair")
+                        cp = 65536 + ((cp - 55296) << 10) + low - 56320
+                    try utf8(&output, cp)
+                else:
+                    error(invalid, "unknown JSON string escape")
+            else:
+                # The legacy parser preserves literal controls inside strings.
+                try output.byte(c)
+        error(invalid, "unterminated JSON string")
+
+    mutating func literal(text: str) -> bool:
+        if self.text.length - self.pos < text.length:
+            return false
+        if (str)self.text.bytes[self.pos..<self.pos + text.length] != text:
+            return false
+        self.pos += text.length
+        return true
+
+    mutating func value(depth: usize) -> usize!:
+        if depth > 200:
+            error(limit_exceeded, "JSON nesting exceeds 200")
+        self.space()
+        if self.pos == self.text.length:
+            error(invalid, "missing JSON value")
+        let index = self.tree.nodes.count
+        try self.tree.nodes.push(Node())
+        let c = self.text.bytes[self.pos]
+        if c == '{' or c == '[':
+            self.tree.nodes.items[index].kind = Kind.object if c == '{' else Kind.array
+            self.pos += 1
+            let end: u8 = '}' if c == '{' else ']'
+            if self.take(end):
+                return index
+            while true:
+                var key: Buffer
+                defer key.close()
+                if c == '{':
+                    key = try self.string()
+                    try self.expect(':')
+                let child = try self.value(depth + 1)
+                let node = &self.tree.nodes.items[index]
+                var existing: usize? = none
+                if c == '{':
+                    for i in 0..<node.children.count:
+                        if node.children.items[i].key.view() == key.view():
+                            existing = i
+                            break
+                if let position = existing:
+                    node.children.items[position].node = child
+                else:
+                    try node.children.push(Entry(key = key, node = child))
+                    key = Buffer()
+                if self.take(end):
+                    return index
+                try self.expect(',')
+        elif c == '"':
+            self.tree.nodes.items[index].kind = Kind.string
+            self.tree.nodes.items[index].text = try self.string()
+        elif c == '-' or (c >= '0' and c <= '9'):
+            let start = self.pos
+            if c == '-':
+                self.pos += 1
+            var digits = false
+            while self.pos < self.text.length and self.text.bytes[self.pos] >= '0' and self.text.bytes[self.pos] <= '9':
+                digits = true
+                self.pos += 1
+            if self.pos < self.text.length and self.text.bytes[self.pos] == '.':
+                self.pos += 1
+                while self.pos < self.text.length and self.text.bytes[self.pos] >= '0' and self.text.bytes[self.pos] <= '9':
+                    digits = true
+                    self.pos += 1
+            if not digits:
+                error(invalid, "missing JSON number digits")
+            if self.pos < self.text.length and (self.text.bytes[self.pos] == 'e' or self.text.bytes[self.pos] == 'E'):
+                self.pos += 1
+                if self.pos < self.text.length and (self.text.bytes[self.pos] == '+' or self.text.bytes[self.pos] == '-'):
+                    self.pos += 1
+                let exponent = self.pos
+                while self.pos < self.text.length and self.text.bytes[self.pos] >= '0' and self.text.bytes[self.pos] <= '9':
+                    self.pos += 1
+                if exponent == self.pos:
+                    error(invalid, "missing JSON exponent digits")
+            self.tree.nodes.items[index].kind = Kind.number
+            self.tree.nodes.items[index].number = try strings.parse_f64((str)self.text.bytes[start..<self.pos])
+        elif self.literal("true"):
+            self.tree.nodes.items[index].kind = Kind.boolean
+            self.tree.nodes.items[index].boolean = true
+        elif self.literal("false"):
+            self.tree.nodes.items[index].kind = Kind.boolean
+        elif not self.literal("null"):
+            error(invalid, "invalid JSON value")
+        return index
+
+pub func parse(text: str) -> Tree!:
+    var parser = Parser(text = text)
+    errdefer parser.tree.close()
+    discard(try parser.value(0))
+    parser.space()
+    if parser.pos != text.length:
+        error(invalid, "trailing JSON input")
+    return parser.tree
+
+pub func quote(output: Buffer*, text: str) -> !:
+    try output.byte('"')
+    for byte in text.bytes:
+        if byte == '"' or byte == '\\':
+            try output.byte('\\')
+            try output.byte(byte)
+        elif byte == '\n':
+            try output.text("\\n")
+        elif byte == '\r':
+            try output.text("\\r")
+        elif byte == '\t':
+            try output.text("\\t")
+        elif byte == 8:
+            try output.text("\\b")
+        elif byte == 12:
+            try output.text("\\f")
+        elif byte < 32:
+            try output.text("\\u00")
+            try output.byte("0123456789abcdef".bytes[(usize)(byte >> 4)])
+            try output.byte("0123456789abcdef".bytes[(usize)(byte & 15)])
+        else:
+            try output.byte(byte)
+    try output.byte('"')
+
+pub func number(output: Buffer*, value: f64) -> !:
+    var scratch: u8[64]
+    if not math.is_finite(value):
+        try output.byte('0')
+    elif value == math.floor(value) and math.abs(value) < 1000000000000000.0:
+        let integer = (i64)value
+        try output.text(try format(scratch, f"{integer}"))
+    else:
+        try output.text(try strings.format_f64(value, scratch))

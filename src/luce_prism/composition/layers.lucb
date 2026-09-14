@@ -1,0 +1,167 @@
+## Sparse layers, deterministic sibling ordering and exact authored diffs.
+from luce_prism.model import DocumentData, Element
+from luce_prism.animation import equal_properties
+from luce_prism.storage import Buffer, List, add_name, close_names, equal_names, find_pair, has_name, remove_pair, set_pair, text_copy
+from luce_prism.path import element_path, is_descendant, parent_path
+from luce_prism.types import limit_exceeded, max_depth
+
+func emit_order(source: const DocumentData*, output: DocumentData*, parent: str, depth: usize) -> !:
+    if depth > max_depth:
+        error(limit_exceeded, "Prism reorder nesting limit exceeded")
+    var children = try source.children(parent)
+    defer children.close()
+    var emitted: List[Buffer]
+    defer close_names(&emitted)
+    for order in source.reorders.span():
+        if order.parent.view() == parent:
+            for child in order.children.span():
+                let path = child.view()
+                if source.contains(path) and parent_path(path) == parent and not has_name(&emitted, path):
+                    try output.insert_copy(&source.elements.items[try source.require(path)])
+                    try add_name(&emitted, path)
+                    try emit_order(source, output, path, depth + 1)
+    for path in children.span():
+        if not has_name(&emitted, path):
+            try output.insert_copy(&source.elements.items[try source.require(path)])
+            try emit_order(source, output, path, depth + 1)
+
+pub func rebuild_order(source: const DocumentData*) -> DocumentData!:
+    var output = try source.copy()
+    errdefer output.close()
+    output.clear_elements()
+    try emit_order(source, &output, "/", 0)
+    for i in 0..<output.reorders.count:
+        output.reorders.items[i].close()
+    output.reorders.close()
+    return output
+
+pub func prune_connections(document: DocumentData*):
+    var i = document.connections.count
+    while i > 0:
+        i -= 1
+        let connection = &document.connections.items[i]
+        if not document.contains(element_path(connection.key.view())) or not document.contains(element_path(connection.value.view())):
+            connection.close()
+            document.connections.remove(i)
+
+pub func overlay(base: const DocumentData*, layers: const DocumentData[]) -> DocumentData!:
+    var output = try base.copy()
+    errdefer output.close()
+    for layer in layers:
+        for deletion in layer.deletions.span():
+            if output.contains(deletion.view()):
+                try output.remove(deletion.view())
+        for disconnected in layer.disconnections.span():
+            output.disconnect(disconnected.view())
+        for element in layer.elements.span():
+            if let index = output.find(element.path.view()):
+                let authored = &output.elements.items[index]
+                for prop in element.properties.span():
+                    try authored.put_property(&prop)
+                for meta in element.metadata.span():
+                    try set_pair(&authored.metadata, meta.key.view(), meta.value.view())
+                for removed in element.removed_properties.span():
+                    authored.remove_property(removed.view())
+                for removed in element.removed_metadata.span():
+                    remove_pair(&authored.metadata, removed.view())
+                if element.kind.used > 0:
+                    try output.set_type(element.path.view(), element.kind.view())
+            elif not element.override:
+                try output.insert_copy(&element)
+                output.elements.items[output.elements.count - 1].override = false
+        for connection in layer.connections.span():
+            try set_pair(&output.connections, connection.key.view(), connection.value.view())
+        for asset in layer.assets.span():
+            try output.set_asset(asset.path.view(), asset.bytes.bytes(), asset.mime.view())
+        for order in layer.reorders.span():
+            var children: List[str]
+            defer children.close()
+            for child in order.children.span():
+                try children.push(child.view())
+            try output.reorder(order.parent.view(), children.span())
+    if output.reorders.count > 0:
+        let ordered = try rebuild_order(&output)
+        output.close()
+        output = ordered
+    prune_connections(&output)
+    return output
+
+pub func diff(base: const DocumentData*, target: const DocumentData*) -> DocumentData!:
+    var output = DocumentData()
+    errdefer output.close()
+    for element in base.elements.span():
+        let path = element.path.view()
+        if not target.contains(path):
+            let parent = parent_path(path)
+            if parent == "/" or target.contains(parent):
+                try output.mark_deleted(path)
+    for element in target.elements.span():
+        let path = element.path.view()
+        if let index = base.find(path):
+            let before = &base.elements.items[index]
+            var change = Element(override = true)
+            defer change.close()
+            change.path = try text_copy(path)
+            var changed = false
+            if before.kind.view() != element.kind.view():
+                change.kind = try element.kind.copy()
+                changed = change.kind.used > 0
+            for prop in element.properties.span():
+                let previous = before.property(prop.name.view())
+                var different = true
+                if let position = previous:
+                    different = not equal_properties(&before.properties.items[position], &prop)
+                if different:
+                    try change.put_property(&prop)
+                    changed = true
+            for prop in before.properties.span():
+                if element.property(prop.name.view()) == none:
+                    try add_name(&change.removed_properties, prop.name.view())
+                    changed = true
+            for meta in element.metadata.span():
+                let previous = find_pair(&before.metadata, meta.key.view())
+                if previous == none or (previous else "") != meta.value.view():
+                    try set_pair(&change.metadata, meta.key.view(), meta.value.view())
+                    changed = true
+            for meta in before.metadata.span():
+                if find_pair(&element.metadata, meta.key.view()) == none:
+                    try add_name(&change.removed_metadata, meta.key.view())
+                    changed = true
+            if changed:
+                try output.insert_copy(&change)
+        else:
+            try output.insert_copy(&element)
+            output.elements.items[output.elements.count - 1].override = false
+    for connection in target.connections.span():
+        let before = find_pair(&base.connections, connection.key.view())
+        if before == none or (before else "") != connection.value.view():
+            try set_pair(&output.connections, connection.key.view(), connection.value.view())
+    for connection in base.connections.span():
+        if find_pair(&target.connections, connection.key.view()) == none and target.contains(element_path(connection.key.view())):
+            try output.mark_disconnected(connection.key.view())
+    var parents: List[Buffer]
+    defer close_names(&parents)
+    try add_name(&parents, "/")
+    for element in target.elements.span():
+        try add_name(&parents, parent_path(element.path.view()))
+    for parent in parents.span():
+        var before = try base.children(parent.view())
+        defer before.close()
+        var after = try target.children(parent.view())
+        defer after.close()
+        var predicted: List[str]
+        defer predicted.close()
+        for child in before.span():
+            if target.contains(child):
+                try predicted.push(child)
+        for child in after.span():
+            if not base.contains(child):
+                try predicted.push(child)
+        var equal = predicted.count == after.count
+        if equal:
+            for i in 0..<after.count:
+                if after.items[i] != predicted.items[i]:
+                    equal = false
+        if not equal:
+            try output.reorder(parent.view(), after.span())
+    return output

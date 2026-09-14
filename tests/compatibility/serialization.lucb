@@ -1,0 +1,395 @@
+import prism
+import interop
+import strings
+import memory
+
+pub func same_bytes(a: const u8[], b: const u8[]):
+    assert(a.length == b.length)
+    for i in 0..<a.length:
+        assert(a[i] == b[i])
+
+pub func roundtrip(doc: interop.Reference[prism.Document], mode: usize) -> interop.Reference[prism.Document]!:
+    let encoded = try doc.value().encode_package(mode == 4) if mode >= 3 else try doc.value().encode(prism.Encoding.text if mode == 0 else prism.Encoding.binary, mode == 2)
+    defer encoded.release()
+    let back = try prism.Document.decode(encoded.value().bytes())
+    errdefer back.release()
+    assert(try back.value().equals(doc))
+    let again = try back.value().encode_package(mode == 4) if mode >= 3 else try back.value().encode(prism.Encoding.text if mode == 0 else prism.Encoding.binary, mode == 2)
+    defer again.release()
+    same_bytes(encoded.value().bytes(), again.value().bytes())
+    return back
+
+func scene(mode: usize) -> !:
+    let doc = try prism.Document.load("tests/fixtures/serialization-scene.prisma")
+    defer doc.release()
+    let back = try roundtrip(doc, mode)
+    defer back.release()
+    assert(back.value().element_count() == 4 and back.value().connection_count() == 1)
+    assert(try back.value().source("/world/sphere.inMaterial") == "/world/mat.out")
+    let positions = try back.value().get("/world/mesh", "points")
+    defer positions.release()
+    assert(positions.value().dtype() == prism.DType.float32 and positions.value().rank() == 2)
+    assert(try positions.value().dimension(0) == 3 and try positions.value().dimension(1) == 2)
+    assert(try positions.value().number_at(3) == -2.0)
+    let edges = try back.value().get("/world/mesh", "edges")
+    defer edges.release()
+    assert(edges.value().dtype() == prism.DType.int64 and edges.value().count() == 6)
+    assert(try edges.value().integer_at(4) == 2)
+    assert(try back.value().metadata("/world/mat", "label") == "a \"quoted\"\ttab\nnewline")
+    let midpoint = try back.value().resolve("/world/sphere", "animPos", 12.0)
+    defer midpoint.release()
+    assert(try midpoint.value().number_at() == 50.0)
+    let end = try back.value().resolve("/world/sphere", "animPos", 30.0)
+    defer end.release()
+    assert(try end.value().number_at() == 100.0)
+
+func types(mode: usize) -> !:
+    let doc = try prism.Document.load("tests/fixtures/serialization-types.prisma")
+    defer doc.release()
+    let back = try roundtrip(doc, mode)
+    defer back.release()
+    let names: str[14] = ["b","c","i8","i16","i32","i64","u8","u16","u32","u64","f32","f64","str","f16"]
+    for i in 0..<names.length:
+        let value = try back.value().get("/data", names[i])
+        defer value.release()
+        assert((usize)value.value().dtype() == i and value.value().rank() == 0)
+    let big = try back.value().get("/data", "i64")
+    defer big.release()
+    let unsigned = try back.value().get("/data", "u64")
+    defer unsigned.release()
+    assert(try big.value().integer_at() == 9007199254740993)
+    assert(try unsigned.value().unsigned_at() == 18000000000000000000)
+    let matrix = try back.value().get("/data", "mat_f64")
+    defer matrix.release()
+    assert(matrix.value().dtype() == prism.DType.float64 and matrix.value().count() == 64)
+    assert(try matrix.value().dimension(0) == 8 and try matrix.value().dimension(1) == 8)
+    assert(try matrix.value().number_at(63) == 6.300001000000001)
+    let words = try back.value().get("/data", "strs")
+    defer words.release()
+    assert(try words.value().text_at(2) == "ccc")
+
+func aliases() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef \"d\" { vec4f v = [1,2,3,4] matrix4d m = [[1,0,0,0],[0,1,0,0],[0,0,1,0],[0,0,0,1]] color3f c = [0.9,0.1,0.1] point3f p = [1,2,3] }")
+    defer doc.release()
+    for mode in 0..<(usize)5:
+        let back = try roundtrip(doc, mode)
+        defer back.release()
+        assert(try back.value().property_type_name("/d", "v") == "vec4f")
+        assert(try back.value().property_type_name("/d", "m") == "matrix4d")
+        assert(try back.value().property_type_name("/d", "c") != try back.value().property_type_name("/d", "p"))
+        let matrix = try back.value().get("/d", "m")
+        defer matrix.release()
+        assert(matrix.value().dtype() == prism.DType.float64 and matrix.value().rank() == 2)
+        assert(try matrix.value().dimension(1) == 4 and try matrix.value().number_at(15) == 1.0)
+
+func keys() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef object \"a\" { float \"mat.ior\" = 1.5 int \"mat.beam.shape\" = 1 float \"a name with spaces\" = 3.5 str \"0\" = \"metal\" str \"1\" = \"spur\" string \"meta key\" = \"hello\" string \"ns.sub\" = \"value\" }")
+    defer doc.release()
+    let layer = try prism.Document.parse("#prisma 4.0\nover \"a\" {}")
+    defer layer.release()
+    try layer.value().mark_unset("/a", "a name with spaces")
+    try layer.value().mark_unset("/a", "meta key", true)
+    for mode in 0..<(usize)5:
+        let back = try roundtrip(doc, mode)
+        defer back.release()
+        let patch = try roundtrip(layer, mode)
+        defer patch.release()
+        let result = try back.value().overlay(patch)
+        defer result.release()
+        assert(not result.value().has_property("/a", "a name with spaces"))
+        assert(not result.value().has_metadata("/a", "meta key"))
+        assert(try result.value().metadata("/a", "ns.sub") == "value")
+        let zero = try result.value().get("/a", "0")
+        defer zero.release()
+        assert(try zero.value().text_at() == "metal")
+
+func handles() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef \"anim\" { float rot = 0 float rot.timeSamples = { 0: 0 (interp = bezier), 10: 6.28 (interp = bezier), 20: 0 (interp = held) } }")
+    defer doc.release()
+    let left: f64[2] = [2.0,9.0]
+    let right: f64[2] = [8.0,1.0]
+    try doc.value().set_handles("/anim", "rot", 0.0, prism.HandleType.freeform, left, right)
+    for mode in 0..<(usize)5:
+        let back = try roundtrip(doc, mode)
+        defer back.release()
+        assert(try back.value().sample_count("/anim", "rot") == 3)
+        assert(try back.value().sample_interpolation_at("/anim", "rot", 0) == prism.Interpolation.bezier)
+        assert(try back.value().sample_interpolation_at("/anim", "rot", 1) == prism.Interpolation.bezier)
+        assert(try back.value().sample_interpolation_at("/anim", "rot", 2) == prism.Interpolation.held)
+        assert(try back.value().sample_handle_at("/anim", "rot", 0) == prism.HandleType.freeform)
+        assert((try back.value().sample_left_at("/anim", "rot", 0))[1] == 9.0)
+        assert((try back.value().sample_right_at("/anim", "rot", 0))[0] == 8.0)
+        let before = try doc.value().resolve("/anim", "rot", 4.0)
+        defer before.release()
+        let after = try back.value().resolve("/anim", "rot", 4.0)
+        defer after.release()
+        assert(try before.value().equals(after))
+
+func wildcard() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef material \"Plastic\" {} def group \"geo\" { def \"a\" {} def \"b\" {} def \"hero\" { connect inMat = </Plastic.out> } } connect </geo/*.material> = </Plastic.out>")
+    defer doc.release()
+    for mode in 0..<(usize)5:
+        let back = try roundtrip(doc, mode)
+        defer back.release()
+        assert(try back.value().source("/geo/a.material") == "/Plastic.out")
+        assert(try back.value().source("/geo/b.material") == "/Plastic.out")
+        assert(try back.value().source("/geo/hero.inMat") == "/Plastic.out")
+
+func syntax() -> !:
+    let doc = try prism.Document.load("tests/fixtures/serialization-scene.prisma")
+    defer doc.release()
+    let bytes = try doc.value().encode(prism.Encoding.text)
+    defer bytes.release()
+    let text = try bytes.value().text()
+    assert(strings.starts_with(text, "#prisma 4.0"))
+    assert(strings.contains(text, "float ior = 1.5") and strings.contains(text, "float2 position = (1.5, -2)"))
+    assert(strings.contains(text, "int segments = 7") and strings.contains(text, "bool visible = true"))
+    assert(strings.contains(text, "interp = held") and not strings.contains(text, "interp = linear"))
+    assert(not strings.contains(text, "uuid") and not strings.contains(text, "UUID"))
+
+func reject(text: str) -> !:
+    let doc = prism.Document.parse(text) catch failure:
+        return
+    doc.release()
+    assert(false)
+
+func malformed() -> !:
+    let cases: str[8] = ["", "not prism", "#prisma 1.0\nnot a def", "#prisma 1.0\ndef \"a\" {", "#prisma 1.0\ndef \"a\" { float x = }", "#prisma 1.0\ndef \"a\" {} def \"a\" {}", "#prisma 1.0\ndef \"a\" { foo = 1 }", "#prisma 1.0\ndef \"a\" { float foo = nope }"]
+    for input in cases:
+        try reject(input)
+
+func shapes() -> !:
+    let cases: str[4] = ["int64[100000000] x = [1]", "int8[4000000000,4000000000] x = []", "str[100000000] x = []", "int64[2000000000] x.timeSamples = {}"]
+    for input in cases:
+        var buffer = try strings.Builder.create()
+        defer buffer.destroy()
+        try buffer.put("#prisma 4.0\ndef \"a\" { ")
+        try buffer.put(input)
+        try buffer.put(" }")
+        try reject(buffer.view())
+    let small = try prism.Document.parse("#prisma 4.0\ndef \"a\" { int32[2,2] x = [[1,2],[3,4]] }")
+    defer small.release()
+    let value = try small.value().get("/a", "x")
+    defer value.release()
+    assert(value.value().count() == 4)
+
+func bounded_value() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef \"a\" { int32[2] x = [1,2] }")
+    defer doc.release()
+    let value = try doc.value().get("/a", "x")
+    defer value.release()
+    assert(value.value().bytes().length == 8 and try value.value().integer_at(1) == 2)
+    discard(value.value().integer_at(2) catch failure:
+        return
+    )
+    assert(false)
+
+func compression() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef \"array\" {}")
+    defer doc.release()
+    let data = try alloc u8[80000] in memory.heap
+    defer free(data) in memory.heap
+    for i in 0..<(usize)20000:
+        let number = (u64)i if i % 100 == 0 else 7
+        for j in 0..<(usize)4:
+            data[i * 4 + j] = (u8)(number >> (j * 8))
+    let shape: i64[1] = [20000]
+    let value = try prism.Value.array(prism.DType.int32, shape, data)
+    defer value.release()
+    try doc.value().set("/array", "x", value)
+    let raw = try doc.value().encode()
+    defer raw.release()
+    let packed = try doc.value().encode(prism.Encoding.binary, true)
+    defer packed.release()
+    assert(packed.value().size() * 2 < raw.value().size())
+    let back = try roundtrip(doc, 2)
+    defer back.release()
+
+func diagnostics() -> !:
+    let inputs: str[5] = ["#prisma 3.0\ndef object \"a\" {\nfloat x = 1\n", "#prisma 3.0\ndef \"a\" { flost x = 1 }", "not a header", "#prisma 9.0\n", "#prisma 4.0\ndef \"a\" {}"]
+    for i in 0..<inputs.length:
+        let result = try prism.decode_diagnosed(inputs[i].bytes, prism.Codec.prisma)
+        defer result.release()
+        assert(result.value().ok() == (i == 4))
+        if i == 0:
+            assert(result.value().line() >= 3)
+        elif i == 1:
+            assert(result.value().line() == 2)
+        elif i < 4:
+            if result.value().line() != 1:
+                print(f"diagnosis case {i}: {result.value().line()}:{result.value().column()} {result.value().error_message()}")
+            assert(result.value().line() == 1)
+        else:
+            assert(result.value().line() == 0)
+        if i < 4:
+            assert(result.value().error_message().length > 0)
+
+func handwritten() -> !:
+    let doc = try prism.Document.parse("  \n #prisma 1.0\n# comment\ndef object \"a\" { float radius = 4 connect in = </m.out> }\n\ndef material \"m\" { float out = 2 } # trailing comment\n")
+    defer doc.release()
+    assert(try doc.value().source("/a.in") == "/m.out")
+    let value = try doc.value().eval("/a.in")
+    defer value.release()
+    assert(try value.value().number_at() == 2.0)
+
+func arbitrary_types() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef \"svg\" { def \"#text\" \"0\" {} def rect \"1\" {} def \"plain\" {} }")
+    defer doc.release()
+    for mode in 0..<(usize)5:
+        let back = try roundtrip(doc, mode)
+        defer back.release()
+        assert(try back.value().type_at("/svg/0") == "#text")
+        assert(try back.value().type_at("/svg/1") == "rect")
+        assert(try back.value().type_at("/svg/plain") == "")
+
+func doc_round_trip_structural() -> !:
+    try scene(0)
+
+func geometry_arrays_round_trip_text_and_binary() -> !:
+    try scene(0)
+    try scene(1)
+
+func string_metadata_round_trips_text_and_binary() -> !:
+    try scene(0)
+    try scene(1)
+
+func namespaced_property_names_round_trip_text() -> !:
+    try keys()
+
+func non_identifier_keys_round_trip_text() -> !:
+    try keys()
+
+func non_identifier_property_names_round_trip_text() -> !:
+    try keys()
+
+func every_dtype_and_shape_round_trips_text_and_binary() -> !:
+    try types(0)
+    try types(1)
+
+func general_dtypes_round_trip_text_and_binary() -> !:
+    try types(0)
+    try types(1)
+
+func named_type_aliases_round_trip() -> !:
+    try aliases()
+
+func connect_directive_relative_and_wildcard() -> !:
+    try wildcard()
+
+func doc_round_trip_byte_stable() -> !:
+    try scene(0)
+
+func bezier_keyframe_handles_round_trip() -> !:
+    try handles()
+
+func format_is_versioned_and_uuid_free() -> !:
+    try syntax()
+
+func animated_values_resolve_after_load() -> !:
+    try scene(0)
+
+func usda_text_shape_is_clean() -> !:
+    try syntax()
+
+func binary_crate_round_trip_structural() -> !:
+    try scene(1)
+
+func binary_crate_round_trip_byte_stable() -> !:
+    try scene(1)
+
+func text_and_binary_encodings_describe_the_same_stage() -> !:
+    try scene(0)
+    try scene(1)
+
+func parses_hand_written_input_with_comments_and_whitespace() -> !:
+    try handwritten()
+
+func text_parser_rejects_implausible_array_shapes() -> !:
+    try shapes()
+
+func values_read_is_bounded_by_buffer() -> !:
+    try bounded_value()
+
+func binary_crate_compression_round_trips() -> !:
+    try compression()
+
+func parse_errors_are_located() -> !:
+    try diagnostics()
+
+func non_identifier_type_tokens_round_trip_text() -> !:
+    try arbitrary_types()
+
+func every_type_round_trips_through_text() -> !:
+    try scene(0)
+    try aliases()
+    try types(0)
+
+func every_type_round_trips_through_binary() -> !:
+    try scene(1)
+    try types(1)
+
+func every_type_round_trips_through_package_binary_scene() -> !:
+    try scene(3)
+    try types(3)
+
+func every_type_round_trips_through_package_text_scene() -> !:
+    try scene(4)
+    try types(4)
+
+func bezier_keyframe_metadata_survives_round_trip() -> !:
+    try handles()
+
+func all_three_encodings_describe_the_same_stage() -> !:
+    try scene(0)
+    try scene(1)
+    try scene(3)
+
+func deserialize_rejects_malformed() -> !:
+    try malformed()
+
+func int64_property_round_trips_exactly() -> !:
+    try types(0)
+    try types(1)
+
+pub func run() -> !:
+    let topology = try prism.Document.parse("#prisma 4.0\ndef \"mesh\" { float[] width = [1,2,3,4] float[] width.timeSamples = { 0: [1,2], 10: [] } float2[] points = [(0,0)] float2[] points.timeSamples = { 0: [(0,0),(1,1)], 10: [] } }")
+    defer topology.release()
+    for mode in 0..<(usize)5:
+        let back = try roundtrip(topology, mode)
+        defer back.release()
+        let width = try back.value().sample_value_at("/mesh", "width", 0)
+        defer width.release()
+        assert(width.value().count() == 2)
+    try doc_round_trip_structural()
+    try geometry_arrays_round_trip_text_and_binary()
+    try string_metadata_round_trips_text_and_binary()
+    try namespaced_property_names_round_trip_text()
+    try non_identifier_keys_round_trip_text()
+    try non_identifier_property_names_round_trip_text()
+    try every_dtype_and_shape_round_trips_text_and_binary()
+    try general_dtypes_round_trip_text_and_binary()
+    try named_type_aliases_round_trip()
+    try connect_directive_relative_and_wildcard()
+    try doc_round_trip_byte_stable()
+    try bezier_keyframe_handles_round_trip()
+    try format_is_versioned_and_uuid_free()
+    try animated_values_resolve_after_load()
+    try usda_text_shape_is_clean()
+    try binary_crate_round_trip_structural()
+    try binary_crate_round_trip_byte_stable()
+    try text_and_binary_encodings_describe_the_same_stage()
+    try parses_hand_written_input_with_comments_and_whitespace()
+    try text_parser_rejects_implausible_array_shapes()
+    try values_read_is_bounded_by_buffer()
+    try binary_crate_compression_round_trips()
+    try parse_errors_are_located()
+    try non_identifier_type_tokens_round_trip_text()
+    try every_type_round_trips_through_text()
+    try every_type_round_trips_through_binary()
+    try every_type_round_trips_through_package_binary_scene()
+    try every_type_round_trips_through_package_text_scene()
+    try bezier_keyframe_metadata_survives_round_trip()
+    try all_three_encodings_describe_the_same_stage()
+    try deserialize_rejects_malformed()
+    try int64_property_round_trips_exactly()
+    print("PASS 32 legacy serialization cases across five encoding variants")

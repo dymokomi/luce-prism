@@ -1,0 +1,225 @@
+## Lazy immutable query plans; terminals read the current document.
+import interop
+import memory
+import ownership
+import luce_prism.query.sort as sorting
+import luce_prism.query.aggregation as aggregation
+import luce_prism.query.groups as grouping
+from luce_prism.query.predicates import Predicate
+from luce_prism.query.results import Selection, own_selection
+from luce_prism.document import Document
+from luce_prism.model import DocumentData, Element
+from luce_prism.storage import List, Buffer, text_copy
+from luce_prism.pattern import valid_pattern, matches
+from luce_prism.types import invalid
+
+pub struct Query:
+    var document: interop.Reference[Document]
+    var pattern: Buffer
+    var source_valid: bool
+    var filters: List[Predicate]
+    var order: Buffer
+    var ordered: bool
+    var reversed: bool
+    var maximum: usize?
+
+    pub func init(document: interop.Reference[Document], pattern: str = "") -> !:
+        let copied_pattern = try text_copy(pattern)
+        self.document = document.clone()
+        self.pattern = copied_pattern
+        self.source_valid = pattern.length == 0 or valid_pattern(pattern)
+        self.filters = List[Predicate]()
+        self.order = Buffer()
+        self.ordered = false
+        self.reversed = false
+        self.maximum = none
+
+    pub func view_document() -> interop.Reference[Document]:
+        return self.document.clone()
+
+    func copy() -> Query!:
+        var output = try Query(self.document, self.pattern.view())
+        errdefer output.close()
+        output.order = try self.order.copy()
+        output.ordered = self.ordered
+        output.reversed = self.reversed
+        output.maximum = self.maximum
+        try output.filters.reserve(self.filters.count)
+        for predicate in self.filters.span():
+            try output.filters.push(try predicate.copy())
+        return output
+
+    pub func filter(predicate: interop.Reference[Predicate]) -> interop.Reference[Query]!:
+        var output = try self.copy()
+        errdefer output.close()
+        var copy = try (try predicate.get()).copy()
+        errdefer copy.close()
+        try output.filters.push(copy)
+        copy = Predicate()
+        return try own_query(&output)
+
+    pub func order_by(field: str) -> interop.Reference[Query]!:
+        var output = try self.copy()
+        errdefer output.close()
+        output.order.close()
+        output.order = try text_copy(field)
+        output.ordered = true
+        return try own_query(&output)
+
+    pub func reverse() -> interop.Reference[Query]!:
+        var output = try self.copy()
+        errdefer output.close()
+        output.reversed = not output.reversed
+        return try own_query(&output)
+
+    pub func limit(count: usize) -> interop.Reference[Query]!:
+        var output = try self.copy()
+        errdefer output.close()
+        output.maximum = count
+        return try own_query(&output)
+
+    func accepts(element: const Element*) -> bool!:
+        if not self.source_valid or (self.pattern.used > 0 and not matches(self.pattern.view(), element.path.view())):
+            return false
+        var has_callback = false
+        for predicate in self.filters.span():
+            has_callback = has_callback or predicate.has_callback()
+        # Callbacks may capture and edit their source document. Evaluate against a
+        # stable row, then detect that edit before accessing the iterator again.
+        var snapshot: Element
+        defer snapshot.close()
+        var row = element
+        let revision = (try self.document.get()).revision()
+        if has_callback:
+            snapshot = try element.copy()
+            row = &snapshot
+        for predicate in self.filters.span():
+            let accepted = try predicate.accepts_row(row)
+            if has_callback and (try self.document.get()).revision() != revision:
+                error(invalid, "a query callback modified its source document")
+            if not accepted:
+                return false
+        return true
+
+    pub func rows() -> List[usize]!:
+        var output: List[usize]
+        errdefer output.close()
+        if self.maximum == 0:
+            return output
+        let doc = (try self.document.get()).view_data()
+        for index in 0..<doc.elements.count:
+            if try self.accepts(&doc.elements.items[index]):
+                try output.push(index)
+                if not self.ordered and not self.reversed and self.maximum == output.count:
+                    break
+        if self.ordered:
+            try sorting.order(doc, output.span(), self.order.view())
+        if self.reversed:
+            for i in 0..<output.count // 2:
+                let previous = output.items[i]
+                output.items[i] = output.items[output.count - i - 1]
+                output.items[output.count - i - 1] = previous
+        if let maximum = self.maximum:
+            if output.count > maximum:
+                output.count = maximum
+        return output
+
+    pub func select() -> interop.Reference[Selection]!:
+        var rows = try self.rows()
+        defer rows.close()
+        var selection = Selection()
+        errdefer selection.close()
+        let doc = (try self.document.get()).view_data()
+        for index in rows.span():
+            try selection.append(&doc.elements.items[index])
+        let owned = selection
+        selection = Selection()
+        return try own_selection(owned)
+
+    pub func count() -> usize!:
+        var rows = try self.rows()
+        defer rows.close()
+        return rows.count
+
+    pub func first() -> str?!:
+        let doc = (try self.document.get()).view_data()
+        if self.ordered or self.reversed:
+            var rows = try self.rows()
+            defer rows.close()
+            return doc.elements.items[rows.items[0]].path.view() if rows.count > 0 else none
+        if self.maximum == 0:
+            return none
+        for element in doc.elements.span():
+            if try self.accepts(&element):
+                return element.path.view()
+        return none
+
+    pub func any() -> bool!:
+        if self.maximum == 0:
+            return false
+        let doc = (try self.document.get()).view_data()
+        for element in doc.elements.span():
+            if try self.accepts(&element):
+                return true
+        return false
+
+    pub func one() -> str!:
+        let doc = (try self.document.get()).view_data()
+        var result: str? = none
+        for element in doc.elements.span():
+            if try self.accepts(&element):
+                if result != none:
+                    error(invalid, "Query.one matched more than one row")
+                result = element.path.view()
+        return result else error(invalid, "Query.one matched no rows")
+
+    pub func aggregate(field: str, operation: aggregation.Aggregate) -> f64?!:
+        var rows = try self.rows()
+        defer rows.close()
+        return try aggregation.numeric((try self.document.get()).view_data(), rows.span(), field, operation)
+
+    pub func distinct_count(field: str) -> usize!:
+        var rows = try self.rows()
+        defer rows.close()
+        return try aggregation.distinct((try self.document.get()).view_data(), rows.span(), field)
+
+    pub func group_by(field: str) -> interop.Reference[grouping.Groups]!:
+        var rows = try self.rows()
+        defer rows.close()
+        let fields = [field]
+        return try grouping.build((try self.document.get()).view_data(), rows.span(), fields)
+
+    pub func aggregate_by(fields: const str[], value_field: str, operation: aggregation.Aggregate) -> interop.Reference[grouping.Groups]!:
+        var rows = try self.rows()
+        defer rows.close()
+        return try grouping.build((try self.document.get()).view_data(), rows.span(), fields, value_field, operation)
+
+    pub mutating func close():
+        self.document.release()
+        self.pattern.close()
+        self.order.close()
+        for i in 0..<self.filters.count:
+            self.filters.items[i].close()
+        self.filters.close()
+
+    func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        self.document.trace(visit, context)
+        for predicate in self.filters.span():
+            predicate.trace(visit, context)
+
+pub let query_type = interop.Type[Query]("Prism query", Query.close, Query.trace, closeable = true)
+
+# Consumes all resources from a plan; callers can keep their ordinary errdefer.
+func own_query(query: Query*) -> interop.Reference[Query]!:
+    let native = try new Query(query.document) in memory.heap
+    native.close()
+    native[0] = query[0]
+    # Leave a separately retained document in the source for its error cleanup.
+    query.document = native.document.clone()
+    query.pattern = Buffer()
+    query.order = Buffer()
+    query.filters = List[Predicate]()
+    let output = interop.Reference[Query].adopt(native, query_type, memory.heap) catch failure:
+        error(failure.code, failure.message)
+    query.document.release()
+    return output

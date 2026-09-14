@@ -1,0 +1,205 @@
+## JSON objects and arrays are addressable Prism elements; scalars are properties.
+import memory
+import luce_prism.codecs.json_tree as syntax
+from luce_prism.codecs.common import segment, child_path, put, get_value
+from luce_prism.storage import Buffer, Reader, List
+from luce_prism.model import DocumentData
+from luce_prism.path import path_name
+from luce_prism.value import ValueData, scalar_bits
+from luce_prism.types import DType, invalid, limit_exceeded
+
+func scalar(node: const syntax.Node*) -> ValueData!:
+    if node.kind == syntax.Kind.boolean:
+        return try scalar_bits(DType.boolean, 1 if node.boolean else 0)
+    if node.kind == syntax.Kind.number:
+        var number = node.number
+        return try scalar_bits(DType.float64, memory.read[u64](&number))
+    var value = ValueData(kind = DType.string)
+    errdefer value.close()
+    if node.kind == syntax.Kind.string:
+        try value.payload.sized(node.text.view())
+    else:
+        try value.shape.push(0)
+    return value
+
+func build(doc: DocumentData*, path: str, tree: const syntax.Tree*, index: usize) -> !:
+    let node = &tree.nodes.items[index]
+    let container = node.kind == syntax.Kind.array or node.kind == syntax.Kind.object
+    try doc.add(path, ("array" if node.kind == syntax.Kind.array else "object") if container else "value")
+    if not container:
+        var value = try scalar(node)
+        defer value.close()
+        try put(doc, path, "value", &value)
+        return
+    for i in 0..<node.children.count:
+        let entry = &node.children.items[i]
+        let child = &tree.nodes.items[entry.node]
+        if child.kind != syntax.Kind.array and child.kind != syntax.Kind.object:
+            var digits: u8[32]
+            let key = try format(digits, f"{i}") if node.kind == syntax.Kind.array else entry.key.view()
+            var value = try scalar(child)
+            defer value.close()
+            try put(doc, path, key, &value)
+    for i in 0..<node.children.count:
+        let entry = &node.children.items[i]
+        let child = &tree.nodes.items[entry.node]
+        if child.kind == syntax.Kind.array or child.kind == syntax.Kind.object:
+            var digits: u8[32]
+            let key = try format(digits, f"{i}") if node.kind == syntax.Kind.array else entry.key.view()
+            if not segment(key):
+                error(invalid, "JSON child key is not a representable element name")
+            var next = try child_path(path, key)
+            defer next.close()
+            try build(doc, next.view(), tree, entry.node)
+
+pub func decode(bytes: const u8[]) -> DocumentData!:
+    var tree = try syntax.parse(try str(bytes))
+    defer tree.close()
+    var output = DocumentData()
+    errdefer output.close()
+    try build(&output, "/root", &tree, 0)
+    return output
+
+func leaf(output: Buffer*, value: const ValueData*, index: usize, reader: Reader*) -> !:
+    if value.kind == DType.string:
+        try syntax.quote(output, try reader.text())
+    elif value.kind == DType.boolean:
+        try output.text("true" if value.bits(index) != 0 else "false")
+    elif value.kind == DType.character:
+        var byte: u8[1] = [(u8)value.bits(index)]
+        try syntax.quote(output, try str(byte))
+    else:
+        try syntax.number(output, try value.number(index))
+
+func nested(output: Buffer*, value: const ValueData*, dimension: usize, index: usize*, reader: Reader*) -> !:
+    try output.byte('[')
+    for i in 0..<value.shape.items[dimension]:
+        if i > 0:
+            try output.byte(',')
+        if dimension + 1 == value.shape.count:
+            try leaf(output, value, index[0], reader)
+            index[0] += 1
+        else:
+            try nested(output, value, dimension + 1, index, reader)
+    try output.byte(']')
+
+func write_value(output: Buffer*, value: const ValueData*) -> !:
+    if value.kind == DType.string and value.shape.count == 1 and value.shape.items[0] == 0:
+        try output.text("null")
+        return
+    var reader = Reader(data = value.payload.bytes())
+    if value.shape.count == 0:
+        try leaf(output, value, 0, &reader)
+    else:
+        var index: usize = 0
+        try nested(output, value, 0, &index, &reader)
+
+func parse_index(text: str) -> usize?:
+    if text.length == 0 or text.length > 18:
+        return none
+    var value: usize = 0
+    for byte in text.bytes:
+        if byte < '0' or byte > '9':
+            return none
+        value = value * 10 + (usize)(byte - '0')
+    return value
+
+func add_index(indices: List[usize]*, index: usize):
+    for value in indices.span():
+        if value == index:
+            return
+    # Capacity has been reserved for all properties and children by the caller.
+    indices.items[indices.count] = index
+    indices.count += 1
+    var i = indices.count - 1
+    while i > 0 and indices.items[i - 1] > index:
+        indices.items[i] = indices.items[i - 1]
+        indices.items[i - 1] = index
+        i -= 1
+
+func emit(doc: const DocumentData*, path: str, output: Buffer*, depth: usize) -> !:
+    if depth > 200:
+        error(limit_exceeded, "JSON emission depth exceeded")
+    if not doc.contains(path):
+        try output.text("null")
+        return
+    let position = try doc.require(path)
+    let element = &doc.elements.items[position]
+    var children = try doc.children(path)
+    defer children.close()
+    if element.kind.view() == "value":
+        if let value = get_value(doc, path, "value"):
+            try write_value(output, value)
+        else:
+            try output.text("null")
+    elif element.kind.view() == "array":
+        var indices: List[usize]
+        defer indices.close()
+        try indices.reserve(element.properties.count + children.count)
+        for prop in element.properties.span():
+            if let index = parse_index(prop.name.view()):
+                add_index(&indices, index)
+        for child in children.span():
+            if let index = parse_index(path_name(child)):
+                add_index(&indices, index)
+        let end = indices.items[indices.count - 1] + 1 if indices.count > 0 else 0
+        let sparse = end > indices.count + 4096
+        let count = indices.count if sparse else end
+        try output.byte('[')
+        for i in 0..<count:
+            if i > 0:
+                try output.byte(',')
+            let index = indices.items[i] if sparse else i
+            var scratch: u8[32]
+            let name = try format(scratch, f"{index}")
+            if let value = get_value(doc, path, name):
+                try write_value(output, value)
+            else:
+                var child = try child_path(path, name)
+                defer child.close()
+                try emit(doc, child.view(), output, depth + 1)
+        try output.byte(']')
+    else:
+        try output.byte('{')
+        var count: usize = 0
+        for prop in element.properties.span():
+            if count > 0:
+                try output.byte(',')
+            count += 1
+            try syntax.quote(output, prop.name.view())
+            try output.byte(':')
+            # A child with the same name replaces the property in C++ Json::set.
+            var child = try child_path(path, prop.name.view())
+            defer child.close()
+            if doc.contains(child.view()):
+                try emit(doc, child.view(), output, depth + 1)
+            else:
+                try write_value(output, &prop.value)
+        for child in children.span():
+            if element.property(path_name(child)) != none:
+                continue
+            if count > 0:
+                try output.byte(',')
+            count += 1
+            try syntax.quote(output, path_name(child))
+            try output.byte(':')
+            try emit(doc, child, output, depth + 1)
+        try output.byte('}')
+
+pub func encode(doc: const DocumentData*) -> Buffer!:
+    var output: Buffer
+    errdefer output.close()
+    var roots = try doc.children("/")
+    defer roots.close()
+    if roots.count == 1 and roots.items[0] == "/root":
+        try emit(doc, "/root", &output, 0)
+    else:
+        try output.byte('{')
+        for i in 0..<roots.count:
+            if i > 0:
+                try output.byte(',')
+            try syntax.quote(&output, path_name(roots.items[i]))
+            try output.byte(':')
+            try emit(doc, roots.items[i], &output, 0)
+        try output.byte('}')
+    return output

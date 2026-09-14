@@ -1,0 +1,106 @@
+## Public conflict reports and retained layer histories.
+import interop
+import memory
+from luce_prism.document import Document, own_document
+from luce_prism.model import DocumentData
+from luce_prism.storage import List
+from luce_prism.types import invalid
+import luce_prism.composition.conflicts as conflicts
+import luce_prism.composition.layers as layers
+
+pub struct MergeResult:
+    var items: List[conflicts.Conflict]
+    var merged: DocumentData = DocumentData()
+
+    pub func init():
+        return
+
+    pub func ok() -> bool:
+        return self.items.count == 0
+
+    pub func count() -> usize:
+        return self.items.count
+
+    pub func path_at(index: usize) -> str!:
+        if index >= self.items.count:
+            error(invalid, "Prism conflict index is out of bounds")
+        return self.items.items[index].path.view()
+
+    pub func detail_at(index: usize) -> str!:
+        if index >= self.items.count:
+            error(invalid, "Prism conflict index is out of bounds")
+        return self.items.items[index].detail.view()
+
+    pub func document() -> interop.Reference[Document]!:
+        if not self.ok():
+            error(invalid, "Prism merge has unresolved conflicts")
+        return try own_document(try self.merged.copy())
+
+    pub mutating func close():
+        conflicts.close_conflicts(&self.items)
+        self.merged.close()
+
+pub let merge_type = interop.Type[MergeResult]("Prism merge result", MergeResult.close, closeable = true)
+
+pub func merge(base: interop.Reference[Document], a: interop.Reference[Document], b: interop.Reference[Document]) -> interop.Reference[MergeResult]!:
+    let result = try new MergeResult() in memory.heap
+    populate(result, base, a, b) catch failure:
+        result.close()
+        free(result) in memory.heap
+        error(failure.code, failure.message)
+    return try interop.Reference[MergeResult].adopt(result, merge_type, memory.heap)
+
+func populate(output: MergeResult*, base: interop.Reference[Document], a: interop.Reference[Document], b: interop.Reference[Document]) -> !:
+    let before = (try base.get()).view_data()
+    let left = (try a.get()).view_data()
+    let right = (try b.get()).view_data()
+    output.items = try conflicts.collect(left, right)
+    if output.items.count == 0:
+        let opinions: DocumentData[2] = [left[0], right[0]]
+        output.merged = try layers.overlay(before, opinions)
+
+pub struct LayerStack:
+    var foundation: DocumentData = DocumentData()
+    var opinions: List[DocumentData]
+
+    pub func init(base: interop.Reference[Document]) -> !:
+        self.opinions = List[DocumentData]()
+        self.foundation = try (try base.get()).view_data().copy()
+
+    pub mutating func push(layer: interop.Reference[Document]) -> !:
+        var owned = try (try layer.get()).view_data().copy()
+        errdefer owned.close()
+        try self.opinions.push(owned)
+
+    pub func count() -> usize:
+        return self.opinions.count
+
+    pub func base() -> interop.Reference[Document]!:
+        return try own_document(try self.foundation.copy())
+
+    pub func layer(index: usize) -> interop.Reference[Document]!:
+        if index >= self.opinions.count:
+            error(invalid, "Prism layer index is out of bounds")
+        return try own_document(try self.opinions.items[index].copy())
+
+    pub func resolve() -> interop.Reference[Document]!:
+        return try own_document(try layers.overlay(&self.foundation, self.opinions.span()))
+
+    pub mutating func compact(keep: usize) -> !:
+        if keep >= self.opinions.count:
+            return
+        let fold = self.opinions.count - keep
+        let collapsed = try layers.overlay(&self.foundation, self.opinions.items[..<fold])
+        self.foundation.close()
+        self.foundation = collapsed
+        for i in 0..<fold:
+            self.opinions.items[0].close()
+            self.opinions.remove(0)
+
+    pub mutating func close():
+        self.foundation.close()
+        for i in 0..<self.opinions.count:
+            self.opinions.items[i].close()
+        self.opinions.close()
+
+pub let layer_stack_type = interop.Type[LayerStack]("Prism layer stack", LayerStack.close, closeable = true)

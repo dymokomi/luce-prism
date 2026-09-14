@@ -1,0 +1,84 @@
+## Validated owned paths for callers that want typed hierarchy operations.
+import interop
+import memory
+import luce_prism.path as paths
+import luce_prism.pattern as patterns
+from luce_prism.storage import Buffer, text_copy
+from luce_prism.types import invalid
+
+pub struct Path:
+    var data: Buffer
+
+    pub func init(text: str = "/") -> !:
+        if not paths.valid_path(text):
+            error(invalid, "malformed Prism path")
+        self.data = try text_copy(text)
+
+    pub func text() -> str:
+        return self.data.view()
+
+    pub func is_root() -> bool:
+        return self.data.view() == "/"
+
+    pub func name() -> str?:
+        let name = paths.path_name(self.data.view())
+        return name if name.length > 0 else none
+
+    pub func property() -> str?:
+        let name = paths.slot_name(self.data.view())
+        return name if name.length > 0 else none
+
+    pub func element() -> interop.Reference[Path]!:
+        return try own(paths.element_path(self.data.view()))
+
+    pub func parent() -> interop.Reference[Path]?!:
+        if self.is_root():
+            return none
+        return try own(paths.parent_path(self.data.view()))
+
+    pub func child(name: str) -> interop.Reference[Path]!:
+        var path = try paths.joined(paths.element_path(self.data.view()), name)
+        defer path.close()
+        return try own(path.view())
+
+    pub func with_property(name: str) -> interop.Reference[Path]!:
+        var path = try paths.joined(paths.element_path(self.data.view()), name, ".")
+        defer path.close()
+        return try own(path.view())
+
+    pub func is_ancestor_of(other: interop.Reference[Path]) -> bool!:
+        return paths.is_descendant((try other.get()).text(), self.data.view())
+
+    pub func reparented(origin: interop.Reference[Path], destination: interop.Reference[Path]) -> interop.Reference[Path]!:
+        let old = paths.element_path((try origin.get()).text())
+        let next = paths.element_path((try destination.get()).text())
+        let current = self.data.view()
+        if not paths.is_descendant(current, old):
+            return try own(current)
+        var result: Buffer
+        defer result.close()
+        let suffix = (str)current.bytes[(0 if old == "/" and current != "/" else old.length)..]
+        if next != "/" or suffix.length == 0 or suffix.bytes[0] != '/':
+            try result.text(next)
+        try result.text(suffix)
+        return try own(result.view())
+
+    pub func matches(pattern: str) -> bool:
+        return patterns.matches(pattern, self.data.view())
+
+    pub func equals(other: interop.Reference[Path]) -> bool!:
+        return self.data.view() == (try other.get()).text()
+
+    pub func hash_code() -> usize:
+        var hash_code: u32 = 2166136261
+        for byte in self.data.bytes():
+            hash_code = (hash_code ^ (u32)byte) *% 16777619
+        return (usize)hash_code
+
+    pub mutating func close():
+        self.data.close()
+
+pub let path_type = interop.Type[Path]("Prism path", Path.close, closeable = true)
+
+func own(text: str) -> interop.Reference[Path]!:
+    return try interop.Reference[Path].adopt(try new Path(text) in memory.heap, path_type, memory.heap)

@@ -1,0 +1,197 @@
+## A filesystem convention over Prism elements; no implicit filesystem access.
+import interop
+import memory
+import luce_prism.codecs.api as codecs
+import luce_prism.codecs.svg as svg
+import luce_prism.codecs.html_reader as html_reader
+import luce_prism.codecs.html_writer as html_writer
+import luce_prism.codecs.markdown_reader as markdown_reader
+import luce_prism.codecs.markdown_writer as markdown_writer
+from luce_prism.codecs.common import get_text, get_value, set_text, put, type_of, child_path, segment
+from luce_prism.path import is_descendant
+from luce_prism.storage import Buffer, Blob, List, own_blob, copied, less, text_copy
+from luce_prism.model import DocumentData
+from luce_prism.document import Document, own_document
+from luce_prism.value import ValueData
+from luce_prism.types import DType, invalid, limit_exceeded
+
+func safe_path(doc: const DocumentData*, parent: str, name: str) -> Buffer!:
+    var base: Buffer
+    defer base.close()
+    for byte in name.bytes:
+        let safe = (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or (byte >= '0' and byte <= '9') or byte == '_'
+        try base.byte(byte if safe else '_')
+    if base.used == 0:
+        try base.byte('f')
+    var path = try child_path(parent, base.view())
+    errdefer path.close()
+    var suffix: usize = 2
+    while doc.contains(path.view()):
+        path.close()
+        path = try child_path(parent, base.view())
+        var scratch: u8[32]
+        try path.text(try format(scratch, f"_{suffix}"))
+        suffix += 1
+        if suffix > 1048576:
+            error(limit_exceeded, "too many duplicate bundle names")
+    return path
+
+func graft(output: DocumentData*, destination: str, source: const DocumentData*, root: str) -> !:
+    for element in source.elements.span():
+        if not is_descendant(element.path.view(), root):
+            continue
+        var copy = try element.copy()
+        defer copy.close()
+        var path = try text_copy(destination)
+        errdefer path.close()
+        try path.put(element.path.bytes()[root.length..])
+        copy.path.close()
+        copy.path = path
+        path = Buffer()
+        try output.insert_copy(&copy)
+
+pub struct Bundle:
+    var data: DocumentData
+
+    pub func init() -> !:
+        self.data = DocumentData()
+        errdefer self.data.close()
+        # A real root lets the entire bundle survive both ASCII and binary forms.
+        try self.data.add("/bundle", "folder")
+
+    pub static func from_document(doc: interop.Reference[Document]) -> interop.Reference[Bundle]!:
+        let source = try doc.get()
+        var data = try source.view_data().copy()
+        errdefer data.close()
+        let native = try new Bundle() in memory.heap
+        native.data.close()
+        native.data = data
+        data = DocumentData()
+        return try interop.Reference[Bundle].adopt(native, bundle_type, memory.heap)
+
+    pub func document() -> interop.Reference[Document]!:
+        return try own_document(try self.data.copy())
+
+    pub mutating func add_folder(parent: str, name: str) -> str!:
+        var path = try safe_path(&self.data, parent, name)
+        defer path.close()
+        var next = try self.data.copy()
+        errdefer next.close()
+        try next.add(path.view(), "folder")
+        try set_text(&next, path.view(), "name", name)
+        let index = try next.require(path.view())
+        self.data.close()
+        self.data = next
+        return self.data.elements.items[index].path.view()
+
+    pub mutating func add_file(parent: str, name: str, bytes: const u8[]) -> str!:
+        discard(try self.data.require(parent))
+        var path = try safe_path(&self.data, parent, name)
+        defer path.close()
+        var next = try self.data.copy()
+        errdefer next.close()
+        let codec = try codecs.codec_for_path(name)
+        if codec == codecs.Codec.html or codec == codecs.Codec.markdown or codec == codecs.Codec.svg:
+            var imported = DocumentData()
+            defer imported.close()
+            var failed = false
+            if codec == codecs.Codec.svg:
+                imported = svg.decode(bytes) catch failure:
+                    if failure.code != invalid:
+                        error(failure.code, failure.message)
+                    failed = true
+                    recover DocumentData()
+            elif codec == codecs.Codec.html:
+                imported = html_reader.decode(bytes) catch failure:
+                    if failure.code != invalid:
+                        error(failure.code, failure.message)
+                    failed = true
+                    recover DocumentData()
+            else:
+                imported = markdown_reader.decode(bytes) catch failure:
+                    if failure.code != invalid:
+                        error(failure.code, failure.message)
+                    failed = true
+                    recover DocumentData()
+            if failed:
+                try next.add(path.view(), "svg" if codec == codecs.Codec.svg else "document")
+            else:
+                try graft(&next, path.view(), &imported, "/svg" if codec == codecs.Codec.svg else "/document")
+        else:
+            try next.add(path.view(), "blob")
+            var value = ValueData(kind = DType.uint8)
+            defer value.close()
+            try value.shape.push((u32)bytes.length)
+            value.payload = try copied(bytes)
+            try put(&next, path.view(), "data", &value)
+        try set_text(&next, path.view(), "name", name)
+        let index = try next.require(path.view())
+        self.data.close()
+        self.data = next
+        return self.data.elements.items[index].path.view()
+
+    pub func is_folder(path: str) -> bool:
+        return type_of(&self.data, path) == "folder"
+
+    pub func is_file(path: str) -> bool:
+        let kind = type_of(&self.data, path)
+        return kind == "document" or kind == "svg" or kind == "blob"
+
+    pub func file_name(path: str) -> str:
+        return get_text(&self.data, path, "name")
+
+    pub mutating func set_file_name(path: str, name: str) -> !:
+        try set_text(&self.data, path, "name", name)
+
+    func entries(parent: str) -> List[str]!:
+        var all = try self.data.children(parent)
+        defer all.close()
+        var result: List[str]
+        errdefer result.close()
+        for path in all.span():
+            if not self.is_folder(path) and not self.is_file(path):
+                continue
+            try result.push(path)
+            var i = result.count - 1
+            while i > 0 and less(self.file_name(result.items[i]), self.file_name(result.items[i - 1])):
+                let previous = result.items[i - 1]
+                result.items[i - 1] = result.items[i]
+                result.items[i] = previous
+                i -= 1
+        return result
+
+    pub func entry_count(parent: str) -> usize!:
+        var entries = try self.entries(parent)
+        defer entries.close()
+        return entries.count
+
+    pub func entry_at(parent: str, index: usize) -> str!:
+        var entries = try self.entries(parent)
+        defer entries.close()
+        if index >= entries.count:
+            error(invalid, "bundle entry index is out of bounds")
+        return entries.items[index]
+
+    pub func materialize(path: str) -> interop.Reference[Blob]!:
+        let kind = type_of(&self.data, path)
+        if kind == "blob":
+            let value = get_value(&self.data, path, "data") else error(invalid, "bundle blob has no data")
+            if value.kind != DType.uint8:
+                error(invalid, "bundle blob data must be uint8")
+            return try own_blob(try value.payload.copy())
+        if kind != "document" and kind != "svg":
+            error(invalid, "bundle path is not a materializable file")
+        var standalone = DocumentData()
+        defer standalone.close()
+        try graft(&standalone, "/svg" if kind == "svg" else "/document", &self.data, path)
+        if kind == "svg":
+            return try own_blob(try svg.encode(&standalone))
+        let codec = try codecs.codec_for_path(self.file_name(path))
+        if codec == codecs.Codec.markdown:
+            return try own_blob(try markdown_writer.encode(&standalone))
+        return try own_blob(try html_writer.encode(&standalone))
+
+    pub mutating func close():
+        self.data.close()
+
+pub let bundle_type = interop.Type[Bundle]("Prism bundle", Bundle.close, closeable = true)

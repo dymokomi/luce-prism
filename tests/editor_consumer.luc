@@ -1,0 +1,77 @@
+from prism import Document, Blob, Encoding, Codec, CodecAdapter, TextProjection, EventLog, decode, encode, Value, ValueCache, EvalKey, AppSettings, TokenClass, highlight_line, Path, define, edit
+
+class NativeCodec:
+    pub func encode(self, document: Document) -> Blob!:
+        return document.encode(Encoding.text)
+
+    pub func decode(self, payload: Blob) -> Document!:
+        return Document.decode(payload.bytes())
+
+class MarkdownCodec:
+    pub func encode(self, document: Document) -> Blob!:
+        return encode(document, Codec.markdown)
+
+    pub func decode(self, payload: Blob) -> Document!:
+        return decode(payload.bytes(), Codec.markdown)
+
+class CacheProducer:
+    var calls: int = 0
+
+    pub func produce(self, key: EvalKey) -> Value!:
+        self.calls += 1
+        return Value.number(float(self.calls))
+
+pub func main(arguments: list[str]) -> int!:
+    let native = NativeCodec()
+    let codec = CodecAdapter("native-text", native.encode, native.decode)
+    let original = Document.parse("#prisma 4.0\ndef object \"a\" { float x = 1.5 int32 n = 7 }")
+    assert(codec.decode(codec.encode(original)).equals(original))
+    assert(codec.name() == "native-text" and codec.whole_document())
+    let projection = TextProjection()
+    assert(projection.set_source("#  Title\n\nhello\n", Codec.markdown))
+    let markdown = MarkdownCodec()
+    let lens = CodecAdapter("partial-markdown", markdown.encode, markdown.decode, false)
+    assert(projection.set_adapter(lens))
+    let decorated = projection.document()
+    decorated.add("/notes", "annotations")
+    decorated.set_metadata("/document", "lens", "custom-markdown")
+    decorated.connect("/notes.out", "/document/[0].annotation")
+    projection.amend(decorated)
+    let before = projection.text()
+    assert(projection.set_text("# Updated\n\nnew body\n"))
+    let updated = projection.document()
+    assert(updated.contains("/notes"))
+    assert(updated.metadata("/document", "lens") == "custom-markdown")
+    assert(updated.source("/document/[0].annotation") == "/notes.out")
+    assert(projection.set_codec(Codec.prisma))
+    assert(projection.set_adapter(lens))
+    assert(projection.text() == "# Updated\n\nnew body\n")
+    let log = EventLog(original)
+    assert(log.commit(updated) == 1 and log.layer_count() == 1)
+    assert(log.head().equals(updated) and log.at(0).equals(original))
+    assert(log.since(0).at(0).equals(original.diff(updated)))
+    log.compact(0)
+    assert(log.earliest_offset() == 1 and log.at(1).equals(updated))
+    let settings = AppSettings("tests/fixtures/absent-settings.prisma")
+    assert(settings.get_integer("width", 900) == 900)
+    let cache_producer = CacheProducer()
+    let cache = ValueCache()
+    assert(cache.evaluate(EvalKey(1, 0.0), cache_producer.produce).number_at() == 1.0)
+    assert(cache.evaluate(EvalKey(1, 0.0), cache_producer.produce).number_at() == 1.0)
+    assert(cache_producer.calls == 1)
+    assert(highlight_line("## Heading", Codec.markdown).class_at(4) == TokenClass.heading)
+    let path = Path("/world/sphere.position")
+    assert(path.property() == "position")
+    assert(path.element().text() == "/world/sphere")
+    assert(path.with_property("radius").text() == "/world/sphere.radius")
+    assert(path.matches("/world/*"))
+    let authored = Document()
+    let element = define(authored, "/node", "object")
+    let changed = element.set("radius", Value.number(2.0)).set_metadata("label", "sample")
+    assert(changed.path() == "/node" and changed.require_number("radius") == 2.0)
+    let sampled = changed.sample("angle", 0.0, Value.number(0.0)).sample("angle", 10.0, Value.number(20.0))
+    assert(sampled.valid())
+    assert(edit(authored, "/node").get_number("angle", 0.0, 5.0) == 10.0)
+    assert(authored.sample_time_at("/node", "angle", 1) == 10.0)
+    print("PASS high-level codec callbacks, partial projection rebasing and event logs")
+    return 0

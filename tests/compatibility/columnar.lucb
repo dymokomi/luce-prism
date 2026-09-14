@@ -1,0 +1,92 @@
+import prism
+import interop
+import memory
+import math
+
+func table() -> prism.ColumnTable!:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef table \"sales\" { float[5] amount = [10,20,30,40,50] int64[5] region = [0,1,0,1,0] str label = \"sales\" }")
+    defer doc.release()
+    return try prism.ColumnTable(doc, "/sales")
+
+func mask(indices: const i64[]) -> interop.Reference[prism.RowMask]!:
+    return try interop.Reference[prism.RowMask].adopt(try new prism.RowMask(indices) in memory.heap, prism.row_mask_type, memory.heap)
+
+func columnar_where_and_aggregate() -> !:
+    var data = try table()
+    defer data.close()
+    assert(try data.rows("amount") == 5)
+    let big = try data.filter("amount", prism.Comparison.greater, 25.0)
+    defer big.release()
+    assert(big.value().count() == 3)
+    assert(try big.value().at(0) == 2 and try big.value().at(2) == 4)
+    assert(try data.aggregate("amount", prism.Aggregate.sum, big) == 120.0)
+    assert(try data.aggregate("amount", prism.Aggregate.maximum, big) == 50.0)
+    assert(try data.aggregate("amount", prism.Aggregate.sum) == 150.0)
+    assert(try data.aggregate("amount", prism.Aggregate.average) == 30.0)
+    assert(try data.aggregate("amount", prism.Aggregate.minimum) == 10.0)
+
+func columnar_avg_ignores_out_of_range_rows() -> !:
+    var data = try table()
+    defer data.close()
+    let selected = try mask([0, 999])
+    defer selected.release()
+    assert(try data.aggregate("amount", prism.Aggregate.sum, selected) == 10.0)
+    assert(try data.aggregate("amount", prism.Aggregate.average, selected) == 10.0)
+    let invalid = try mask([999, 1000])
+    defer invalid.release()
+    assert(math.is_nan(try data.aggregate("amount", prism.Aggregate.average, invalid)))
+    assert(try data.aggregate("amount", prism.Aggregate.sum, invalid) == 0.0)
+    let repeated = try mask([1, 1])
+    defer repeated.release()
+    assert(try data.aggregate("amount", prism.Aggregate.sum, repeated) == 40.0)
+
+func columnar_filter_one_column_aggregate_another() -> !:
+    var data = try table()
+    defer data.close()
+    let west = try data.filter("region", prism.Comparison.equal, 0.0)
+    defer west.release()
+    assert(west.value().count() == 3)
+    assert(try data.aggregate("amount", prism.Aggregate.sum, west) == 90.0)
+
+func columnar_missing_or_nonnumeric() -> !:
+    var data = try table()
+    defer data.close()
+    for column in ["nope", "label"]:
+        let empty = try data.filter(column, prism.Comparison.greater, 0.0)
+        defer empty.release()
+        assert(empty.value().count() == 0)
+        assert(try data.rows(column) == 0)
+        assert(math.is_nan(try data.aggregate(column, prism.Aggregate.sum)))
+
+func columnar_int_dtype() -> !:
+    var data = try table()
+    defer data.close()
+    let east = try data.filter("region", prism.Comparison.equal, 1.0)
+    defer east.release()
+    assert(east.value().count() == 2)
+    assert(try east.value().at(0) == 1 and try east.value().at(1) == 3)
+
+func all_numeric_dtypes_and_shapes() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef table \"t\" { bool[2] b = [false,true] int8[2] i8 = [-1,2] int16[2] i16 = [-1,2] int32[2] i32 = [-1,2] int64[2] i64 = [-1,2] uint8[2] u8 = [1,2] uint16[2] u16 = [1,2] uint32[2] u32 = [1,2] uint64[2] u64 = [1,2] float[2] f32 = [1,2] float64[2] f64 = [1,2] float16[2] f16 = [1,2] int scalar = 7 int[2,2] matrix = [[1,2],[3,4]] }")
+    defer doc.release()
+    let characters: u8[2] = [0, 255]
+    let chars = try prism.Value.array(prism.DType.character, [2], characters)
+    defer chars.release()
+    try doc.value().set("/t", "c", chars)
+    var data = try prism.ColumnTable(doc, "/t")
+    defer data.close()
+    for column in ["i8", "i16", "i32", "i64", "b"]:
+        assert(try data.aggregate(column, prism.Aggregate.sum) == 1.0)
+    for column in ["u8", "u16", "u32", "u64", "f16", "f32", "f64"]:
+        assert(try data.aggregate(column, prism.Aggregate.sum) == 3.0)
+    assert(try data.aggregate("c", prism.Aggregate.sum) == -1.0)
+    assert(try data.rows("scalar") == 1 and try data.rows("matrix") == 4)
+
+pub func run() -> !:
+    try columnar_where_and_aggregate()
+    try columnar_avg_ignores_out_of_range_rows()
+    try columnar_filter_one_column_aggregate_another()
+    try columnar_missing_or_nonnumeric()
+    try columnar_int_dtype()
+    try all_numeric_dtypes_and_shapes()
+    print("PASS 5 legacy columnar cases, all numeric dtypes and selector edge cases")

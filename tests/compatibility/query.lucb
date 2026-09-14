@@ -1,0 +1,271 @@
+## Ports of the original named query cases, using the original shared fixture.
+import prism
+import interop
+import memory
+import ownership
+
+pub func plan(doc: interop.Reference[prism.Document], pattern: str = "") -> interop.Reference[prism.Query]!:
+    return try interop.Reference[prism.Query].adopt(try new prism.Query(doc, pattern) in memory.heap, prism.query_type, memory.heap)
+
+pub func compare(field: str, value: interop.Reference[prism.Value], op: prism.Comparison = prism.Comparison.equal) -> interop.Reference[prism.Predicate]!:
+    defer value.release()
+    return try prism.Predicate.field(field, op, value)
+
+pub func filtered(doc: interop.Reference[prism.Document], predicate: interop.Reference[prism.Predicate]) -> interop.Reference[prism.Query]!:
+    defer predicate.release()
+    var query = try prism.Query(doc)
+    defer query.close()
+    return try query.filter(predicate)
+
+pub func paths(query: interop.Reference[prism.Query], expected: const str[]) -> !:
+    defer query.release()
+    let rows = try query.value().select()
+    defer rows.release()
+    if rows.value().count() != expected.length:
+        print(f"wrong query row count: {rows.value().count()}, expected {expected.length}")
+    assert(rows.value().count() == expected.length)
+    for i in 0..<expected.length:
+        assert(try rows.value().path_at(i) == expected[i])
+
+func check(doc: interop.Reference[prism.Document], predicate: interop.Reference[prism.Predicate], expected: const str[]) -> !:
+    try paths(try filtered(doc, predicate), expected)
+
+func fixture() -> interop.Reference[prism.Document]!:
+    return try prism.Document.load("tests/fixtures/query_cases.prisma")
+
+func query_by_type_and_filters() -> !:
+    let doc = try fixture()
+    defer doc.release()
+    let issue = try prism.Predicate.by_type("issue")
+    defer issue.release()
+    let open = try compare("status", try prism.Value.text("open"))
+    defer open.release()
+    let high = try compare("sev", try prism.Value.text("high"))
+    defer high.release()
+    try check(doc, issue.clone(), ["/t/a", "/t/b", "/t/c", "/t/d"])
+    try check(doc, open.clone(), ["/t/a", "/t/b", "/t/d", "/t/n1"])
+    let both = try issue.value().both(open)
+    defer both.release()
+    try check(doc, both.clone(), ["/t/a", "/t/b", "/t/d"])
+    try check(doc, try both.value().both(high), ["/t/a"])
+
+func query_numeric_compare_and_f32_int_trap() -> !:
+    let doc = try fixture()
+    defer doc.release()
+    try check(doc, try compare("score", try prism.Value.integer(1)), ["/t/a"])
+    try check(doc, try compare("weight", try prism.Value.integer(3), prism.Comparison.greater), ["/t/a", "/t/c"])
+    try check(doc, try compare("weight", try prism.Value.integer(3), prism.Comparison.less), ["/t/b", "/t/d"])
+    try check(doc, try compare("score", try prism.Value.number(2.0), prism.Comparison.greater), ["/t/c"])
+    let two = try compare("weight", try prism.Value.integer(2))
+    defer two.release()
+    let nine = try compare("weight", try prism.Value.integer(9))
+    defer nine.release()
+    try check(doc, try two.value().either(nine), ["/t/b", "/t/c", "/t/d"])
+
+func query_null_safety_ne_vs_not_eq() -> !:
+    let doc = try fixture()
+    defer doc.release()
+    try check(doc, try compare("sev", try prism.Value.text("high"), prism.Comparison.not_equal), ["/t/b", "/t/c"])
+    let high = try compare("sev", try prism.Value.text("high"))
+    defer high.release()
+    try check(doc, try high.value().negate(), ["/t", "/t/b", "/t/c", "/t/d", "/t/n1"])
+    try check(doc, try prism.Predicate.exists("sev"), ["/t/a", "/t/b", "/t/c"])
+    var empty: str[]
+    try check(doc, try compare("weight", try prism.Value.text("5")), empty)
+    try check(doc, try prism.Predicate.is_null("sev"), ["/t", "/t/d", "/t/n1"])
+
+func query_order_reverse_limit() -> !:
+    let doc = try fixture()
+    defer doc.release()
+    let issues = try filtered(doc, try prism.Predicate.by_type("issue"))
+    defer issues.release()
+    let ordered = try issues.value().order_by("weight")
+    defer ordered.release()
+    try paths(ordered.clone(), ["/t/b", "/t/d", "/t/a", "/t/c"])
+    try paths(try ordered.value().reverse(), ["/t/c", "/t/a", "/t/d", "/t/b"])
+    try paths(try issues.value().order_by("sev"), ["/t/a", "/t/b", "/t/c", "/t/d"])
+    try paths(try issues.value().limit(2), ["/t/a", "/t/b"])
+    var empty: str[]
+    try paths(try issues.value().limit(0), empty)
+    assert(try issues.value().count() == 4)
+
+func query_terminals() -> !:
+    let doc = try fixture()
+    defer doc.release()
+    let issues = try filtered(doc, try prism.Predicate.by_type("issue"))
+    defer issues.release()
+    assert(try issues.value().count() == 4 and try issues.value().any())
+    let empty = try filtered(doc, try compare("status", try prism.Value.text("nope")))
+    defer empty.release()
+    assert(not try empty.value().any() and try empty.value().first() == none)
+    let zero = try issues.value().limit(0)
+    defer zero.release()
+    assert(not try zero.value().any())
+    let note = try filtered(doc, try prism.Predicate.by_type("note"))
+    defer note.release()
+    assert(try note.value().first() == "/t/n1")
+    assert(try note.value().one() == "/t/n1")
+    let note_zero = try note.value().limit(0)
+    defer note_zero.release()
+    assert(try note_zero.value().one() == "/t/n1")
+
+func query_one_throws_on_zero_or_many() -> !:
+    let doc = try fixture()
+    defer doc.release()
+    for kind in ["issue", "nope"]:
+        let query = try filtered(doc, try prism.Predicate.by_type(kind))
+        defer query.release()
+        var rejected = false
+        discard(query.value().one() catch failure:
+            assert(failure.code == prism.invalid)
+            rejected = true
+            recover ""
+        )
+        assert(rejected)
+
+func query_group_by() -> !:
+    let doc = try fixture()
+    defer doc.release()
+    let query = try filtered(doc, try prism.Predicate.by_type("issue"))
+    defer query.release()
+    let groups = try query.value().group_by("status")
+    defer groups.release()
+    assert(groups.value().count() == 2)
+    assert(try groups.value().key_at(0) == "done" and try groups.value().row_count(0) == 1)
+    assert(try groups.value().key_at(1) == "open" and try groups.value().row_count(1) == 3)
+    let rows = try groups.value().rows(1)
+    defer rows.release()
+    assert(try rows.value().path_at(2) == "/t/d")
+    var rejected = false
+    let invalid = query.value().group_by("weight") catch failure:
+        assert(failure.code == prism.invalid)
+        rejected = true
+        recover groups.clone()
+    invalid.release()
+    assert(rejected)
+
+func query_structural_predicates() -> !:
+    let doc = try fixture()
+    defer doc.release()
+    try check(doc, try prism.Predicate.under("/t"), ["/t/a", "/t/b", "/t/c", "/t/d", "/t/n1"])
+    try check(doc, try prism.Predicate.name_is("a"), ["/t/a"])
+    let query = try plan(doc, "/t/*")
+    defer query.release()
+    let predicate = try prism.Predicate.by_type("issue")
+    defer predicate.release()
+    let issues = try query.value().filter(predicate)
+    defer issues.release()
+    assert(try issues.value().count() == 4)
+    var empty: str[]
+    try paths(try plan(doc, "/nope/*"), empty)
+    try paths(try plan(doc, "/a//bad"), empty)
+
+func query_le_ge_contains_startswith_and_orderby_type() -> !:
+    let doc = try fixture()
+    defer doc.release()
+    try check(doc, try compare("weight", try prism.Value.integer(2), prism.Comparison.less_equal), ["/t/b", "/t/d"])
+    try check(doc, try compare("weight", try prism.Value.integer(9), prism.Comparison.greater_equal), ["/t/c"])
+    try check(doc, try prism.Predicate.contains("title", "ixtur"), ["/t"])
+    try check(doc, try prism.Predicate.starts_with("status", "op"), ["/t/a", "/t/b", "/t/d", "/t/n1"])
+    var query = try prism.Query(doc)
+    defer query.close()
+    try paths(try query.order_by("type"), ["/t/a", "/t/b", "/t/c", "/t/d", "/t/n1", "/t"])
+
+struct Counter:
+    var scans: usize
+    var notes_only: bool
+    var retained: interop.Reference[prism.Row]?
+
+    pub mutating func invoke(row: interop.Reference[prism.Row]) -> interop.Outcome[bool]:
+        self.scans += 1
+        if let previous = self.retained:
+            previous.release()
+        self.retained = row.clone()
+        return interop.Outcome[bool].success(interop.Owned[bool](not self.notes_only or row.value().type_name() == "note"))
+
+    pub mutating func close():
+        if let row = self.retained:
+            row.release()
+        self.retained = none
+
+    pub func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        if let row = self.retained:
+            row.trace(visit, context)
+
+let counter_type = interop.Type[Counter]("Query test counter", Counter.close, Counter.trace, closeable = true)
+
+func custom(counter: interop.Reference[Counter]) -> interop.Reference[prism.Predicate]!:
+    let callback = try interop.Callback[interop.Reference[prism.Row], bool].bind_mutating(counter, Counter.invoke)
+    defer callback.release()
+    return try prism.Predicate.custom(callback)
+
+func query_metadata_predicates_and_element_lambda() -> !:
+    let doc = try fixture()
+    defer doc.release()
+    try check(doc, try prism.Predicate.metadata("owner", "dy"), ["/t/a"])
+    try check(doc, try prism.Predicate.has_metadata("owner"), ["/t/a", "/t/c"])
+    let counter = try interop.Reference[Counter].adopt(try new Counter(notes_only = true) in memory.heap, counter_type, memory.heap)
+    defer counter.release()
+    try check(doc, try custom(counter), ["/t/n1"])
+    try doc.value().remove("/t")
+    let retained = counter.value().retained else error(prism.invalid, "query callback did not retain a row")
+    assert(retained.value().path() == "/t/n1")
+
+func query_is_lazy_and_short_circuits() -> !:
+    let doc = try fixture()
+    defer doc.release()
+    let counter = try interop.Reference[Counter].adopt(try new Counter() in memory.heap, counter_type, memory.heap)
+    defer counter.release()
+    let query = try filtered(doc, try custom(counter))
+    defer query.release()
+    assert(counter.value().scans == 0)
+    assert(try query.value().count() == 6 and counter.value().scans == 6)
+    counter.value().scans = 0
+    assert(try query.value().first() == "/t" and counter.value().scans == 1)
+    counter.value().scans = 0
+    assert(try query.value().any() and counter.value().scans == 1)
+    counter.value().scans = 0
+    let ordered = try query.value().order_by("weight")
+    defer ordered.release()
+    discard(try ordered.value().first())
+    assert(counter.value().scans == 6)
+    counter.value().scans = 0
+    let limited = try query.value().limit(2)
+    defer limited.release()
+    assert(try limited.value().count() == 2 and counter.value().scans == 2)
+    try doc.value().add("/later", "note")
+    assert(try query.value().count() == 7)
+
+func query_empty_document() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\n")
+    defer doc.release()
+    var query = try prism.Query(doc)
+    defer query.close()
+    assert(try query.count() == 0 and not try query.any() and try query.first() == none)
+    var empty: str[]
+    try check(doc, try prism.Predicate.by_type("issue"), empty)
+    try check(doc, try compare("x", try prism.Value.integer(1)), empty)
+
+pub func exercise_callback() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef row \"a\" { int x = 1 } def row \"b\" { int x = 2 }")
+    defer doc.release()
+    let counter = try interop.Reference[Counter].adopt(try new Counter() in memory.heap, counter_type, memory.heap)
+    defer counter.release()
+    let query = try filtered(doc, try custom(counter))
+    defer query.release()
+    assert(try query.value().count() == 2)
+
+pub func run() -> !:
+    try query_by_type_and_filters()
+    try query_numeric_compare_and_f32_int_trap()
+    try query_null_safety_ne_vs_not_eq()
+    try query_order_reverse_limit()
+    try query_terminals()
+    try query_one_throws_on_zero_or_many()
+    try query_group_by()
+    try query_structural_predicates()
+    try query_le_ge_contains_startswith_and_orderby_type()
+    try query_metadata_predicates_and_element_lambda()
+    try query_is_lazy_and_short_circuits()
+    try query_empty_document()
+    print("PASS 12 legacy query cases, lazy terminals, stable ordering and owned callback rows")

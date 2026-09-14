@@ -1,0 +1,65 @@
+[
+  {
+    "name": "math",
+    "source": "def \"price\" { float v = 30 } def \"qty\" { float v = 50 } math \"revenue\" { price.v * qty.v } math \"withTax\" { revenue.out * 1.1 }",
+    "cpp_sha256": {
+      "parse-surface": "0b1ed046c03e0b09479caeb6aa153eaa29418fee17b4c1c471908b92aee9d809",
+      "compute": "63a2f051bf69a43e0972d69741a58489b3fbf518cc6208f8e503b1b19c9e3d4e",
+      "serialize-surface": "6abcac34c2d4a21e7b95aed6c1f2fd91bac08d8da14132ee43148388b0fd6971"
+    }
+  },
+  {
+    "name": "nested",
+    "source": "def \"a\" { float v = 2 } def \"b\" { float v = 3 } def \"c\" { float v = 4 } math \"x\" { (a.v + b.v) * c.v } math \"neg\" { -(1 + 2) / 3 - 2 }",
+    "cpp_sha256": {
+      "parse-surface": "e37cfad5e957f42fe0890a7ff7251596c4206b8874dbd822856f78e337950a9a",
+      "compute": "51d7df5c427fc66e0dc52e115bbb0695a0269d7079b3b15f9b272aa3852fcc0c",
+      "serialize-surface": "429e0e62815f97726bbf38d35a3c7e39e93fc5c04a2be0157f740ef0fea261cc"
+    }
+  },
+  {
+    "name": "policy",
+    "source": "logic \"f1\" { employee(alice) } logic \"f2\" { contractor(bob) } logic \"f3\" { document(q3plan) } logic \"f4\" { confidential(q3plan) } logic \"p1\" { employee(U), document(D) => can_view(U,D) } logic \"p2\" { contractor(U), document(D) => -can_view(U,D) } logic \"p3\" { confidential(D), document(D) => -can_view(U,D) } logic \"p4\" { owns(U,D) -> can_view(U,D) } logic \"sup\" { p3 > p1 }",
+    "cpp_sha256": {
+      "parse-surface": "4b7027f0a9a6bb2cabec8dd40941b33860ccb18ea47891f3553539a5ba5a31c8",
+      "derive": "9202a917d83592be5855539ea7e79e34312a06c9094b2b3326b824113a8d793f",
+      "serialize-surface": "ee5c6cb3c69cf631896bd29f6f90c14060d637ff0ae88c1ef3d2338d19cbd527"
+    }
+  },
+  {
+    "name": "strict",
+    "source": "logic \"f\" { owns(alice,plan) } logic \"r\" { owns(U,D) -> can_view(U,D) }",
+    "cpp_sha256": {
+      "parse-surface": "37ccc5f7935a439d6b48ad0d40bac4ae6a311c96772efdb6dd4b232d41450dd4",
+      "derive": "b37910afc9696cc0d8db7de634c7c031601bf4102fbeca9600aaf09a3d674257",
+      "serialize-surface": "d273b5292119f697c5be66177b70a5483905c23b5daebdf06fe879c697d23802"
+    }
+  },
+  {
+    "name": "defeater",
+    "source": "logic \"f\" { bird(tweety) } logic \"r\" { bird(X) => flies(X) } logic \"d\" { ~> -flies(tweety) } logic \"s\" { r > d }",
+    "cpp_sha256": {
+      "parse-surface": "4bf9e330c0cab6285c5551eeef75a5395e60fe16b0adf5b6d0affe22ffb67bd1",
+      "derive": "4611d2aee6b2777014c30752ad0e0382fb6848a62b434ff1262f1e34fa852aee",
+      "serialize-surface": "e0386db6fa39c3a639fdb7148bf86567e16801800d86d252b9c26fd79e557a39"
+    }
+  },
+  {
+    "name": "nullary",
+    "source": "logic \"a\" { p => q } logic \"b\" { q => p } logic \"c\" { => allowed } logic \"d\" { ~> -allowed } logic \"e\" { seen(X) => known(X) }",
+    "cpp_sha256": {
+      "parse-surface": "a8e06e7fdce362272a43318968ad6d9dd65fe507c176da6288b92ee3d710b67d",
+      "derive": "26028fb538d6aae83298efc16ea919da41caf685e91b17a62eb7438c48c0bf4f",
+      "serialize-surface": "8dc36ce87ab0543cf042d599ac8a99bcd61aca7a1ff4c55d6088e7d1712681a2"
+    }
+  },
+  {
+    "name": "data",
+    "source": "def \"x\" { int a = -3 bool b = true double c = 1.25 } over \"y\" { float v = 3 } math \"literal\" { 7 } math \"reference\" { x.c }",
+    "cpp_sha256": {
+      "parse-surface": "3698a37dc63445db203d77b53834dacb640c2480341907fc62deeac366611d70",
+      "compute": "946efa3da830c95eaf967e71cbafa3b22e41d65f4ddbbd5c898027ab8caa0ccf",
+      "serialize-surface": "8c8e64f5fc8680bcaa4284c1d1a3c481612f7459eef130831cbb5b8e13b841ce"
+    }
+  }
+]

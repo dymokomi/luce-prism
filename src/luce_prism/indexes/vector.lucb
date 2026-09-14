@@ -1,0 +1,99 @@
+## Exact vector search over float32 arrays, with cosine, dot and L2 metrics.
+import interop
+import math
+import luce_prism.indexes.ranked as ranked
+from luce_prism.query.results import Selection
+from luce_prism.document import Document
+from luce_prism.animation import resolve_property
+from luce_prism.storage import List
+from luce_prism.types import DType
+
+pub enum Metric as u8:
+    cosine = 0
+    dot = 1
+    l2 = 2
+
+struct Entry:
+    var vector: List[f32]
+    var norm: f64
+
+    mutating func close():
+        self.vector.close()
+
+pub struct VectorIndex:
+    var rows: Selection = Selection()
+    var entries: List[Entry]
+    var dimension: usize
+    var metric: Metric
+
+    pub func init(doc: interop.Reference[Document], field: str, metric: Metric = Metric.cosine) -> !:
+        self.rows = Selection()
+        self.entries = List[Entry]()
+        self.dimension = 0
+        self.metric = metric
+        errdefer self.close()
+        try self.build(doc, field)
+
+    mutating func build(doc: interop.Reference[Document], field: str) -> !:
+        let data = (try doc.get()).view_data()
+        for element in data.elements.span():
+            let position = element.property(field) else continue
+            var value = try resolve_property(&element.properties.items[position], 0.0)
+            defer value.close()
+            if value.kind != DType.float32 or value.shape.count != 1 or value.count() == 0:
+                continue
+            if self.dimension != 0 and value.count() != self.dimension:
+                continue
+            self.dimension = value.count()
+            try self.entries.reserve(self.entries.count + 1)
+            var entry: Entry
+            errdefer entry.close()
+            try entry.vector.reserve(self.dimension)
+            for i in 0..<self.dimension:
+                let number = try value.number(i)
+                try entry.vector.push((f32)number)
+                entry.norm += number * number
+            entry.norm = math.sqrt(entry.norm)
+            try self.rows.append(&element)
+            try self.entries.push(entry)
+
+    pub func size() -> usize:
+        return self.entries.count
+
+    pub func dimensions() -> usize:
+        return self.dimension
+
+    pub func nearest(query: const f64[], count: usize) -> interop.Reference[Selection]!:
+        var hits: List[ranked.Hit]
+        defer hits.close()
+        if query.length == self.dimension and count > 0:
+            var norm: f64 = 0.0
+            for value in query:
+                let number = (f64)(f32)value
+                norm += number * number
+            norm = math.sqrt(norm)
+            try hits.reserve(self.entries.count)
+            for row in 0..<self.entries.count:
+                let entry = &self.entries.items[row]
+                var dot: f64 = 0.0
+                var l2: f64 = 0.0
+                for i in 0..<self.dimension:
+                    let query_value = (f64)(f32)query[i]
+                    let value = (f64)entry.vector.items[i]
+                    dot += value * query_value
+                    l2 += (value - query_value) * (value - query_value)
+                var score = dot
+                if self.metric == Metric.l2:
+                    score = -l2
+                elif self.metric == Metric.cosine:
+                    score = dot / (entry.norm * norm) if entry.norm > 0.0 and norm > 0.0 else 0.0
+                try hits.push(ranked.Hit(row = row, score = score))
+        return try ranked.select(self.rows.view_data(), hits.span(), count)
+
+    pub mutating func close():
+        self.rows.close()
+        for i in 0..<self.entries.count:
+            self.entries.items[i].close()
+        self.entries.close()
+
+pub let vector_index_type = interop.Type[VectorIndex]("Prism vector index", VectorIndex.close, closeable = true)

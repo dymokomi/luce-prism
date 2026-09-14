@@ -1,0 +1,145 @@
+## Numeric terminals and exact group labels for row queries.
+import math
+import strings
+import c
+import luce_prism.query.scalars as scalars
+from luce_prism.model import Element, DocumentData
+from luce_prism.animation import resolve_property
+from luce_prism.storage import Buffer, List, text_copy
+from luce_prism.collections.index import Index
+from luce_prism.types import invalid
+
+pub enum Aggregate as u8:
+    sum = 0
+    average = 1
+    minimum = 2
+    maximum = 3
+    count = 4
+    median = 5
+    variance = 6
+    standard_deviation = 7
+
+pub func number_at(element: const Element*, name: str) -> f64?!:
+    let index = element.property(name) else return none
+    var value = try resolve_property(&element.properties.items[index], 0.0)
+    defer value.close()
+    return scalars.numeric(&value)
+
+pub func calculate(values: const f64[], operation: Aggregate) -> f64?:
+    if values.length == 0:
+        return none
+    if operation == Aggregate.count:
+        return (f64)values.length
+    var total: f64 = 0.0
+    var minimum = values[0]
+    var maximum = values[0]
+    for value in values:
+        total += value
+        if value < minimum:
+            minimum = value
+        if value > maximum:
+            maximum = value
+    if operation == Aggregate.sum:
+        return total
+    if operation == Aggregate.minimum:
+        return minimum
+    if operation == Aggregate.maximum:
+        return maximum
+    let mean = total / (f64)values.length
+    if operation == Aggregate.average:
+        return mean
+    var variance: f64 = 0.0
+    for value in values:
+        variance += (value - mean) * (value - mean)
+    variance = variance / (f64)values.length
+    return math.sqrt(variance) if operation == Aggregate.standard_deviation else variance
+
+pub func numeric(doc: const DocumentData*, rows: const usize[], field: str, operation: Aggregate) -> f64?!:
+    var values: List[f64]
+    defer values.close()
+    for index in rows:
+        if let number = try number_at(&doc.elements.items[index], field):
+            try values.push(number)
+    if operation == Aggregate.median:
+        if values.count == 0:
+            return none
+        # Heapsort avoids quadratic median work for large tables.
+        sort_numbers(values.span())
+        let middle = values.count // 2
+        return values.items[middle] if values.count % 2 != 0 else (values.items[middle - 1] + values.items[middle]) / 2.0
+    return calculate(values.span(), operation)
+
+func sift(values: f64[], start: usize, count: usize):
+    var root = start
+    while root * 2 + 1 < count:
+        var child = root * 2 + 1
+        if child + 1 < count and values[child] < values[child + 1]:
+            child += 1
+        if not (values[root] < values[child]):
+            return
+        let previous = values[root]
+        values[root] = values[child]
+        values[child] = previous
+        root = child
+
+pub func sort_numbers(values: f64[]):
+    var start = values.length // 2
+    while start > 0:
+        start -= 1
+        sift(values, start, values.length)
+    var end = values.length
+    while end > 1:
+        end -= 1
+        let previous = values[0]
+        values[0] = values[end]
+        values[end] = previous
+        sift(values, 0, end)
+
+pub func distinct(doc: const DocumentData*, rows: const usize[], field: str) -> usize!:
+    var index: Index
+    defer index.close()
+    for row in rows:
+        let element = &doc.elements.items[row]
+        if let position = element.property(field):
+            var value = try resolve_property(&element.properties.items[position], 0.0)
+            defer value.close()
+            if let result = try scalars.key(&value):
+                var key = result
+                defer key.close()
+                discard(try index.add(key.view(), row))
+    return index.buckets.count
+
+# The old group label uses std::to_string(double): six fractional decimal places.
+# This libc seam matches it without changing the exact identity key used for joins.
+extern func fixed_number as "snprintf"(output: u8*, size: usize, spec: c.str, ...) -> i32
+
+pub func label(element: const Element*, field: str, strings_only: bool = false) -> Buffer!:
+    if field == "type":
+        return try element.kind.copy()
+    let position = element.property(field) else return Buffer()
+    var value = try resolve_property(&element.properties.items[position], 0.0)
+    defer value.close()
+    if let text = scalars.string(&value):
+        return try text_copy(text)
+    if strings_only:
+        error(invalid, "group_by requires a string field or type")
+    if let exact = scalars.integer(&value):
+        var output: Buffer
+        errdefer output.close()
+        if exact.negative:
+            try output.byte('-')
+        var scratch: u8[32]
+        try output.text(try strings.format_u64(exact.magnitude, scratch))
+        return output
+    if let number = scalars.numeric(&value):
+        var scratch: u8[400]
+        let count = fixed_number(&scratch[0], scratch.length, "%.6f", number)
+        if count < 0 or (usize)count >= scratch.length:
+            error(invalid, "group number cannot be formatted")
+        var end = (usize)count
+        while end > 0 and scratch[end - 1] == '0':
+            end -= 1
+        if end > 0 and scratch[end - 1] == '.':
+            end -= 1
+        return try text_copy((str)scratch[..<end])
+    return Buffer()

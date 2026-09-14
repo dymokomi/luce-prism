@@ -1,0 +1,52 @@
+## Bounded ranking shared by spatial, text and vector indexes.
+import interop
+from luce_prism.storage import List
+from luce_prism.model import Element
+from luce_prism.query.results import Selection, own_selection
+
+pub struct Hit:
+    pub var row: usize
+    pub var score: f64
+
+func better(a: Hit, b: Hit) -> bool:
+    if a.score == b.score:
+        return a.row < b.row
+    return a.score > b.score
+
+func sift(hits: Hit[], start: usize, end: usize):
+    var root = start
+    while root * 2 + 1 < end:
+        var child = root * 2 + 1
+        if child + 1 < end and better(hits[child], hits[child + 1]):
+            child += 1
+        if not better(hits[root], hits[child]):
+            return
+        let previous = hits[root]
+        hits[root] = hits[child]
+        hits[child] = previous
+        root = child
+
+pub func select(rows: const List[Element]*, hits: Hit[], maximum: usize) -> interop.Reference[Selection]!:
+    let count = maximum if maximum < hits.length else hits.length
+    var start = count // 2
+    while start > 0:
+        start -= 1
+        sift(hits, start, count)
+    for i in count..<hits.length:
+        if count > 0 and better(hits[i], hits[0]):
+            hits[0] = hits[i]
+            sift(hits, 0, count)
+    var end = count
+    while end > 1:
+        end -= 1
+        let previous = hits[0]
+        hits[0] = hits[end]
+        hits[end] = previous
+        sift(hits, 0, end)
+    var result = Selection()
+    errdefer result.close()
+    for i in 0..<count:
+        try result.append(&rows.items[hits[i].row])
+    let owned = result
+    result = Selection()
+    return try own_selection(owned)

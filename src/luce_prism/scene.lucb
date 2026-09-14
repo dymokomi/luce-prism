@@ -1,0 +1,102 @@
+## Read-only evaluated scene snapshots retain the source document's element order.
+import interop
+from luce_prism.document import Document
+from luce_prism.model import DocumentData, Element
+from luce_prism.animation import resolve_property, Property
+from luce_prism.evaluation.engine import NodeRegistry, Evaluator
+from luce_prism.geometry.affine import Affine2
+from luce_prism.geometry.transform import world_matrix_data, visible_data
+from luce_prism.storage import List, Buffer, text_copy
+from luce_prism.value import Value, own_value
+from luce_prism.types import invalid, missing
+
+struct Evaluated:
+    var properties: Element
+    var outputs: Element
+    var world: Affine2
+    var visible: bool
+
+    mutating func close():
+        self.properties.close()
+        self.outputs.close()
+
+pub struct Scene:
+    var elements: List[Evaluated]
+    var time_value: f64
+
+    pub func init(doc: interop.Reference[Document], registry: interop.Reference[NodeRegistry], time: f64 = 0.0) -> !:
+        self.elements = List[Evaluated]()
+        self.time_value = time
+        errdefer self.close()
+        let source = (try doc.get()).view_data()
+        var evaluator = try Evaluator(doc, registry, time)
+        defer evaluator.close()
+        for element in source.elements.span():
+            var resolved = Evaluated(world = Affine2())
+            errdefer resolved.close()
+            let path = element.path.view()
+            resolved.world = try world_matrix_data(source, path, time)
+            resolved.visible = try visible_data(source, path, time)
+            resolved.properties.path = try element.path.copy()
+            resolved.properties.kind = try element.kind.copy()
+            for prop in element.properties.span():
+                var value = Property()
+                defer value.close()
+                value.name = try prop.name.copy()
+                value.value = try resolve_property(&prop, time)
+                try resolved.properties.put_property(&value)
+            let count = try evaluator.bake(path)
+            for index in 0..<count:
+                let name = try evaluator.output_name(path, index)
+                var slot = try text_copy(path)
+                defer slot.close()
+                try slot.byte('.')
+                try slot.text(name)
+                let value = try evaluator.output(slot.view())
+                defer value.release()
+                var prop = Property()
+                defer prop.close()
+                prop.name = try text_copy(name)
+                prop.value = try value.value().view_data().copy()
+                try resolved.outputs.put_property(&prop)
+            try self.elements.push(resolved)
+
+    pub func time() -> f64:
+        return self.time_value
+
+    pub func count() -> usize:
+        return self.elements.count
+
+    func element(index: usize) -> const Evaluated*!:
+        if index >= self.elements.count:
+            error(invalid, "scene element index is out of bounds")
+        return &self.elements.items[index]
+
+    pub func path_at(index: usize) -> str!:
+        return (try self.element(index)).properties.path.view()
+
+    pub func type_at(index: usize) -> str!:
+        return (try self.element(index)).properties.kind.view()
+
+    pub func world_at(index: usize) -> Affine2!:
+        return (try self.element(index)).world
+
+    pub func visible_at(index: usize) -> bool!:
+        return (try self.element(index)).visible
+
+    pub func property(index: usize, name: str) -> interop.Reference[Value]!:
+        let element = &(try self.element(index)).properties
+        let prop = element.property(name) else error(missing, "scene property is absent")
+        return try own_value(try element.properties.items[prop].value.copy())
+
+    pub func output(index: usize, name: str) -> interop.Reference[Value]!:
+        let element = &(try self.element(index)).outputs
+        let prop = element.property(name) else error(missing, "scene output is absent")
+        return try own_value(try element.properties.items[prop].value.copy())
+
+    pub mutating func close():
+        for i in 0..<self.elements.count:
+            self.elements.items[i].close()
+        self.elements.close()
+
+pub let scene_type = interop.Type[Scene]("Prism evaluated scene", Scene.close, closeable = true)

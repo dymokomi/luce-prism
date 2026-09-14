@@ -1,0 +1,119 @@
+import prism
+import interop
+import memory
+
+struct NativeCodec:
+    var calls: usize
+    var projection: prism.TextProjection*?
+    pub mutating func encode(doc: interop.Reference[prism.Document]) -> interop.Outcome[interop.Reference[prism.Blob]]:
+        self.calls += 1
+        if let projection = self.projection:
+            projection.close()
+        let result = doc.value().encode(prism.Encoding.text) catch failure:
+            return interop.Outcome[interop.Reference[prism.Blob]].failure(failure.code, interop.Owned[str]("native codec encode failed"))
+        return interop.Outcome[interop.Reference[prism.Blob]].success(interop.Owned[interop.Reference[prism.Blob]](result, &result.owner.header))
+
+    pub mutating func decode(blob: interop.Reference[prism.Blob]) -> interop.Outcome[interop.Reference[prism.Document]]:
+        self.calls += 1
+        let result = prism.Document.decode(blob.value().bytes()) catch failure:
+            return interop.Outcome[interop.Reference[prism.Document]].failure(failure.code, interop.Owned[str]("native codec decode failed"))
+        return interop.Outcome[interop.Reference[prism.Document]].success(interop.Owned[interop.Reference[prism.Document]](result, &result.owner.header))
+
+    pub mutating func close():
+        return
+
+let native_codec_type = interop.Type[NativeCodec]("Test native text codec", NativeCodec.close, closeable = true)
+
+func codec_seam_round_trips_through_the_interface() -> !:
+    let owner = try interop.Reference[NativeCodec].adopt(try new NativeCodec() in memory.heap, native_codec_type, memory.heap)
+    defer owner.release()
+    let encoder = try interop.Callback[interop.Reference[prism.Document], interop.Reference[prism.Blob]].bind_mutating(owner, NativeCodec.encode)
+    defer encoder.release()
+    let decoder = try interop.Callback[interop.Reference[prism.Blob], interop.Reference[prism.Document]].bind_mutating(owner, NativeCodec.decode)
+    defer decoder.release()
+    var codec = try prism.CodecAdapter("kinogaki-text", encoder, decoder)
+    defer codec.close()
+    let doc = try prism.Document.parse("#prisma 4.0\ndef object \"a\" { float x = 1.5 int32 n = 7 }")
+    defer doc.release()
+    let bytes = try codec.encode(doc)
+    defer bytes.release()
+    let back = try codec.decode(bytes)
+    defer back.release()
+    assert(try back.value().equals(doc) and codec.name() == "kinogaki-text")
+    let bad = try prism.Blob.from_bytes(b"not a document")
+    defer bad.release()
+    let failed = codec.decode(bad) catch failure:
+        if failure.code == memory.exhausted:
+            error(failure.code, failure.message)
+        assert(failure.code == prism.invalid)
+        return
+    failed.release()
+    assert(false)
+
+func projection_close_during_callback() -> !:
+    let projection = try interop.Reference[prism.TextProjection].adopt(try new prism.TextProjection() in memory.heap, prism.text_projection_type, memory.heap)
+    defer projection.release()
+    let owner = try interop.Reference[NativeCodec].adopt(try new NativeCodec() in memory.heap, native_codec_type, memory.heap)
+    defer owner.release()
+    owner.value().projection = projection.value()
+    let encoder = try interop.Callback[interop.Reference[prism.Document], interop.Reference[prism.Blob]].bind_mutating(owner, NativeCodec.encode)
+    defer encoder.release()
+    let decoder = try interop.Callback[interop.Reference[prism.Blob], interop.Reference[prism.Document]].bind_mutating(owner, NativeCodec.decode)
+    defer decoder.release()
+    let codec = try interop.Reference[prism.CodecAdapter].adopt(try new prism.CodecAdapter("closing-codec", encoder, decoder) in memory.heap, prism.codec_adapter_type, memory.heap)
+    defer codec.release()
+    assert(try projection.value().set_adapter(codec))
+    assert(try projection.value().text() == "")
+    let doc = projection.value().document() catch failure:
+        assert(failure.code == prism.invalid)
+        return
+    doc.release()
+    assert(false)
+
+pub func allocation_case() -> !:
+    try codec_seam_round_trips_through_the_interface()
+    try projection_close_during_callback()
+
+func codec_name_and_lookup() -> !:
+    assert(prism.codec_by_name("md") == prism.Codec.markdown)
+    assert(prism.codec_by_name("markdown") == prism.Codec.markdown)
+    assert(prism.codec_by_name("html") == prism.Codec.html)
+    assert(prism.codec_by_name("nope") == none)
+    assert(try prism.codec_for_path("/a/b/notes.md") == prism.Codec.markdown)
+    assert(try prism.codec_for_path("page.HTML") == prism.Codec.html)
+    assert(try prism.codec_for_path("scene.prisma") == prism.Codec.prisma)
+    assert(try prism.codec_for_path("blob.bin") == prism.Codec.blob)
+    assert(try prism.codec_for_path("unrecognized.text") == prism.Codec.blob)
+    assert(prism.codec_name(prism.Codec.markdown) == "markdown")
+
+func document_loadString_and_toString() -> !:
+    let doc = try prism.decode(b"# Title\n\nA line with *stress*.\n", prism.Codec.markdown)
+    defer doc.release()
+    assert(try doc.value().type_at("/document/[0]") == "heading")
+    let html = try prism.encode(doc, prism.Codec.html)
+    defer html.release()
+    let back = try prism.decode(html.value().bytes(), prism.Codec.html)
+    defer back.release()
+    assert(try back.value().equals(doc))
+    let native = try prism.encode(doc)
+    defer native.release()
+    let again = try prism.Document.decode(native.value().bytes())
+    defer again.release()
+    assert(try again.value().equals(doc))
+
+func decode_auto_sniffs_native() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"world\" {}")
+    defer doc.release()
+    let bytes = try doc.value().encode(prism.Encoding.text)
+    defer bytes.release()
+    let back = try prism.decode(bytes.value().bytes())
+    defer back.release()
+    assert(try back.value().equals(doc))
+
+pub func run() -> !:
+    try codec_seam_round_trips_through_the_interface()
+    try codec_name_and_lookup()
+    try document_loadString_and_toString()
+    try decode_auto_sniffs_native()
+    try projection_close_during_callback()
+    print("PASS 4 legacy codec API/interface cases and owned callback results")

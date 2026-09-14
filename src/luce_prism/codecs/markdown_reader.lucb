@@ -1,0 +1,152 @@
+## Markdown block parser using the original Prism structured-document model.
+import luce_prism.codecs.markdown_syntax as syntax
+import luce_prism.codecs.markdown_inline as inline_ops
+from luce_prism.codecs.common import append, set_text, set_integer, set_boolean, find
+from luce_prism.storage import List, Buffer, close_names
+from luce_prism.model import DocumentData
+from luce_prism.types import invalid, limit_exceeded
+
+func paragraph(doc: DocumentData*, parent: str, lines: const str[]) -> !:
+    var child = try append(doc, parent, "paragraph")
+    defer child.close()
+    for i in 0..<lines.length:
+        if i > 0:
+            let previous = lines[i - 1]
+            let hard = previous.length >= 2 and previous.bytes[previous.length - 1] == ' ' and previous.bytes[previous.length - 2] == ' '
+            var separator = try append(doc, child.view(), "linebreak" if hard else "text")
+            defer separator.close()
+            if not hard:
+                try set_text(doc, separator.view(), "text", " ")
+        try inline_ops.parse(doc, child.view(), syntax.rstrip(lines[i]))
+
+func row(doc: DocumentData*, parent: str, text: str, header: bool) -> !:
+    var child = try append(doc, parent, "tablerow")
+    defer child.close()
+    if header:
+        try set_boolean(doc, child.view(), "header", true)
+    var cells = try syntax.table_cells(text)
+    defer close_names(&cells)
+    for cell in cells.span():
+        var entry = try append(doc, child.view(), "tablecell")
+        defer entry.close()
+        try inline_ops.parse(doc, entry.view(), cell.view())
+
+func blocks(doc: DocumentData*, parent: str, lines: const str[], depth: usize) -> !:
+    if depth > 128:
+        error(limit_exceeded, "Markdown block nesting exceeds 128")
+    var i: usize = 0
+    while i < lines.length:
+        let line = lines[i]
+        if syntax.blank(line):
+            i += 1
+            continue
+        let level = syntax.heading(line)
+        if level > 0:
+            var child = try append(doc, parent, "heading")
+            defer child.close()
+            try set_integer(doc, child.view(), "level", (i32)level)
+            try inline_ops.parse(doc, child.view(), syntax.rstrip((str)line.bytes[syntax.indent(line) + level + 1..]))
+            i += 1
+            continue
+        if syntax.thematic(line):
+            var child = try append(doc, parent, "thematicBreak")
+            child.close()
+            i += 1
+            continue
+        if let opening = syntax.fence(line):
+            i += 1
+            var code: Buffer
+            defer code.close()
+            var first = true
+            while i < lines.length and not syntax.closes(lines[i], opening):
+                if not first:
+                    try code.byte('\n')
+                first = false
+                try code.text(lines[i])
+                i += 1
+            if i == lines.length:
+                error(invalid, "unterminated Markdown fence")
+            i += 1
+            var child = try append(doc, parent, "codeblock")
+            defer child.close()
+            try set_text(doc, child.view(), "language", opening.language)
+            try set_text(doc, child.view(), "text", code.view())
+            continue
+        if syntax.quote(line):
+            var inner: List[str]
+            defer inner.close()
+            while i < lines.length and syntax.quote(lines[i]):
+                let text = lines[i]
+                var start = syntax.indent(text) + 1
+                if start < text.length and text.bytes[start] == ' ':
+                    start += 1
+                try inner.push((str)text.bytes[start..])
+                i += 1
+            var child = try append(doc, parent, "blockquote")
+            defer child.close()
+            try blocks(doc, child.view(), inner.span(), depth + 1)
+            continue
+        let marker = syntax.list_marker(line)
+        if marker != none and syntax.indent(line) == 0:
+            let first_marker = marker else error(invalid, "missing Markdown marker")
+            var child = try append(doc, parent, "list")
+            defer child.close()
+            try set_boolean(doc, child.view(), "ordered", first_marker.ordered)
+            while i < lines.length:
+                if syntax.blank(lines[i]):
+                    var next = i
+                    while next < lines.length and syntax.blank(lines[next]):
+                        next += 1
+                    if next < lines.length and syntax.indent(lines[next]) == 0:
+                        if let sibling = syntax.list_marker(lines[next]):
+                            if sibling.ordered == first_marker.ordered:
+                                i = next
+                                continue
+                    break
+                let current = syntax.list_marker(lines[i]) else break
+                if syntax.indent(lines[i]) != 0 or current.ordered != first_marker.ordered:
+                    break
+                var inner: List[str]
+                defer inner.close()
+                try inner.push((str)lines[i].bytes[current.column..])
+                i += 1
+                while i < lines.length:
+                    if syntax.blank(lines[i]):
+                        try inner.push("")
+                        i += 1
+                    elif syntax.indent(lines[i]) >= current.column:
+                        try inner.push((str)lines[i].bytes[current.column..])
+                        i += 1
+                    else:
+                        break
+                while inner.count > 0 and syntax.blank(inner.items[inner.count - 1]):
+                    inner.count -= 1
+                var item = try append(doc, child.view(), "item")
+                defer item.close()
+                try blocks(doc, item.view(), inner.span(), depth + 1)
+            continue
+        if syntax.table_start(lines, i):
+            var child = try append(doc, parent, "table")
+            defer child.close()
+            try row(doc, child.view(), lines[i], true)
+            i += 2
+            while i < lines.length and not syntax.blank(lines[i]) and find(lines[i], "|") != none and not syntax.block_start(lines[i]):
+                try row(doc, child.view(), lines[i], false)
+                i += 1
+            continue
+        let start = i
+        while i < lines.length and not syntax.blank(lines[i]) and not syntax.block_start(lines[i]) and not syntax.table_start(lines, i):
+            i += 1
+        if i > start:
+            try paragraph(doc, parent, lines[start..<i])
+        else:
+            i += 1
+
+pub func decode(bytes: const u8[]) -> DocumentData!:
+    var lines = try syntax.lines(try str(bytes))
+    defer lines.close()
+    var doc = DocumentData()
+    errdefer doc.close()
+    try doc.add("/document", "document")
+    try blocks(&doc, "/document", lines.span(), 0)
+    return doc

@@ -1,0 +1,402 @@
+## Demand-driven node evaluation, custom behavior registration and math nodes.
+import interop
+import memory
+import ownership
+import math
+from luce_prism.model import DocumentData, Element
+from luce_prism.document import Document, own_document
+from luce_prism.animation import Property, resolve_property
+from luce_prism.value import Value, ValueData, scalar_bits, own_value
+from luce_prism.storage import List, Buffer, text_copy, find_pair, less
+from luce_prism.path import element_path, slot_name, require_slot
+from luce_prism.types import DType, invalid, missing, limit_exceeded
+
+func zero() -> ValueData!:
+    return try scalar_bits(DType.float32, 0)
+
+func set_value(element: Element*, name: str, value: const ValueData*) -> !:
+    var property = Property()
+    defer property.close()
+    property.name = try text_copy(name)
+    property.value = try value.copy()
+    try element.put_property(&property)
+
+struct Node:
+    var name: Buffer
+    var inputs: Element
+    var outputs: Element
+    var operation: usize
+    var callback: interop.Callback[interop.View[BakeContext], unit]?
+
+    func copy() -> Node!:
+        var output: Node
+        errdefer output.close()
+        output.name = try self.name.copy()
+        output.inputs = try self.inputs.copy()
+        output.outputs = try self.outputs.copy()
+        output.operation = self.operation
+        if let callback = self.callback:
+            output.callback = callback.clone()
+        return output
+
+    mutating func close():
+        self.name.close()
+        self.inputs.close()
+        self.outputs.close()
+        if let callback = self.callback:
+            callback.release()
+        self.callback = none
+
+struct Registry:
+    var nodes: List[Node]
+
+    func find(name: str) -> usize?:
+        for i in 0..<self.nodes.count:
+            if self.nodes.items[i].name.view() == name:
+                return i
+        return none
+
+    func copy() -> Registry!:
+        var output: Registry
+        errdefer output.close()
+        try output.nodes.reserve(self.nodes.count)
+        for node in self.nodes.span():
+            try output.nodes.push(try node.copy())
+        return output
+
+    mutating func insert(node: Node) -> !:
+        if let index = self.find(node.name.view()):
+            self.nodes.items[index].close()
+            self.nodes.items[index] = node
+            return
+        try self.nodes.push(node)
+        var i = self.nodes.count - 1
+        while i > 0 and less(self.nodes.items[i].name.view(), self.nodes.items[i - 1].name.view()):
+            let previous = self.nodes.items[i - 1]
+            self.nodes.items[i - 1] = self.nodes.items[i]
+            self.nodes.items[i] = previous
+            i -= 1
+
+    func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        for node in self.nodes.span():
+            if let callback = node.callback:
+                callback.trace(visit, context)
+
+    mutating func close():
+        for i in 0..<self.nodes.count:
+            self.nodes.items[i].close()
+        self.nodes.close()
+
+pub struct NodeRegistry:
+    var data: Registry
+
+    pub func init():
+        return
+
+    pub mutating func add(name: str, callback: interop.Callback[interop.View[BakeContext], unit]) -> !:
+        var node: Node
+        errdefer node.close()
+        node.name = try text_copy(name)
+        node.callback = callback.clone()
+        try self.data.insert(node)
+
+    pub mutating func declare_input(type_name: str, name: str, fallback: interop.Reference[Value]) -> !:
+        let index = self.data.find(type_name) else error(missing, "node type is not registered")
+        try set_value(&self.data.nodes.items[index].inputs, name, (try fallback.get()).view_data())
+
+    pub mutating func declare_output(type_name: str, name: str, fallback: interop.Reference[Value]) -> !:
+        let index = self.data.find(type_name) else error(missing, "node type is not registered")
+        try set_value(&self.data.nodes.items[index].outputs, name, (try fallback.get()).view_data())
+
+    pub func contains(name: str) -> bool:
+        return self.data.find(name) != none
+
+    pub func count() -> usize:
+        return self.data.nodes.count
+
+    pub func name_at(index: usize) -> str!:
+        if index >= self.data.nodes.count:
+            error(invalid, "registry index is out of bounds")
+        return self.data.nodes.items[index].name.view()
+
+    pub func input_count(name: str) -> usize!:
+        let index = self.data.find(name) else error(missing, "node type is not registered")
+        return self.data.nodes.items[index].inputs.properties.count
+
+    pub func input_name(name: str, index: usize) -> str!:
+        let node = self.data.find(name) else error(missing, "node type is not registered")
+        let properties = &self.data.nodes.items[node].inputs.properties
+        if index >= properties.count:
+            error(invalid, "node input index is out of bounds")
+        return properties.items[index].name.view()
+
+    pub mutating func add_math() -> !:
+        let names: str[13] = ["add", "sub", "mul", "div", "min", "max", "eq", "ne", "lt", "le", "gt", "ge", "neg"]
+        for i in 0..<names.length:
+            var node = Node(operation = i + 1)
+            errdefer node.close()
+            node.name = try text_copy(names[i])
+            var fallback = try scalar_bits(DType.float64, 0)
+            defer fallback.close()
+            try set_value(&node.inputs, "a", &fallback)
+            if names[i] != "neg":
+                try set_value(&node.inputs, "b", &fallback)
+            try set_value(&node.outputs, "out", &fallback)
+            try self.data.insert(node)
+
+    pub mutating func close():
+        self.data.close()
+
+    func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        self.data.trace(visit, context)
+
+pub let registry_type = interop.Type[NodeRegistry]("Prism node registry", NodeRegistry.close, NodeRegistry.trace, closeable = true)
+
+# A private lease owner keeps retained callback views checkable after the bake.
+struct Scope:
+    var reserved: u8
+    pub mutating func close():
+        return
+
+let scope_type = interop.Type[Scope]("Prism bake scope", Scope.close, closeable = true)
+
+pub struct BakeContext:
+    var engine: Engine*
+    var element: usize
+    var outputs: Element*
+    var depth: usize
+
+    pub func time() -> f64:
+        return self.engine.time
+
+    pub func path() -> str:
+        return self.engine.doc.elements.items[self.element].path.view()
+
+    pub func input(name: str) -> interop.Reference[Value]!:
+        return try own_value(try self.engine.input(self.element, name, self.depth + 1))
+
+    pub func param(name: str, fallback: interop.Reference[Value]? = none) -> interop.Reference[Value]!:
+        let element = &self.engine.doc.elements.items[self.element]
+        if let index = element.property(name):
+            return try own_value(try resolve_property(&element.properties.items[index], self.engine.time))
+        if let value = fallback:
+            return try own_value(try (try value.get()).view_data().copy())
+        return try own_value(try zero())
+
+    pub func set_output(name: str, value: interop.Reference[Value]) -> !:
+        try set_value(self.outputs, name, (try value.get()).view_data())
+
+pub let bake_context_type = interop.ViewType[BakeContext]("Prism bake context")
+
+struct Engine:
+    var doc: DocumentData
+    var registry: Registry
+    var memo: List[Element]
+    var active: List[usize]
+    var time: f64
+
+    func init():
+        self.doc = DocumentData()
+        self.registry = Registry()
+        self.memo = List[Element]()
+        self.active = List[usize]()
+        self.time = 0.0
+
+    func cached(path: str) -> usize?:
+        for i in 0..<self.memo.count:
+            if self.memo.items[i].path.view() == path:
+                return i
+        return none
+
+    mutating func leave_bake():
+        self.active.count -= 1
+
+    mutating func bake(path: str, depth: usize) -> usize?!:
+        if depth > 128:
+            error(limit_exceeded, "Prism evaluation depth exceeds 128")
+        if let index = self.cached(path):
+            return index
+        let element_index = self.doc.find(path) else return none
+        for index in self.active.span():
+            if index == element_index:
+                return none
+        try self.active.push(element_index)
+        defer self.leave_bake()
+        let element = &self.doc.elements.items[element_index]
+        var outputs: Element
+        errdefer outputs.close()
+        outputs.path = try text_copy(path)
+        if let node_index = self.registry.find(element.kind.view()):
+            let node = &self.registry.nodes.items[node_index]
+            if node.operation > 0:
+                var a = try self.input(element_index, "a", depth + 1)
+                defer a.close()
+                var b = try self.input(element_index, "b", depth + 1) if node.operation != 13 else try zero()
+                defer b.close()
+                # The legacy nodes explicitly coerce inputs through Value::asFloat.
+                let left = (f64)(f32)(a.number(0) catch failure: recover 0.0)
+                let right = (f64)(f32)(b.number(0) catch failure: recover 0.0)
+                var result: f64 = 0.0
+                let op = node.operation
+                if op == 1:
+                    result = left + right
+                elif op == 2:
+                    result = left - right
+                elif op == 3:
+                    result = left * right
+                elif op == 4:
+                    result = left / right if right != 0.0 else 0.0
+                elif op == 5:
+                    result = left if left < right else right
+                elif op == 6:
+                    result = left if left > right else right
+                elif op == 7:
+                    result = 1.0 if left == right else 0.0
+                elif op == 8:
+                    result = 1.0 if left != right else 0.0
+                elif op == 9:
+                    result = 1.0 if left < right else 0.0
+                elif op == 10:
+                    result = 1.0 if left <= right else 0.0
+                elif op == 11:
+                    result = 1.0 if left > right else 0.0
+                elif op == 12:
+                    result = 1.0 if left >= right else 0.0
+                elif op == 13:
+                    result = -left
+                var value = try scalar_bits(DType.boolean, 1 if result != 0.0 else 0) if op >= 7 and op <= 12 else try scalar_bits(DType.float64, memory.read[u64](&result))
+                defer value.close()
+                try set_value(&outputs, "out", &value)
+            elif let callback = node.callback:
+                let scope = try interop.Reference[Scope].adopt(try new Scope() in memory.heap, scope_type, memory.heap)
+                defer scope.release()
+                let lease = try scope.lease()
+                defer lease.release()
+                defer lease.invalidate()
+                let view = try interop.View[BakeContext].make(BakeContext(engine = &self, element = element_index, outputs = &outputs, depth = depth), bake_context_type, lease)
+                defer view.release()
+                let result = callback.invoke(view)
+                defer result.release()
+                discard(try result.get())
+        try self.memo.push(outputs)
+        return self.memo.count - 1
+
+    mutating func output(slot: str, depth: usize) -> ValueData!:
+        let path = element_path(slot)
+        let name = slot_name(slot)
+        if name.length == 0:
+            return try zero()
+        if let index = try self.bake(path, depth):
+            let element = &self.memo.items[index]
+            if let prop = element.property(name):
+                return try element.properties.items[prop].value.copy()
+        if let index = self.doc.find(path):
+            let element = &self.doc.elements.items[index]
+            if let prop = element.property(name):
+                return try resolve_property(&element.properties.items[prop], self.time)
+        return try zero()
+
+    mutating func input(index: usize, name: str, depth: usize) -> ValueData!:
+        let element = &self.doc.elements.items[index]
+        var target = try element.path.copy()
+        defer target.close()
+        try target.byte('.')
+        try target.text(name)
+        if let source = self.doc.incoming(target.view()):
+            return try self.output(source, depth)
+        if let property = element.property(name):
+            return try resolve_property(&element.properties.items[property], self.time)
+        if let node = self.registry.find(element.kind.view()):
+            let inputs = &self.registry.nodes.items[node].inputs
+            if let property = inputs.property(name):
+                return try inputs.properties.items[property].value.copy()
+        return try zero()
+
+    mutating func clear():
+        for i in 0..<self.memo.count:
+            self.memo.items[i].close()
+        self.memo.close()
+        self.active.close()
+
+    mutating func close():
+        self.clear()
+        self.doc.close()
+        self.registry.close()
+
+pub struct Evaluator:
+    var engine: Engine
+
+    pub func init(doc: interop.Reference[Document], registry: interop.Reference[NodeRegistry], time: f64 = 0.0) -> !:
+        self.engine = Engine()
+        errdefer self.engine.close()
+        if not math.is_finite(time):
+            error(invalid, "evaluation time must be finite")
+        self.engine.doc = try (try doc.get()).view_data().copy()
+        self.engine.registry = try (try registry.get()).data.copy()
+        self.engine.time = time
+
+    pub mutating func output(slot: str) -> interop.Reference[Value]!:
+        return try own_value(try self.engine.output(slot, 0))
+
+    pub mutating func input(path: str, name: str) -> interop.Reference[Value]!:
+        let index = self.engine.doc.find(path) else return try own_value(try zero())
+        return try own_value(try self.engine.input(index, name, 0))
+
+    pub func cached_count() -> usize:
+        return self.engine.memo.count
+
+    pub mutating func bake(path: str) -> usize!:
+        let index = try self.engine.bake(element_path(path), 0) else return 0
+        return self.engine.memo.items[index].properties.count
+
+    pub mutating func output_name(path: str, index: usize) -> str!:
+        let position = try self.engine.bake(element_path(path), 0) else error(missing, "baked node is absent")
+        let properties = &self.engine.memo.items[position].properties
+        if index >= properties.count:
+            error(invalid, "baked output index is out of bounds")
+        return properties.items[index].name.view()
+
+    pub mutating func set_time(time: f64) -> !:
+        if not math.is_finite(time):
+            error(invalid, "evaluation time must be finite")
+        if time != self.engine.time:
+            self.engine.clear()
+            self.engine.time = time
+
+    pub mutating func materialize() -> interop.Reference[Document]!:
+        for element in self.engine.doc.elements.span():
+            if self.engine.registry.find(element.kind.view()) != none:
+                discard(try self.engine.bake(element.path.view(), 0))
+        var doc = try self.engine.doc.copy()
+        errdefer doc.close()
+        for output in self.engine.memo.span():
+            let index = try doc.require(output.path.view())
+            for prop in output.properties.span():
+                try doc.elements.items[index].put_property(&prop)
+        let owned = doc
+        doc = DocumentData()
+        return try own_document(owned)
+
+    pub mutating func close():
+        self.engine.close()
+
+    func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        self.engine.registry.trace(visit, context)
+
+pub let evaluator_type = interop.Type[Evaluator]("Prism evaluator", Evaluator.close, Evaluator.trace, closeable = true)
+
+pub func compute(doc: interop.Reference[Document], time: f64 = 0.0) -> interop.Reference[Document]!:
+    let registry = try interop.Reference[NodeRegistry].adopt(try new NodeRegistry() in memory.heap, registry_type, memory.heap)
+    defer registry.release()
+    try registry.value().add_math()
+    var evaluator = try Evaluator(doc, registry, time)
+    defer evaluator.close()
+    return try evaluator.materialize()
+
+pub func compute_slot(doc: interop.Reference[Document], slot: str, time: f64 = 0.0) -> interop.Reference[Value]!:
+    let registry = try interop.Reference[NodeRegistry].adopt(try new NodeRegistry() in memory.heap, registry_type, memory.heap)
+    defer registry.release()
+    try registry.value().add_math()
+    var evaluator = try Evaluator(doc, registry, time)
+    defer evaluator.close()
+    return try evaluator.output(slot)

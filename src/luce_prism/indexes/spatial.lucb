@@ -1,0 +1,160 @@
+## Uniform-grid point index. Large search bounds fall back to the occupied points.
+import interop
+import math
+import luce_prism.indexes.ranked as ranked
+from luce_prism.query.results import Selection
+from luce_prism.collections.index import Index
+from luce_prism.document import Document
+from luce_prism.animation import resolve_property
+from luce_prism.storage import List
+from luce_prism.types import DType, invalid
+
+struct Point32:
+    pub var x: f32
+    pub var y: f32
+    pub var z: f32
+
+pub struct Vec3:
+    pub var x: f64
+    pub var y: f64
+    pub var z: f64
+
+func narrow(point: Vec3) -> Point32:
+    return Point32((f32)point.x, (f32)point.y, (f32)point.z)
+
+func distance(a: Point32, b: Point32) -> f64:
+    # The original subtracts float components before widening to double.
+    let x = (f64)(a.x - b.x)
+    let y = (f64)(a.y - b.y)
+    let z = (f64)(a.z - b.z)
+    return x * x + y * y + z * z
+
+func finite(point: Point32) -> bool:
+    return math.is_finite((f64)point.x) and math.is_finite((f64)point.y) and math.is_finite((f64)point.z)
+
+pub struct SpatialIndex:
+    var rows: Selection = Selection()
+    var points: List[Point32]
+    var grid: Index
+    var cell: f64
+
+    pub func init(doc: interop.Reference[Document], field: str, cell: f64 = 1.0) -> !:
+        self.rows = Selection()
+        self.points = List[Point32]()
+        self.grid = Index()
+        self.cell = cell if cell > 0.0 and math.is_finite(cell) else 1.0
+        errdefer self.close()
+        try self.build(doc, field)
+
+    func coordinate(value: f64) -> i64!:
+        let coordinate = math.floor(value / self.cell)
+        if not math.is_finite(coordinate) or coordinate < -4611686018427387904.0 or coordinate >= 4611686018427387904.0:
+            error(invalid, "spatial coordinate exceeds the supported grid")
+        return (i64)coordinate
+
+    mutating func build(doc: interop.Reference[Document], field: str) -> !:
+        for element in (try doc.get()).view_data().elements.span():
+            let position = element.property(field) else continue
+            var value = try resolve_property(&element.properties.items[position], 0.0)
+            defer value.close()
+            if value.kind != DType.float32 or value.shape.count != 1 or value.shape.items[0] != 3:
+                continue
+            let point = Point32((f32)try value.number(0), (f32)try value.number(1), (f32)try value.number(2))
+            let x = try self.coordinate((f64)point.x)
+            let y = try self.coordinate((f64)point.y)
+            let z = try self.coordinate((f64)point.z)
+            var scratch: u8[100]
+            discard(try self.grid.add(try format(scratch, f"{x}:{y}:{z}"), self.points.count))
+            try self.points.push(point)
+            try self.rows.append(&element)
+
+    pub func size() -> usize:
+        return self.points.count
+
+    func candidates(lo: const f64[], hi: const f64[]) -> List[usize]!:
+        var result: List[usize]
+        errdefer result.close()
+        var minimum: i64[3]
+        var maximum: i64[3]
+        var volume: f64 = 1.0
+        for i in 0..<(usize)3:
+            if lo[i] > hi[i]:
+                return result
+            minimum[i] = try self.coordinate(lo[i])
+            maximum[i] = try self.coordinate(hi[i])
+            volume *= (f64)maximum[i] - (f64)minimum[i] + 1.0
+        if volume > (f64)(self.points.count * 8 + 64):
+            try result.reserve(self.points.count)
+            for i in 0..<self.points.count:
+                try result.push(i)
+            return result
+        for x in minimum[0]..=maximum[0]:
+            for y in minimum[1]..=maximum[1]:
+                for z in minimum[2]..=maximum[2]:
+                    var scratch: u8[100]
+                    if let position = self.grid.find(try format(scratch, f"{x}:{y}:{z}")):
+                        for row in self.grid.buckets.items[position].rows.span():
+                            try result.push(row)
+        return result
+
+    func sphere(center: Point32, radius: f64) -> List[ranked.Hit]!:
+        var result: List[ranked.Hit]
+        errdefer result.close()
+        if not finite(center) or not math.is_finite(radius):
+            error(invalid, "spatial query must be finite")
+        if radius < 0.0 or self.points.count == 0:
+            return result
+        let lo = [(f64)center.x - radius, (f64)center.y - radius, (f64)center.z - radius]
+        let hi = [(f64)center.x + radius, (f64)center.y + radius, (f64)center.z + radius]
+        var candidates = try self.candidates(lo, hi)
+        defer candidates.close()
+        let square = radius * radius
+        for row in candidates.span():
+            let squared = distance(self.points.items[row], center)
+            if squared <= square:
+                try result.push(ranked.Hit(row = row, score = -squared))
+        return result
+
+    pub func within(center: Vec3, radius: f64) -> interop.Reference[Selection]!:
+        var hits = try self.sphere(narrow(center), radius)
+        defer hits.close()
+        return try ranked.select(self.rows.view_data(), hits.span(), hits.count)
+
+    pub func count_within(center: Vec3, radius: f64) -> usize!:
+        var hits = try self.sphere(narrow(center), radius)
+        defer hits.close()
+        return hits.count
+
+    pub func nearest(center: Vec3, count: usize = 1) -> interop.Reference[Selection]!:
+        let point = narrow(center)
+        if not finite(point):
+            error(invalid, "spatial query must be finite")
+        var hits: List[ranked.Hit]
+        defer hits.close()
+        if count > 0:
+            try hits.reserve(self.points.count)
+            for row in 0..<self.points.count:
+                try hits.push(ranked.Hit(row = row, score = -distance(self.points.items[row], point)))
+        return try ranked.select(self.rows.view_data(), hits.span(), count)
+
+    pub func in_box(lo: Vec3, hi: Vec3) -> interop.Reference[Selection]!:
+        let lower = narrow(lo)
+        let upper = narrow(hi)
+        let minimum = [(f64)lower.x, (f64)lower.y, (f64)lower.z]
+        let maximum = [(f64)upper.x, (f64)upper.y, (f64)upper.z]
+        var candidates = try self.candidates(minimum, maximum)
+        defer candidates.close()
+        var hits: List[ranked.Hit]
+        defer hits.close()
+        for row in candidates.span():
+            let point = self.points.items[row]
+            if point.x >= lower.x and point.x <= upper.x and point.y >= lower.y and point.y <= upper.y and point.z >= lower.z and point.z <= upper.z:
+                try hits.push(ranked.Hit(row = row))
+        return try ranked.select(self.rows.view_data(), hits.span(), hits.count)
+
+    pub mutating func close():
+        self.rows.close()
+        self.points.close()
+        self.grid.close()
+
+pub let spatial_index_type = interop.Type[SpatialIndex]("Prism spatial index", SpatialIndex.close, closeable = true)

@@ -1,0 +1,85 @@
+## Stable merge sort with one resolved key per row, matching the legacy buckets.
+import luce_prism.query.scalars as scalars
+from luce_prism.model import DocumentData
+from luce_prism.animation import resolve_property
+from luce_prism.storage import Buffer, List, text_copy, less
+
+struct Key:
+    var missing: bool = true
+    var string: bool
+    var text: Buffer
+    var number: f64
+
+    mutating func close():
+        self.text.close()
+
+func before(a: const Key*, b: const Key*) -> bool:
+    if a.missing != b.missing:
+        return not a.missing
+    if a.missing or a.string != b.string:
+        return false
+    return less(a.text.view(), b.text.view()) if a.string else a.number < b.number
+
+pub func order(doc: const DocumentData*, rows: usize[], field: str) -> !:
+    var keys: List[Key]
+    defer close_keys(&keys)
+    try keys.reserve(rows.length)
+    for index in rows:
+        let element = &doc.elements.items[index]
+        var key = Key()
+        errdefer key.close()
+        if field == "type":
+            key.missing = false
+            key.string = true
+            key.text = try element.kind.copy()
+        elif let position = element.property(field):
+            var value = try resolve_property(&element.properties.items[position], 0.0)
+            defer value.close()
+            if let text = scalars.string(&value):
+                key.text = try text_copy(text)
+                key.string = true
+                key.missing = false
+            elif let number = scalars.numeric(&value):
+                key.number = number
+                key.missing = false
+        try keys.push(key)
+    var indices: List[usize]
+    defer indices.close()
+    var scratch: List[usize]
+    defer scratch.close()
+    try indices.reserve(rows.length)
+    try scratch.reserve(rows.length)
+    for i in 0..<rows.length:
+        try indices.push(i)
+        try scratch.push(0)
+    var width: usize = 1
+    while width < rows.length:
+        var start: usize = 0
+        while start < rows.length:
+            let middle = start + width if start + width < rows.length else rows.length
+            let end = start + width * 2 if start + width * 2 < rows.length else rows.length
+            var a = start
+            var b = middle
+            var out = start
+            while out < end:
+                if a < middle and (b == end or not before(&keys.items[indices.items[b]], &keys.items[indices.items[a]])):
+                    scratch.items[out] = indices.items[a]
+                    a += 1
+                else:
+                    scratch.items[out] = indices.items[b]
+                    b += 1
+                out += 1
+            start = end
+        let previous = indices
+        indices = scratch
+        scratch = previous
+        width *= 2
+    for i in 0..<rows.length:
+        scratch.items[i] = rows[indices.items[i]]
+    for i in 0..<rows.length:
+        rows[i] = scratch.items[i]
+
+func close_keys(keys: List[Key]*):
+    for i in 0..<keys.count:
+        keys.items[i].close()
+    keys.close()

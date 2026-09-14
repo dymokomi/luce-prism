@@ -1,0 +1,43 @@
+## Lossless plain-text and arbitrary-byte file codecs.
+from luce_prism.codecs.common import put, get_value, type_of
+from luce_prism.model import DocumentData
+from luce_prism.storage import Buffer, Reader, copied
+from luce_prism.types import DType, invalid
+from luce_prism.value import ValueData
+
+pub func decode(bytes: const u8[], binary: bool) -> DocumentData!:
+    var output = DocumentData()
+    errdefer output.close()
+    try output.add("/document", "blob" if binary else "text")
+    var value = ValueData(kind = DType.uint8 if binary else DType.string)
+    defer value.close()
+    if binary:
+        try value.shape.push((u32)bytes.length)
+        value.payload = try copied(bytes)
+    else:
+        let text = try str(bytes)
+        var start: usize = 0
+        var count: u32 = 0
+        for i in 0..=text.length:
+            if i == text.length or text.bytes[i] == '\n':
+                try value.payload.sized((str)text.bytes[start..<i])
+                start = i + 1
+                count += 1
+        try value.shape.push(count)
+    try put(&output, "/document", "data" if binary else "lines", &value)
+    return output
+
+pub func encode(doc: const DocumentData*, binary: bool) -> Buffer!:
+    let value = get_value(doc, "/document", "data" if binary else "lines") else error(invalid, "file codec requires its document property")
+    if type_of(doc, "/document") != ("blob" if binary else "text") or value.kind != (DType.uint8 if binary else DType.string):
+        error(invalid, "file codec does not match the document model")
+    if binary:
+        return try value.payload.copy()
+    var output: Buffer
+    errdefer output.close()
+    var reader = Reader(data = value.payload.bytes())
+    for i in 0..<value.count():
+        if i > 0:
+            try output.text("\n")
+        try output.text(try reader.text())
+    return output

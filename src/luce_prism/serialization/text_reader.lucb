@@ -1,0 +1,325 @@
+from luce_prism.serialization.location import Location, capture
+## Serialization text reader.
+import memory
+import strings
+import math
+from luce_prism.animation import Sample, insert_sample
+from luce_prism.model import DocumentData
+from luce_prism.path import joined, parent_path, require_slot, valid_name
+from luce_prism.serialization.lexer import Parser, tokenize
+from luce_prism.serialization.type_names import TypeSpec, type_spec
+from luce_prism.storage import Buffer, List, set_pair, text_copy
+from luce_prism.types import DType, Interpolation, invalid, limit_exceeded, max_depth, max_items, unsupported
+from luce_prism.value import ValueData, append_number, dtype_width, floating, value_header
+
+pub func parse_leaf(parser: Parser*, value: ValueData*) -> !:
+    let kind = parser.kind()
+    let token = try parser.take()
+    if value.kind == DType.string:
+        if kind != 2:
+            try parser.fail("expected a string value")
+        try value.payload.sized(token)
+    elif value.kind == DType.character:
+        if kind != 3:
+            try parser.fail("expected a byte character")
+        try value.payload.byte(token.bytes[0])
+    elif value.kind == DType.boolean:
+        if kind != 1 or (token != "true" and token != "false"):
+            try parser.fail("expected a boolean")
+        try value.payload.byte(1 if token == "true" else 0)
+    elif floating(value.kind):
+        if kind != 1:
+            try parser.fail("expected a number")
+        var number = try strings.parse_f64(token)
+        if not math.is_finite(number):
+            number = 0.0
+        try append_number(&value.payload, value.kind, number)
+    elif value.kind == DType.int8 or value.kind == DType.int16 or value.kind == DType.int32 or value.kind == DType.int64:
+        if kind != 1:
+            try parser.fail("expected an integer")
+        let number = strings.parse_i64(token) else error(invalid, "invalid Prism signed integer")
+        let width = dtype_width(value.kind)
+        if width < 8:
+            let maximum = ((i64)1 << (width * 8 - 1)) - 1
+            if number < -maximum - 1 or number > maximum:
+                try parser.fail("signed integer exceeds its dtype")
+        try value.payload.uint((u64)number, width)
+    else:
+        if kind != 1:
+            try parser.fail("expected an unsigned integer")
+        let number = strings.parse_u64(token) else error(invalid, "invalid Prism unsigned integer")
+        let width = dtype_width(value.kind)
+        if width < 8 and number >= ((u64)1 << (width * 8)):
+            try parser.fail("unsigned integer exceeds its dtype")
+        try value.payload.uint(number, width)
+
+pub func parse_nested(parser: Parser*, value: ValueData*, depth: usize) -> !:
+    try parser.expect("[")
+    let count = (usize)value.shape.items[depth]
+    for i in 0..<count:
+        if depth + 1 == value.shape.count:
+            try parse_leaf(parser, value)
+        else:
+            try parse_nested(parser, value, depth + 1)
+        if i + 1 < count:
+            try parser.expect(",")
+        else:
+            discard(try parser.accept(","))
+    try parser.expect("]")
+
+pub func parse_tuple(parser: Parser*, value: ValueData*, count: usize) -> !:
+    try parser.expect("(")
+    for i in 0..<count:
+        try parse_leaf(parser, value)
+        if i + 1 < count:
+            try parser.expect(",")
+        else:
+            discard(try parser.accept(","))
+    try parser.expect(")")
+
+pub func parse_value(parser: Parser*, spec: const TypeSpec*) -> ValueData!:
+    var value = try value_header(spec.kind, spec.shape.span())
+    errdefer value.close()
+    if spec.dynamic:
+        try parser.expect("[")
+        var count: u32 = 0
+        while not parser.at("]"):
+            if count >= (u32)max_items:
+                error(limit_exceeded, "Prism dynamic array limit exceeded")
+            if spec.tuple_width > 0:
+                try parse_tuple(parser, &value, spec.tuple_width)
+            else:
+                try parse_leaf(parser, &value)
+            count += 1
+            if not (try parser.accept(",")):
+                break
+        try parser.expect("]")
+        value.shape.items[0] = count
+    elif spec.tuple_width > 0:
+        try parse_tuple(parser, &value, spec.tuple_width)
+    elif value.shape.count > 0:
+        if value.count() > parser.remaining():
+            error(invalid, "Prism shape exceeds remaining source bytes")
+        try parse_nested(parser, &value, 0)
+    else:
+        try parse_leaf(parser, &value)
+    return value
+
+pub func parse_handles(parser: Parser*, values: List[f64]*) -> !:
+    try parser.expect("[")
+    while not parser.at("]"):
+        let number = try strings.parse_f64(try parser.take())
+        if not math.is_finite(number):
+            try parser.fail("non-finite handle")
+        try values.push(number)
+        if not (try parser.accept(",")):
+            break
+    try parser.expect("]")
+    if values.count % 2 != 0:
+        try parser.fail("handles need time/value pairs")
+
+pub func parse_property(parser: Parser*, document: DocumentData*, path: str) -> !:
+    let type_name = try parser.name()
+    var spec = try type_spec(type_name)
+    defer spec.close()
+    if try parser.accept("["):
+        if spec.label != "":
+            try parser.fail("catalog aliases have fixed shapes")
+        if try parser.accept("]"):
+            spec.dynamic = true
+            var shape: List[u32]
+            errdefer shape.close()
+            try shape.push(0)
+            for dimension in spec.shape.span():
+                try shape.push(dimension)
+            spec.shape.close()
+            spec.shape = shape
+        else:
+            if spec.shape.count > 0:
+                try parser.fail("legacy aggregate already has a shape")
+            while true:
+                let dimension = strings.parse_u64(try parser.take()) else error(invalid, "invalid Prism dimension")
+                if dimension > 4294967295 or spec.shape.count >= 16:
+                    try parser.fail("invalid Prism rank or dimension")
+                try spec.shape.push((u32)dimension)
+                if not (try parser.accept(",")):
+                    break
+            try parser.expect("]")
+    let quoted_name = parser.kind() == 2
+    var name = try parser.name()
+    var animated = false
+    if not quoted_name and strings.ends_with(name, ".timeSamples"):
+        animated = true
+        name = (str)name.bytes[..<name.length - 12]
+    elif try parser.accept(".timeSamples"):
+        animated = true
+    try parser.expect("=")
+    if not animated:
+        let value = try parse_value(parser, &spec)
+        try document.put_value(path, name, value, spec.label)
+        return
+    let element_index = try document.require(path)
+    if document.elements.items[element_index].property(name) == none:
+        var zero = try value_header(spec.kind, spec.shape.span())
+        zero.payload.reserve(zero.count() * (4 if spec.kind == DType.string else dtype_width(spec.kind))) catch failure:
+            zero.close()
+            error(failure.code, failure.message)
+        zero.payload.used = zero.count() * (4 if spec.kind == DType.string else dtype_width(spec.kind))
+        memory.set(zero.payload.data[..<zero.payload.used], 0)
+        if type_name == "matrix":
+            memory.write[f32](&zero.payload.data[0], 1.0)
+            memory.write[f32](&zero.payload.data[12], 1.0)
+        try document.put_value(path, name, zero, spec.label)
+    let prop_index = document.elements.items[element_index].property(name) else trap("Prism sample default missing")
+    let prop = &document.elements.items[element_index].properties.items[prop_index]
+    try parser.expect("{")
+    while not parser.at("}"):
+        var sample = Sample()
+        errdefer sample.close()
+        sample.time = try strings.parse_f64(try parser.take())
+        if not math.is_finite(sample.time):
+            try parser.fail("non-finite keyframe time")
+        try parser.expect(":")
+        sample.value = try parse_value(parser, &spec)
+        if try parser.accept("("):
+            while not parser.at(")"):
+                let key = try parser.name()
+                try parser.expect("=")
+                if key == "interp":
+                    let mode = try parser.name()
+                    if mode != "held" and mode != "linear" and mode != "bezier":
+                        try parser.fail("unknown interpolation")
+                    sample.interpolation = Interpolation.held if mode == "held" else (Interpolation.linear if mode == "linear" else Interpolation.bezier)
+                elif key == "handle":
+                    let mode = try parser.name()
+                    if mode != "auto" and mode != "vector" and mode != "aligned" and mode != "free":
+                        try parser.fail("unknown handle type")
+                    sample.handle = 0 if mode == "auto" else (1 if mode == "vector" else (2 if mode == "aligned" else 3))
+                elif key == "left":
+                    try parse_handles(parser, &sample.left)
+                elif key == "right":
+                    try parse_handles(parser, &sample.right)
+                else:
+                    try parser.fail("unknown keyframe option")
+                if not (try parser.accept(",")):
+                    break
+            try parser.expect(")")
+        try insert_sample(prop, sample)
+        if not (try parser.accept(",")):
+            break
+    try parser.expect("}")
+
+pub func parse_directive(parser: Parser*, document: DocumentData*, path: str, depth: usize) -> !:
+    if parser.kind() != 1:
+        try parser.fail("expected a directive or value type")
+    let directive = parser.peek()
+    if directive == "def" or directive == "over":
+        if depth >= max_depth:
+            error(limit_exceeded, "Prism element nesting limit exceeded")
+        discard(try parser.take())
+        var kind: str = ""
+        var name: str = ""
+        var named = false
+        if parser.kind() == 2:
+            let first = try parser.take()
+            if parser.kind() == 2:
+                kind = first
+                name = try parser.take()
+                named = true
+            elif valid_name(first):
+                name = first
+                named = true
+            else:
+                kind = first
+        elif not parser.at("{"):
+            kind = try parser.name()
+            if parser.kind() == 2:
+                name = try parser.take()
+                named = true
+        var anonymous_name: u8[64]
+        if not named:
+            let count = document.child_count(path)
+            name = try format(anonymous_name, f"[{count}]")
+        var child = try joined(path, name)
+        defer child.close()
+        try document.add(child.view(), kind, directive == "over")
+        try parser.expect("{")
+        while not parser.at("}"):
+            try parse_directive(parser, document, child.view(), depth + 1)
+        try parser.expect("}")
+    elif directive == "delete" or directive == "disconnect":
+        discard(try parser.take())
+        let target = try parser.quoted()
+        if directive == "delete":
+            try document.mark_deleted(target)
+        else:
+            try document.mark_disconnected(target)
+    elif directive == "reorder":
+        discard(try parser.take())
+        let parent = try parser.quoted()
+        try parser.expect("=")
+        try parser.expect("[")
+        var children: List[str]
+        defer children.close()
+        while not parser.at("]"):
+            try children.push(try parser.quoted())
+            if not (try parser.accept(",")):
+                break
+        try parser.expect("]")
+        try document.reorder(parent, children.span())
+    elif directive == "connect":
+        discard(try parser.take())
+        var target: Buffer
+        defer target.close()
+        if parser.kind() == 4:
+            target = try text_copy(try parser.path())
+        else:
+            target = try joined(path, try parser.name(), ".")
+        try parser.expect("=")
+        let source = try parser.path()
+        try require_slot(source)
+        if strings.find(target.view(), "*") != none or strings.find(target.view(), "?") != none:
+            try document.connect_pattern(source, target.view())
+        else:
+            try require_slot(target.view())
+            try set_pair(&document.connections, target.view(), source)
+    elif directive == "string":
+        discard(try parser.take())
+        let key = try parser.name()
+        try parser.expect("=")
+        try document.set_metadata(path, key, try parser.quoted())
+    elif directive == "reference":
+        discard(try parser.take())
+        try document.set_metadata(path, "reference", try parser.quoted())
+        if parser.kind() == 2:
+            try document.set_metadata(path, "referencePath", try parser.quoted())
+    elif directive == "unset":
+        discard(try parser.take())
+        let metadata = try parser.accept("string")
+        try document.mark_unset(path, try parser.name(), metadata)
+    elif path == "/":
+        try parser.fail("expected a document directive")
+    elif strings.ends_with(directive, ".connect"):
+        let name = try parser.take()
+        var target = try joined(path, (str)name.bytes[..<name.length - 8], ".")
+        defer target.close()
+        try parser.expect("=")
+        let source = try parser.path()
+        try require_slot(source)
+        try require_slot(target.view())
+        try set_pair(&document.connections, target.view(), source)
+    else:
+        try parse_property(parser, document, path)
+
+pub func read_text(bytes: const u8[], document: DocumentData*, location: Location*? = none) -> !:
+    let trimmed = strings.trim(try str(bytes))
+    let end = strings.find(trimmed, "\n") else trimmed.length
+    let header = strings.trim((str)trimmed.bytes[..<end])
+    if header != "#prisma 1.0" and header != "#prisma 2.0" and header != "#prisma 3.0" and header != "#prisma 4.0":
+        error(unsupported, "unsupported Prism text version")
+    var parser = Parser(source = bytes)
+    defer parser.close()
+    errdefer capture(bytes, parser.token_start, location)
+    try parser.advance()
+    while parser.kind() != 0:
+        try parse_directive(&parser, document, "/", 0)

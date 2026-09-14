@@ -1,0 +1,63 @@
+## One owned derived value keyed by revision and time; failed producers retain it.
+import interop
+import ownership
+import math
+from luce_prism.types import invalid
+
+pub struct EvalKey:
+    pub var revision: usize
+    pub var time: f64
+
+pub struct EvalCache[T]:
+    var result: interop.Reference[T]?
+    var key: EvalKey
+    var cached: bool
+    var producing: bool
+    var close_pending: bool
+
+    pub func init():
+        return
+
+    pub func valid(key: EvalKey) -> bool:
+        return self.cached and self.key.revision == key.revision and self.key.time == key.time
+
+    pub mutating func invalidate():
+        self.cached = false
+
+    mutating func finish():
+        self.producing = false
+        if self.close_pending:
+            self.close_pending = false
+            self.close()
+
+    pub mutating func evaluate(key: EvalKey, producer: interop.Callback[EvalKey, interop.Reference[T]]) -> interop.Reference[T]!:
+        if not math.is_finite(key.time):
+            error(invalid, "Prism evaluation cache time must be finite")
+        if self.valid(key):
+            return (self.result else error(invalid, "invalid Prism evaluation cache")).clone()
+        if self.producing:
+            error(invalid, "recursive Prism evaluation cache producer")
+        self.producing = true
+        defer self.finish()
+        let output = producer.invoke(key)
+        defer output.release()
+        let produced = (try output.get()).clone()
+        if let previous = self.result:
+            previous.release()
+        self.result = produced
+        self.key = key
+        self.cached = true
+        return produced.clone()
+
+    pub func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        if let value = self.result:
+            value.trace(visit, context)
+
+    pub mutating func close():
+        if self.producing:
+            self.close_pending = true
+            return
+        if let value = self.result:
+            value.release()
+        self.result = none
+        self.cached = false

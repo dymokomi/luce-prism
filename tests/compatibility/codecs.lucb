@@ -1,0 +1,195 @@
+import prism
+import interop
+
+func round_trip(source: str, codec: prism.Codec) -> !:
+    let doc = try prism.decode(source.bytes, codec)
+    defer doc.release()
+    let text = try prism.encode(doc, codec)
+    defer text.release()
+    let second = try prism.decode(text.value().bytes(), codec)
+    defer second.release()
+    assert(try doc.value().equals(second))
+    for encoding in [prism.Encoding.text, prism.Encoding.binary, prism.Encoding.package]:
+        let bytes = try doc.value().encode(encoding)
+        defer bytes.release()
+        let restored = try prism.Document.decode(bytes.value().bytes())
+        defer restored.release()
+        assert(try doc.value().equals(restored))
+
+func rejected(source: str, codec: prism.Codec) -> !:
+    var failed = false
+    let doc = prism.decode(source.bytes, codec) catch failure:
+        failed = true
+        return
+    defer doc.release()
+    assert(failed)
+
+func text_is(doc: interop.Reference[prism.Document], path: str, name: str, text: str) -> !:
+    let value = try doc.value().get(path, name)
+    defer value.release()
+    assert(try value.value().text_at() == text)
+
+func json_round_trips_through_the_hierarchy() -> !:
+    let inputs: str[10] = ["{\"name\":\"gear\",\"teeth\":24,\"metric\":true}", "{\"part\":{\"id\":7,\"sub\":{\"deep\":1.5}}}", "{\"tags\":[\"metal\",\"spur\"],\"sizes\":[1.5,2,3.25]}", "{\"items\":[{\"x\":1},{\"x\":2,\"y\":3}]}", "[1,2,[3,4],{\"k\":\"v\"}]", "{\"a\":null,\"b\":[null,1,null],\"c\":\"\"}", "{\"escapes\":\"line\\nbreak\\t\\\"quote\\\"\\\\slash\"}", "\"just a string\"", "{}", "[]"]
+    for input in inputs:
+        try round_trip(input, prism.Codec.json)
+
+func json_sparse_array_keeps_holes_as_null() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef array \"root\" { int64 \"0\" = 10 int64 \"2\" = 30 }")
+    defer doc.release()
+    let text = try prism.encode(doc, prism.Codec.json)
+    defer text.release()
+    assert(try text.value().text() == "[10,null,30]")
+
+func json_unicode_escapes_decode_to_utf8() -> !:
+    let doc = try prism.decode(b"{\"accent\":\"caf\\u00e9\",\"face\":\"\\uD83D\\uDE00\"}", prism.Codec.json)
+    defer doc.release()
+    try text_is(doc, "/root", "accent", "café")
+    try text_is(doc, "/root", "face", "😀")
+    try round_trip("{\"face\":\"😀\",\"accent\":\"é\"}", prism.Codec.json)
+    # Invalid Unicode is rejected rather than reproducing the C++ invalid UTF-8.
+    try rejected("\"\\uD83Dx\"", prism.Codec.json)
+
+func decode_builds_a_navigable_hierarchy() -> !:
+    let doc = try prism.decode(b"{\"name\":\"gear\",\"part\":{\"id\":7},\"tags\":[\"a\",\"b\"]}", prism.Codec.json)
+    defer doc.release()
+    assert(try doc.value().type_at("/root") == "object")
+    assert(try doc.value().type_at("/root/tags") == "array")
+    try text_is(doc, "/root", "name", "gear")
+    try text_is(doc, "/root/tags", "1", "b")
+    let value = try doc.value().get("/root/part", "id")
+    defer value.release()
+    assert(try value.value().number_at() == 7.0)
+
+func json_codec_via_the_seam_and_rejects_garbage() -> !:
+    assert(prism.codec_name(prism.Codec.json) == "json")
+    try round_trip("{\"k\":1}", prism.Codec.json)
+    for input in ["{not valid", "", "{\"a\":1} trailing", "[1,]", "{\"a\":1,}", "1e", "\"\\q\""]:
+        try rejected(input, prism.Codec.json)
+
+func unsafe_child_keys_fail_closed_not_corrupt() -> !:
+    for input in ["{\"a.b\":{\"x\":1}}", "{\"a/b\":{\"x\":1}}", "{\"\":{\"x\":1}}"]:
+        try rejected(input, prism.Codec.json)
+    let doc = try prism.decode(b"{\"a.b\":1,\"a/b\":2,\"\":3}", prism.Codec.json)
+    defer doc.release()
+    assert(doc.value().has_property("/root", "a.b"))
+    assert(doc.value().has_property("/root", "a/b"))
+    assert(doc.value().has_property("/root", ""))
+
+func text_codec_round_trips_byte_exact() -> !:
+    for input in ["", "one line", "a\nb\nc\n", "crlf\r\nlines\r\n", "# Markdown\n\n* item\n"]:
+        let doc = try prism.decode(input.bytes, prism.Codec.text)
+        defer doc.release()
+        let output = try prism.encode(doc, prism.Codec.text)
+        defer output.release()
+        assert(try output.value().text() == input)
+        try round_trip(input, prism.Codec.text)
+
+func blob_codec_round_trips_byte_exact() -> !:
+    var input: u8[512]
+    for i in 0..<input.length:
+        input[i] = (u8)((i * 41) & 255)
+    for size in [0, 1, 256, 512]:
+        let doc = try prism.decode(input[..<size], prism.Codec.blob)
+        defer doc.release()
+        let output = try prism.encode(doc, prism.Codec.blob)
+        defer output.release()
+        assert(equal_bytes(output.value().bytes(), input[..<size]))
+        for encoding in [prism.Encoding.text, prism.Encoding.binary, prism.Encoding.package]:
+            let bytes = try doc.value().encode(encoding)
+            defer bytes.release()
+            let restored = try prism.Document.decode(bytes.value().bytes())
+            defer restored.release()
+            let blob = try prism.encode(restored, prism.Codec.blob)
+            defer blob.release()
+            assert(equal_bytes(blob.value().bytes(), input[..<size]))
+
+func decline(doc: interop.Reference[prism.Document], codec: prism.Codec) -> !:
+    let encoded = prism.encode(doc, codec) catch failure:
+        return
+    defer encoded.release()
+    assert(false)
+
+func file_codecs_decline_mismatched_stages() -> !:
+    let bytes: u8[3] = [0, 1, 2]
+    let blob = try prism.decode(bytes, prism.Codec.blob)
+    defer blob.release()
+    try decline(blob, prism.Codec.text)
+    let text = try prism.decode(b"hello", prism.Codec.text)
+    defer text.release()
+    try decline(text, prism.Codec.blob)
+    let scene = try prism.Document.parse("#prisma 4.0\ndef group \"world\" {}")
+    defer scene.release()
+    try decline(scene, prism.Codec.blob)
+    try decline(scene, prism.Codec.text)
+
+func svg_decodes_into_a_structural_element_tree() -> !:
+    let doc = try prism.decode(b"<svg viewBox=\"0 0 10 10\" width=\"10\"><rect x=\"1\" y=\"2\" width=\"4\"/><g><circle cx=\"5\"/></g></svg>", prism.Codec.svg)
+    defer doc.release()
+    assert(try doc.value().type_at("/svg") == "svg")
+    assert(try doc.value().type_at("/svg/0") == "rect")
+    assert(try doc.value().type_at("/svg/1") == "g")
+    assert(try doc.value().type_at("/svg/1/0") == "circle")
+    try text_is(doc, "/svg", "viewBox", "0 0 10 10")
+    try text_is(doc, "/svg/0", "x", "1")
+    try text_is(doc, "/svg/1/0", "cx", "5")
+
+func svg_text_labels_become_visible_text_prims() -> !:
+    let doc = try prism.decode(b"<svg><text x=\"40\" y=\"68\">/circle</text></svg>", prism.Codec.svg)
+    defer doc.release()
+    assert(try doc.value().type_at("/svg/0") == "text")
+    assert(try doc.value().type_at("/svg/0/0") == "#text")
+    try text_is(doc, "/svg/0/0", "text", "/circle")
+
+func svg_round_trip_is_stable() -> !:
+    try round_trip("<svg viewBox=\"0 0 520 196\" role=\"img\"><defs><marker id=\"ah\" markerWidth=\"8\" orient=\"auto\"><path d=\"M0 0 L6 3 L0 6 Z\"/></marker></defs><rect x=\"24\" y=\"42\" width=\"132\" rx=\"8\"/><text x=\"40\" y=\"68\">/circle</text><circle cx=\"156\" cy=\"92\" r=\"4\"/></svg>", prism.Codec.svg)
+
+func svg_self_closing_and_comments_and_prolog() -> !:
+    try round_trip("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!-- a diagram -->\n<svg><rect width=\"4\"/></svg>", prism.Codec.svg)
+
+func svg_encode_declines_a_non_vector_stage() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef document \"document\" {}")
+    defer doc.release()
+    try decline(doc, prism.Codec.svg)
+
+func svg_malformed_input_fails_closed() -> !:
+    for input in ["", "   \n<!-- only a comment -->\n", "<svg><rect/>", "<svg><g><rect/>", "<svg"]:
+        try rejected(input, prism.Codec.svg)
+    try round_trip("<svg/>", prism.Codec.svg)
+    try round_trip("<svg><rect/></svg>", prism.Codec.svg)
+
+func svg_entities_round_trip_in_text_and_attrs() -> !:
+    let doc = try prism.decode(b"<svg><text aria-label=\"a &amp; b\">x &lt; y</text></svg>", prism.Codec.svg)
+    defer doc.release()
+    try text_is(doc, "/svg/0", "aria-label", "a & b")
+    try text_is(doc, "/svg/0/0", "text", "x < y")
+    let text = try prism.encode(doc, prism.Codec.svg)
+    defer text.release()
+    assert(try text.value().text() == "<svg><text aria-label=\"a &amp; b\">x &lt; y</text></svg>")
+
+pub func run() -> !:
+    try json_round_trips_through_the_hierarchy()
+    try json_sparse_array_keeps_holes_as_null()
+    try json_unicode_escapes_decode_to_utf8()
+    try decode_builds_a_navigable_hierarchy()
+    try json_codec_via_the_seam_and_rejects_garbage()
+    try unsafe_child_keys_fail_closed_not_corrupt()
+    try text_codec_round_trips_byte_exact()
+    try blob_codec_round_trips_byte_exact()
+    try file_codecs_decline_mismatched_stages()
+    try svg_decodes_into_a_structural_element_tree()
+    try svg_text_labels_become_visible_text_prims()
+    try svg_round_trip_is_stable()
+    try svg_self_closing_and_comments_and_prolog()
+    try svg_encode_declines_a_non_vector_stage()
+    try svg_malformed_input_fails_closed()
+    try svg_entities_round_trip_in_text_and_attrs()
+    print("PASS 16 JSON, text/blob and SVG codec cases")
+
+func equal_bytes(a: const u8[], b: const u8[]) -> bool:
+    if a.length != b.length:
+        return false
+    for i in 0..<a.length:
+        if a[i] != b[i]:
+            return false
+    return true

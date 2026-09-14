@@ -1,0 +1,160 @@
+## Structured predicate atoms and ordered constant/variable arguments.
+import interop
+import memory
+from luce_prism.storage import Buffer, List, Reader, text_copy
+from luce_prism.model import DocumentData
+from luce_prism.animation import resolve_property
+from luce_prism.query.scalars import numeric
+from luce_prism.types import DType, invalid
+
+pub enum RuleKind as u8:
+    strict = 0
+    defeasible = 1
+    defeater = 2
+
+pub enum ProofTag as u8:
+    definite_proof = 0
+    definite_refute = 1
+    defeasible_proof = 2
+    defeasible_refute = 3
+
+pub struct Term:
+    pub var name: Buffer
+    pub var variable: bool
+
+    pub mutating func close():
+        self.name.close()
+
+pub struct AtomData:
+    pub var predicate: Buffer
+    pub var negative: bool
+    pub var arguments: List[Term]
+
+    pub func copy() -> AtomData!:
+        var result = AtomData(negative = self.negative)
+        errdefer result.close()
+        result.predicate = try self.predicate.copy()
+        for term in self.arguments.span():
+            try result.append(term.name.view(), term.variable)
+        return result
+
+    pub mutating func append(name: str, variable: bool) -> !:
+        var term = Term(variable = variable)
+        errdefer term.close()
+        term.name = try text_copy(name)
+        try self.arguments.push(term)
+
+    pub func key() -> Buffer!:
+        var result: Buffer
+        errdefer result.close()
+        if self.negative:
+            try result.byte('-')
+        try result.text(self.predicate.view())
+        try result.byte('(')
+        for i in 0..<self.arguments.count:
+            if i > 0:
+                try result.byte(',')
+            try result.text(self.arguments.items[i].name.view())
+        try result.byte(')')
+        return result
+
+    pub mutating func close():
+        self.predicate.close()
+        for i in 0..<self.arguments.count:
+            self.arguments.items[i].close()
+        self.arguments.close()
+
+pub struct Atom:
+    var data: AtomData
+
+    pub func init(predicate: str, negative: bool = false) -> !:
+        self.data = AtomData(negative = negative)
+        self.data.predicate = try text_copy(predicate)
+
+    pub func view_data() -> const AtomData*:
+        return &self.data
+
+    pub func predicate() -> str:
+        return self.data.predicate.view()
+
+    pub func negative() -> bool:
+        return self.data.negative
+
+    pub mutating func constant(name: str) -> !:
+        try self.data.append(name, false)
+
+    pub mutating func variable(name: str) -> !:
+        try self.data.append(name, true)
+
+    pub func count() -> usize:
+        return self.data.arguments.count
+
+    pub func argument(index: usize) -> str!:
+        if index >= self.data.arguments.count:
+            error(invalid, "Prism atom argument index is out of bounds")
+        return self.data.arguments.items[index].name.view()
+
+    pub func is_variable(index: usize) -> bool!:
+        if index >= self.data.arguments.count:
+            error(invalid, "Prism atom argument index is out of bounds")
+        return self.data.arguments.items[index].variable
+
+    pub mutating func close():
+        self.data.close()
+
+pub let atom_type = interop.Type[Atom]("Prism atom", Atom.close, closeable = true)
+
+pub struct Atoms:
+    var atoms: List[AtomData]
+
+    pub func init():
+        return
+
+    pub func view_data() -> const List[AtomData]*:
+        return &self.atoms
+
+    pub mutating func append(atom: interop.Reference[Atom]) -> !:
+        var owned = try (try atom.get()).view_data().copy()
+        errdefer owned.close()
+        try self.atoms.push(owned)
+
+    pub func count() -> usize:
+        return self.atoms.count
+
+    pub mutating func close():
+        for i in 0..<self.atoms.count:
+            self.atoms.items[i].close()
+        self.atoms.close()
+
+pub let atoms_type = interop.Type[Atoms]("Prism atoms", Atoms.close, closeable = true)
+
+pub func read_text(doc: const DocumentData*, path: str, name: str) -> Buffer!:
+    let index = doc.find(path) else return Buffer()
+    let element = &doc.elements.items[index]
+    let position = element.property(name) else return Buffer()
+    var value = try resolve_property(&element.properties.items[position], 0.0)
+    defer value.close()
+    if value.kind != DType.string or value.count() == 0:
+        return Buffer()
+    var reader = Reader(data = value.payload.bytes())
+    return try text_copy(try reader.text())
+
+pub func read_negative(doc: const DocumentData*, path: str) -> bool!:
+    let index = doc.find(path) else return false
+    let element = &doc.elements.items[index]
+    let position = element.property("neg") else return false
+    var value = try resolve_property(&element.properties.items[position], 0.0)
+    defer value.close()
+    return (f32)(numeric(&value) else 0.0) != 0.0
+
+pub func read_atom(doc: const DocumentData*, path: str) -> AtomData!:
+    var atom: AtomData
+    errdefer atom.close()
+    atom.predicate = try read_text(doc, path, "pred")
+    atom.negative = try read_negative(doc, path)
+    for i in 0..<doc.child_count(path):
+        let child = doc.child_at(path, i) else error(invalid, "invalid Prism atom child index")
+        var name = try read_text(doc, child, "name")
+        defer name.close()
+        try atom.append(name.view(), try doc.type_at(child) == "var")
+    return atom

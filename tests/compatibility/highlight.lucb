@@ -1,0 +1,65 @@
+import prism
+
+func check(text: str, codec: prism.Codec, column: usize, expected: prism.TokenClass) -> !:
+    let spans = try prism.highlight_line(text, codec)
+    defer spans.release()
+    assert(spans.value().class_at(column) == expected)
+    var previous: usize = 0
+    for i in 0..<spans.value().count():
+        let span = try spans.value().at(i)
+        assert(span.start >= previous and span.start <= span.end and span.end <= text.length)
+        previous = span.end
+
+func highlight_markdown_heading_marks_hashes_and_bolds_text() -> !:
+    try check("## Title here", prism.Codec.markdown, 0, prism.TokenClass.marker)
+    try check("## Title here", prism.Codec.markdown, 4, prism.TokenClass.heading)
+    try check("####### too deep", prism.Codec.markdown, 0, prism.TokenClass.normal)
+
+func highlight_markdown_lists_code_emphasis_fence() -> !:
+    let text = "- item with `code` and **bold**"
+    try check(text, prism.Codec.markdown, 0, prism.TokenClass.marker)
+    try check(text, prism.Codec.markdown, 13, prism.TokenClass.code)
+    try check(text, prism.Codec.markdown, 24, prism.TokenClass.emphasis)
+    try check(text, prism.Codec.markdown, 3, prism.TokenClass.normal)
+    try check("```cpp", prism.Codec.markdown, 0, prism.TokenClass.marker)
+    try check("> quoted", prism.Codec.markdown, 0, prism.TokenClass.marker)
+    try check("> quoted", prism.Codec.markdown, 3, prism.TokenClass.comment)
+    try check("  12. item", prism.Codec.markdown, 3, prism.TokenClass.marker)
+
+func highlight_prisma_comment_string_number_keywords() -> !:
+    try check("# a comment line", prism.Codec.prisma, 5, prism.TokenClass.comment)
+    try check("def group \"world\" {", prism.Codec.prisma, 0, prism.TokenClass.keyword)
+    try check("def group \"world\" {", prism.Codec.prisma, 11, prism.TokenClass.string)
+    let text = "    float2 position = (1.5, -2)"
+    try check(text, prism.Codec.prisma, 4, prism.TokenClass.keyword)
+    try check(text, prism.Codec.prisma, 11, prism.TokenClass.normal)
+    try check(text, prism.Codec.prisma, 23, prism.TokenClass.number)
+    try check(text, prism.Codec.prisma, 28, prism.TokenClass.number)
+    try check("    inMaterial.connect = </world/mat.out>", prism.Codec.prisma, 26, prism.TokenClass.marker)
+
+func highlight_json_keys_strings_numbers_atoms() -> !:
+    let text = "  \"radius\": 2.5, \"name\": \"lens\", \"on\": true"
+    try check(text, prism.Codec.json, 3, prism.TokenClass.keyword)
+    try check(text, prism.Codec.json, 12, prism.TokenClass.number)
+    try check(text, prism.Codec.json, 26, prism.TokenClass.string)
+    try check(text, prism.Codec.json, 40, prism.TokenClass.keyword)
+    try check("{\"escaped\": \"a\\\"b\"}", prism.Codec.json, 16, prism.TokenClass.string)
+
+func highlight_plain_text_has_no_spans() -> !:
+    let plain = try prism.highlight_line("# not a comment in plain text", prism.Codec.text)
+    defer plain.release()
+    assert(plain.value().count() == 0)
+    let blob = try prism.highlight_line("anything", prism.Codec.blob)
+    defer blob.release()
+    assert(blob.value().count() == 0)
+    try check("<!-- comment --> <b>text</b>", prism.Codec.html, 5, prism.TokenClass.comment)
+    try check("<!-- comment --> <b>text</b>", prism.Codec.svg, 18, prism.TokenClass.marker)
+    try check("<!-- unclosed", prism.Codec.html, 12, prism.TokenClass.comment)
+
+pub func run() -> !:
+    try highlight_markdown_heading_marks_hashes_and_bolds_text()
+    try highlight_markdown_lists_code_emphasis_fence()
+    try highlight_prisma_comment_string_number_keywords()
+    try highlight_json_keys_strings_numbers_atoms()
+    try highlight_plain_text_has_no_spans()
+    print("PASS 5 legacy highlighting cases, HTML/SVG spans and malformed line bounds")

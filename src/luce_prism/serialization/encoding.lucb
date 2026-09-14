@@ -1,0 +1,22 @@
+## Serialization encoding.
+from luce_prism.types import Encoding
+
+pub func byte_prefix(bytes: const u8[], prefix: const u8[]) -> bool:
+    if bytes.length < prefix.length:
+        return false
+    for i in 0..<prefix.length:
+        if bytes[i] != prefix[i]:
+            return false
+    return true
+
+pub func detect(bytes: const u8[]) -> Encoding:
+    if byte_prefix(bytes, b"PRSMC\0"):
+        return Encoding.binary
+    if byte_prefix(bytes, b"PRSMZ\0"):
+        return Encoding.package
+    var i: usize = 0
+    while i < bytes.length and (bytes[i] == ' ' or bytes[i] == '\t' or bytes[i] == '\n' or bytes[i] == '\r'):
+        i += 1
+    if byte_prefix(bytes[i..], b"#prisma"):
+        return Encoding.text
+    return Encoding.unknown

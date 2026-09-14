@@ -1,0 +1,155 @@
+import prism
+import interop
+import math
+
+func expect(rows: interop.Reference[prism.Selection], paths: const str[]) -> !:
+    defer rows.release()
+    assert(rows.value().count() == paths.length)
+    for i in 0..<paths.length:
+        assert(try rows.value().path_at(i) == paths[i])
+
+pub func cloud() -> interop.Reference[prism.Document]!:
+    return try prism.Document.parse("#prisma 4.0\ndef cloud \"c\" { def node \"a\" { float3 loc = (0.2,0,0) } def node \"b\" { float3 loc = (0.9,0,0) } def node \"c\" { float3 loc = (1.4,0,0) } def node \"d\" { float3 loc = (5,5,5) } def node \"e\" { float3 loc = (0,1,0) } }")
+
+func within_radius_matches_the_worked_example() -> !:
+    let doc = try cloud()
+    defer doc.release()
+    var index = try prism.SpatialIndex(doc, "loc", 1.0)
+    defer index.close()
+    assert(index.size() == 5)
+    try expect(try index.within(prism.Vec3(1.0, 0.0, 0.0), 0.6), ["/c/b", "/c/c"])
+    assert(try index.count_within(prism.Vec3(1.0, 0.0, 0.0), 0.6) == 2)
+
+func within_matches_brute_force() -> !:
+    let doc = try cloud()
+    defer doc.release()
+    for cell in [0.25, 1.0, 10.0]:
+        var index = try prism.SpatialIndex(doc, "loc", cell)
+        defer index.close()
+        let center = prism.Vec3(0.5, 0.5, 0.0)
+        let rows = try index.within(center, 1.2)
+        defer rows.release()
+        var brute: usize = 0
+        for i in 0..<doc.value().element_count():
+            let path = try doc.value().path_at(i)
+            if not doc.value().has_property(path, "loc"):
+                continue
+            let value = try doc.value().get(path, "loc")
+            defer value.release()
+            let x = (f64)((f32)try value.value().number_at(0) - (f32)center.x)
+            let y = (f64)((f32)try value.value().number_at(1) - (f32)center.y)
+            let z = (f64)((f32)try value.value().number_at(2) - (f32)center.z)
+            if x * x + y * y + z * z <= 1.2 * 1.2:
+                brute += 1
+                var found = false
+                for row in 0..<rows.value().count():
+                    found = found or try rows.value().path_at(row) == path
+                assert(found)
+        assert(rows.value().count() == brute)
+
+func k_nearest_is_ordered_and_bounded() -> !:
+    let doc = try cloud()
+    defer doc.release()
+    var index = try prism.SpatialIndex(doc, "loc", 1.0)
+    defer index.close()
+    try expect(try index.nearest(prism.Vec3(1.0, 0.0, 0.0), 3), ["/c/b", "/c/c", "/c/a"])
+    try expect(try index.nearest(prism.Vec3(5.0, 5.0, 5.0)), ["/c/d"])
+    let all = try index.nearest(prism.Vec3(), 99)
+    defer all.release()
+    assert(all.value().count() == 5)
+    let distant = try index.nearest(prism.Vec3(1000000.0, 0.0, 0.0), 1)
+    defer distant.release()
+    assert(distant.value().count() == 1)
+
+func box_query() -> !:
+    let doc = try cloud()
+    defer doc.release()
+    var index = try prism.SpatialIndex(doc, "loc", 1.0)
+    defer index.close()
+    try expect(try index.in_box(prism.Vec3(0.0, -0.5, -0.5), prism.Vec3(1.5, 1.5, 0.5)), ["/c/a", "/c/b", "/c/c", "/c/e"])
+    try doc.value().remove("/c")
+    let snapshot = try index.in_box(prism.Vec3(-1000000.0, -1000000.0, -1000000.0), prism.Vec3(1000000.0, 1000000.0, 1000000.0))
+    defer snapshot.release()
+    assert(snapshot.value().count() == 5)
+
+func empty_and_misses() -> !:
+    let doc = try cloud()
+    defer doc.release()
+    var index = try prism.SpatialIndex(doc, "loc", 1.0)
+    defer index.close()
+    var empty: str[]
+    try expect(try index.within(prism.Vec3(100.0, 100.0, 100.0), 1.0), empty)
+    assert(try index.count_within(prism.Vec3(100.0, 100.0, 100.0), 1.0) == 0)
+    try expect(try index.nearest(prism.Vec3(), 0), empty)
+    var missing = try prism.SpatialIndex(doc, "missing", 1.0)
+    defer missing.close()
+    assert(missing.size() == 0)
+    try expect(try missing.nearest(prism.Vec3()), empty)
+
+pub func texts() -> interop.Reference[prism.Document]!:
+    return try prism.Document.parse("#prisma 4.0\ndef shelf \"lib\" { def doc \"a\" { str body = \"the quick brown fox\" } def doc \"b\" { str body = \"the lazy brown dog\" } def doc \"c\" { str body = \"quick quick fox jumps\" } def doc \"n\" {} }")
+
+func text_search_term_and_ranking() -> !:
+    let doc = try texts()
+    defer doc.release()
+    var index = try prism.TextIndex(doc, "body")
+    defer index.close()
+    assert(index.documents() == 3 and index.terms() == 7)
+    try expect(try index.search("brown"), ["/lib/a", "/lib/b"])
+    try expect(try index.search("BROWN"), ["/lib/a", "/lib/b"])
+    try expect(try index.search("quick"), ["/lib/c", "/lib/a"])
+    try expect(try index.search("quick missing"), ["/lib/c", "/lib/a"])
+    var empty: str[]
+    try expect(try index.search("missing"), empty)
+    try expect(try index.search("!!!"), empty)
+
+func text_search_all_is_AND() -> !:
+    let doc = try texts()
+    defer doc.release()
+    var index = try prism.TextIndex(doc, "body")
+    defer index.close()
+    try expect(try index.search_all("quick fox"), ["/lib/c", "/lib/a"])
+    try expect(try index.search_all("brown fox"), ["/lib/a"])
+    try expect(try index.search_all("quick quick"), ["/lib/c", "/lib/a"])
+    var empty: str[]
+    try expect(try index.search_all("quick missing"), empty)
+
+pub func vectors() -> interop.Reference[prism.Document]!:
+    return try prism.Document.parse("#prisma 4.0\ndef set \"e\" { def emb \"x\" { float[3] v = [1,0,0] } def emb \"y\" { float[3] v = [0,1,0] } def emb \"z\" { float[3] v = [0.9,0.1,0] } def emb \"wrong\" { float[2] v = [1,0] } }")
+
+func vector_nearest_cosine() -> !:
+    let doc = try vectors()
+    defer doc.release()
+    var index = try prism.VectorIndex(doc, "v", prism.Metric.cosine)
+    defer index.close()
+    assert(index.size() == 3 and index.dimensions() == 3)
+    try expect(try index.nearest([1.0, 0.0, 0.0], 2), ["/e/x", "/e/z"])
+
+func vector_topk_bounds_and_metric() -> !:
+    let doc = try vectors()
+    defer doc.release()
+    var index = try prism.VectorIndex(doc, "v", prism.Metric.dot)
+    defer index.close()
+    let all = try index.nearest([0.0, 1.0, 0.0], 99)
+    defer all.release()
+    assert(all.value().count() == 3)
+    try expect(try index.nearest([0.0, 1.0, 0.0], 1), ["/e/y"])
+    var empty: str[]
+    try expect(try index.nearest([1.0, 2.0], 2), empty)
+    var l2 = try prism.VectorIndex(doc, "v", prism.Metric.l2)
+    defer l2.close()
+    try expect(try l2.nearest([0.8, 0.2, 0.0], 2), ["/e/z", "/e/x"])
+    try doc.value().remove("/e")
+    try expect(try l2.nearest([0.8, 0.2, 0.0], 1), ["/e/z"])
+
+pub func run() -> !:
+    try within_radius_matches_the_worked_example()
+    try within_matches_brute_force()
+    try k_nearest_is_ordered_and_bounded()
+    try box_query()
+    try empty_and_misses()
+    try text_search_term_and_ranking()
+    try text_search_all_is_AND()
+    try vector_nearest_cosine()
+    try vector_topk_bounds_and_metric()
+    print("PASS 5 legacy spatial and 4 text/vector index cases, plus distant searches and snapshot lifetime")

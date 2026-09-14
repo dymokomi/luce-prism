@@ -1,0 +1,300 @@
+## Exhaust each allocation point in representative composition and codec operations.
+import prism
+import memory
+import interop
+import ownership
+import compatibility.codec_api as codec_tests
+import compatibility.cache as cache_tests
+from compatibility.query import plan, compare, exercise_callback
+from compatibility.indexes import cloud, texts, vectors
+
+struct Tracker: memory.Allocator:
+    var upstream: memory.Allocator
+    var live: usize
+    var allocations: usize
+    var remaining: usize?
+
+    pub mutating func allocate(size: usize, alignment: usize) -> u8[]?:
+        if let remaining = self.remaining:
+            if remaining == 0:
+                return none
+            self.remaining = remaining - 1
+        let bytes = self.upstream.allocate(size, alignment) else return none
+        self.live += 1
+        self.allocations += 1
+        return bytes
+
+    pub mutating func resize(bytes: u8[], size: usize) -> bool:
+        return self.upstream.resize(bytes, size)
+
+    pub mutating func release(bytes: u8[]):
+        assert(self.live > 0)
+        self.live -= 1
+        self.upstream.release(bytes)
+
+func exercise(kind: usize) -> !:
+    if kind == 22:
+        try codec_tests.allocation_case()
+        return
+    if kind == 23:
+        try cache_tests.allocation_case()
+        return
+    if kind == 24:
+        let doc = try prism.Document.parse("#prisma 4.0\n")
+        defer doc.release()
+        let handle = prism.define(doc, "/a", "object") catch failure:
+            assert(doc.value().element_count() == 0)
+            error(failure.code, failure.message)
+        defer handle.release()
+        let value = try prism.Value.number(4.0)
+        defer value.release()
+        let animated = handle.value().sample("v", 2.0, value) catch failure:
+            assert(not doc.value().has_property("/a", "v"))
+            error(failure.code, failure.message)
+        defer animated.release()
+        let snapshot = try doc.value().sample_value_at("/a", "v", 0)
+        defer snapshot.release()
+        assert(try snapshot.value().number_at() == 4.0)
+        var settings = try prism.AppSettings("unused.prisma")
+        defer settings.close()
+        try settings.set("v", value)
+        return
+    if kind == 20:
+        var projection = try prism.TextProjection()
+        defer projection.close()
+        assert(try projection.set_source("#   Title\n\n\nbody\n", prism.Codec.markdown))
+        assert(try projection.set_codec(prism.Codec.prisma))
+        assert(not try projection.set_text("#prisma 4.0\ndef group \"a\" {"))
+        assert(try projection.set_codec(prism.Codec.markdown))
+        assert(try projection.text() == "#   Title\n\n\nbody\n")
+        let tokens = try prism.highlight_line("# Title", prism.Codec.markdown)
+        defer tokens.release()
+        return
+    if kind == 21:
+        let first = try prism.Document.parse("#prisma 4.0\ndef node \"a\" { float v = 1 }")
+        defer first.release()
+        let second = try prism.Document.parse("#prisma 4.0\ndef node \"a\" { float v = 2 }")
+        defer second.release()
+        var log = try prism.EventLog(first)
+        defer log.close()
+        discard(log.commit(second) catch failure:
+            assert(log.head_offset() == 0)
+            error(failure.code, failure.message)
+        )
+        let changes = try log.since(0)
+        defer changes.release()
+        let snapshot = try log.at(1)
+        defer snapshot.release()
+        assert(try snapshot.value().equals(second))
+        log.compact(0) catch failure:
+            assert(log.earliest_offset() == 0 and log.layer_count() == 1)
+            error(failure.code, failure.message)
+        return
+    if kind == 19:
+        let doc = try prism.parse_surface("logic \"f\" { bird(tweety) } logic \"r\" { bird(X) => flies(X) } logic \"d\" { ~> -flies(tweety) } logic \"s\" { r > d } math \"x\" { -(1 + 2) * 3 }")
+        defer doc.release()
+        let text = try prism.serialize_surface(doc)
+        defer text.release()
+        var query = try interop.Reference[prism.Atom].adopt(try new prism.Atom("flies") in memory.heap, prism.atom_type, memory.heap)
+        defer query.release()
+        try query.value().constant("tweety")
+        assert(try prism.conclude(doc, query) == prism.ProofTag.defeasible_proof)
+        let why = try prism.why(doc, query)
+        defer why.release()
+        assert(why.value().defeated_count() == 1)
+        let derived = try prism.derive(doc)
+        defer derived.release()
+        return
+    if kind < 3:
+        let codec = prism.Codec.json if kind == 0 else (prism.Codec.html if kind == 1 else prism.Codec.svg)
+        let source = "{\"a\":1,\"child\":{\"escaped\":\"line\\ntext\"},\"items\":[true,null]}" if kind == 0 else ("<h2 id=\"t\">Title</h2><p>A <em>word</em> &amp; more</p>" if kind == 1 else "<svg viewBox=\"0 0 4 4\"><text>hello</text></svg>")
+        let doc = try prism.decode(source.bytes, codec)
+        defer doc.release()
+        let encoded = try prism.encode(doc, prism.Codec.markdown if kind == 1 else codec)
+        defer encoded.release()
+        return
+    if kind == 3:
+        var bundle = try prism.Bundle()
+        defer bundle.close()
+        discard(try bundle.add_file("/bundle", "page.html", b"<p>hello</p>"))
+        let bytes = try bundle.materialize("/bundle/page_html")
+        defer bytes.release()
+        return
+    let base = try prism.Document.parse("#prisma 4.0\ndef node \"a\" { float x = 1 float y = 2 } def node \"b\" { connect in = </a.x> }")
+    defer base.release()
+    let layer = try prism.Document.parse("#prisma 4.0\nover node \"a\" { float x = 3 unset y } delete \"/b\"")
+    defer layer.release()
+    if kind == 4:
+        let combined = try base.value().overlay(layer)
+        defer combined.release()
+        let patch = try base.value().diff(combined)
+        defer patch.release()
+        let result = try prism.merge(base, patch, layer)
+        defer result.release()
+    elif kind == 5:
+        var library = prism.ReferenceLibrary()
+        defer library.close()
+        try library.add("source.prism", base)
+        let root = try prism.Document.parse("#prisma 4.0\ndef node \"root\" { reference \"source.prism\" \"/a\" }")
+        defer root.release()
+        try library.add("root.prisma", root)
+        let composed = try library.compose("root.prisma")
+        defer composed.release()
+    elif kind == 6:
+        let doc = try prism.Document.parse("#prisma 4.0\ndef mul \"mul\" { float64 a = 2 float64 b = 3 } def add \"add\" { connect a = </mul.out> connect b = </mul.out> }")
+        defer doc.release()
+        let computed = try prism.compute(doc)
+        defer computed.release()
+    elif kind == 7:
+        let query = try plan(base)
+        defer query.release()
+        let exists = try prism.Predicate.exists("x")
+        defer exists.release()
+        let less = try compare("x", try prism.Value.number(4.0), prism.Comparison.less)
+        defer less.release()
+        let both = try exists.value().both(less)
+        defer both.release()
+        let filtered = try query.value().filter(both)
+        defer filtered.release()
+        let ordered = try filtered.value().order_by("x")
+        defer ordered.release()
+        let reverse = try ordered.value().reverse()
+        defer reverse.release()
+        let limited = try reverse.value().limit(1)
+        defer limited.release()
+        let selection = try limited.value().select()
+        defer selection.release()
+        let document = try selection.value().document()
+        defer document.release()
+        discard(try query.value().aggregate("x", prism.Aggregate.median))
+        discard(try query.value().distinct_count("x"))
+        let groups = try query.value().aggregate_by(["type"], "x", prism.Aggregate.sum)
+        defer groups.release()
+        let group_rows = try groups.value().rows(0)
+        defer group_rows.release()
+    elif kind == 8:
+        var index = try prism.FieldIndex(base, "x")
+        defer index.close()
+        let value = try prism.Value.integer(1)
+        defer value.release()
+        let rows = try index.equals(value)
+        defer rows.release()
+        let query = try plan(base)
+        defer query.release()
+        let result = try prism.join_on(query, "x", query, "x", prism.JoinType.outer)
+        defer result.release()
+        let connected = try prism.join_by_connection(base, query, "in")
+        defer connected.release()
+    elif kind == 9:
+        var schema = prism.Schema()
+        defer schema.close()
+        try schema.add_field("node", "x", prism.DType.int64, required = true, unique = true)
+        let violations = try schema.validate(base)
+        defer violations.release()
+        var column = try prism.ColumnTable(base, "/a")
+        defer column.close()
+        let rows = try column.filter("x", prism.Comparison.greater, 0.0)
+        defer rows.release()
+        discard(try column.aggregate("y", prism.Aggregate.average, rows))
+    elif kind == 10:
+        let registry = try interop.Reference[prism.NodeRegistry].adopt(try new prism.NodeRegistry() in memory.heap, prism.registry_type, memory.heap)
+        defer registry.release()
+        try registry.value().add_math()
+        var scene = try prism.Scene(base, registry)
+        defer scene.close()
+    elif kind == 11:
+        let doc = try cloud()
+        defer doc.release()
+        var index = try prism.SpatialIndex(doc, "loc", 1.0)
+        defer index.close()
+        let within = try index.within(prism.Vec3(1.0, 0.0, 0.0), 0.6)
+        defer within.release()
+        let nearest = try index.nearest(prism.Vec3(), 2)
+        defer nearest.release()
+        let box = try index.in_box(prism.Vec3(), prism.Vec3(2.0, 2.0, 2.0))
+        defer box.release()
+    elif kind == 12:
+        let doc = try texts()
+        defer doc.release()
+        var index = try prism.TextIndex(doc, "body")
+        defer index.close()
+        let found = try index.search_all("quick fox")
+        defer found.release()
+    elif kind == 13:
+        let doc = try vectors()
+        defer doc.release()
+        var index = try prism.VectorIndex(doc, "v")
+        defer index.close()
+        let found = try index.nearest([1.0, 0.0, 0.0], 2)
+        defer found.release()
+    elif kind == 14:
+        try exercise_callback()
+    elif kind == 15:
+        discard(base.value().append("/c", "node") catch failure:
+            assert(base.value().element_count() == 2 and base.value().child_count() == 2)
+            assert(not base.value().contains("/c") and base.value().contains("/a") and base.value().contains("/b"))
+            error(failure.code, failure.message)
+        )
+    elif kind == 16:
+        let identifier = base.value().element_id("/a") else error(prism.invalid, "missing ID")
+        base.value().rename("/a", "/c") catch failure:
+            assert(base.value().contains("/a") and not base.value().contains("/c"))
+            assert(base.value().path_for_id(identifier) == "/a")
+            error(failure.code, failure.message)
+    elif kind == 17:
+        base.value().remove("/a") catch failure:
+            assert(base.value().element_count() == 2 and base.value().child_count() == 2)
+            assert(base.value().contains("/a") and base.value().contains("/b"))
+            assert(base.value().connection_count() == 1)
+            error(failure.code, failure.message)
+    else:
+        let fragment = try base.value().extract("/a")
+        defer fragment.release()
+        let roots = base.value().instantiate(fragment) catch failure:
+            assert(base.value().element_count() == 2 and base.value().child_count() == 2)
+            error(failure.code, failure.message)
+        defer roots.release()
+        assert(roots.value().count() == 1 and base.value().contains("/a_1"))
+        let edited = try base.value().copy()
+        defer edited.release()
+        try edited.value().rename("/a", "/c")
+        let moves = try prism.renames(base, edited)
+        defer moves.release()
+
+func restore(allocator: memory.Allocator):
+    memory.heap = allocator
+
+pub func run() -> !:
+    ownership.collect()
+    var tracker = Tracker(upstream = memory.heap)
+    defer restore(tracker.upstream)
+    memory.heap = &tracker
+    var checked: usize = 0
+    for kind in 0..<(usize)25:
+        tracker.allocations = 0
+        try exercise(kind)
+        ownership.collect()
+        assert(tracker.live == 0)
+        let total = tracker.allocations
+        var successes: usize = 0
+        for stage in 0..=total:
+            tracker.remaining = stage
+            var succeeded = true
+            exercise(kind) catch failure:
+                if failure.code != memory.exhausted:
+                    print(f"unexpected failure at operation {kind}, allocation {stage}: {failure.message}")
+                assert(failure.code == memory.exhausted)
+                succeeded = false
+            if succeeded:
+                successes += 1
+            tracker.remaining = none
+            ownership.collect()
+            if tracker.live != 0:
+                let live = tracker.live
+                print(f"allocation leak: operation {kind}, allocation {stage}, live {live}")
+            assert(tracker.live == 0)
+            checked += 1
+        if successes != 1:
+            print(f"allocation audit {kind}: {successes} successful attempts")
+        assert(successes == 1)
+    print(f"PASS {checked} allocation-failure points across codecs, composition, queries, schemas and evaluation")

@@ -1,0 +1,194 @@
+## Structured-document model to deterministic HTML.
+import luce_prism.codecs.xml as xml
+from luce_prism.codecs.common import get_text, get_number, type_of
+from luce_prism.storage import Buffer
+from luce_prism.model import DocumentData
+from luce_prism.types import invalid, limit_exceeded
+
+func indent(output: Buffer*, count: usize) -> !:
+    for i in 0..<count:
+        try output.byte(' ')
+
+func opening(output: Buffer*, tag: str) -> !:
+    try output.byte('<')
+    try output.text(tag)
+    try output.byte('>')
+
+func closing(output: Buffer*, tag: str) -> !:
+    try output.text("</")
+    try output.text(tag)
+    try output.byte('>')
+
+func inline_content(doc: const DocumentData*, parent: str, output: Buffer*, depth: usize) -> !:
+    if depth > 128:
+        error(limit_exceeded, "HTML emission depth exceeded")
+    var children = try doc.children(parent)
+    defer children.close()
+    for child in children.span():
+        let kind = type_of(doc, child)
+        if kind == "text":
+            try xml.escape(output, get_text(doc, child, "text"))
+        elif kind == "emphasis" or kind == "strong":
+            let tag = "em" if kind == "emphasis" else "strong"
+            try opening(output, tag)
+            try inline_content(doc, child, output, depth + 1)
+            try closing(output, tag)
+        elif kind == "code":
+            try output.text("<code>")
+            try xml.escape(output, get_text(doc, child, "text"))
+            try output.text("</code>")
+        elif kind == "link":
+            try output.text("<a href=\"")
+            try xml.escape(output, get_text(doc, child, "href"), true)
+            try output.text("\">")
+            try inline_content(doc, child, output, depth + 1)
+            try output.text("</a>")
+        elif kind == "image":
+            try output.text("<img src=\"")
+            try xml.escape(output, get_text(doc, child, "src"), true)
+            try output.text("\" alt=\"")
+            try xml.escape(output, get_text(doc, child, "alt"), true)
+            try output.text("\">")
+        elif kind == "linebreak":
+            try output.text("<br>")
+
+func item(doc: const DocumentData*, path: str, tag: str, output: Buffer*, spaces: usize, depth: usize) -> !:
+    try indent(output, spaces)
+    try opening(output, tag)
+    var children = try doc.children(path)
+    defer children.close()
+    if children.count == 1 and type_of(doc, children.items[0]) == "paragraph":
+        try inline_content(doc, children.items[0], output, depth + 1)
+    else:
+        try output.byte('\n')
+        try blocks(doc, path, output, spaces + 2, depth + 1)
+        try indent(output, spaces)
+    try closing(output, tag)
+    try output.byte('\n')
+
+func table(doc: const DocumentData*, path: str, output: Buffer*, spaces: usize, depth: usize) -> !:
+    var rows = try doc.children(path)
+    defer rows.close()
+    try indent(output, spaces)
+    try output.text("<table>\n")
+    for header in [true, false]:
+        var any = false
+        for row in rows.span():
+            if (get_number(doc, row, "header") != 0.0) == header:
+                any = true
+        if not any:
+            continue
+        let tag = "thead" if header else "tbody"
+        let cell_tag = "th" if header else "td"
+        try indent(output, spaces + 2)
+        try opening(output, tag)
+        try output.byte('\n')
+        for row in rows.span():
+            if (get_number(doc, row, "header") != 0.0) != header:
+                continue
+            try indent(output, spaces + 4)
+            try output.text("<tr>")
+            var cells = try doc.children(row)
+            defer cells.close()
+            for cell in cells.span():
+                try opening(output, cell_tag)
+                try inline_content(doc, cell, output, depth + 1)
+                try closing(output, cell_tag)
+            try output.text("</tr>\n")
+        try indent(output, spaces + 2)
+        try closing(output, tag)
+        try output.byte('\n')
+    try indent(output, spaces)
+    try output.text("</table>\n")
+
+func blocks(doc: const DocumentData*, parent: str, output: Buffer*, spaces: usize, depth: usize) -> !:
+    if depth > 128:
+        error(limit_exceeded, "HTML emission depth exceeded")
+    var children = try doc.children(parent)
+    defer children.close()
+    for child in children.span():
+        let kind = type_of(doc, child)
+        if kind == "heading":
+            let level = get_number(doc, child, "level", 1.0)
+            let number = (i32)(level if level >= 1.0 else 1.0)
+            var scratch: u8[32]
+            let tag = try format(scratch, f"h{number}")
+            try indent(output, spaces)
+            try output.byte('<')
+            try output.text(tag)
+            let id = get_text(doc, child, "id")
+            if id.length > 0:
+                try output.text(" id=\"")
+                try xml.escape(output, id, true)
+                try output.byte('"')
+            try output.byte('>')
+            try inline_content(doc, child, output, depth + 1)
+            try closing(output, tag)
+            try output.byte('\n')
+        elif kind == "paragraph" or kind == "caption":
+            let tag = "p" if kind == "paragraph" else "figcaption"
+            try indent(output, spaces)
+            try opening(output, tag)
+            try inline_content(doc, child, output, depth + 1)
+            try closing(output, tag)
+            try output.byte('\n')
+        elif kind == "thematicBreak":
+            try indent(output, spaces)
+            try output.text("<hr>\n")
+        elif kind == "codeblock":
+            try indent(output, spaces)
+            try output.text("<pre><code")
+            let language = get_text(doc, child, "language")
+            if language.length > 0:
+                try output.text(" class=\"language-")
+                try xml.escape(output, language, true)
+                try output.byte('"')
+            try output.byte('>')
+            try xml.escape(output, get_text(doc, child, "text"))
+            try output.text("</code></pre>\n")
+        elif kind == "blockquote" or kind == "figure" or kind == "note":
+            let tag = "div" if kind == "note" else kind
+            try indent(output, spaces)
+            if kind == "note":
+                try output.text("<div class=\"note\">")
+            else:
+                try opening(output, tag)
+            try output.byte('\n')
+            try blocks(doc, child, output, spaces + 2, depth + 1)
+            try indent(output, spaces)
+            try closing(output, tag)
+            try output.byte('\n')
+        elif kind == "list" or kind == "definitionList":
+            let tag = "dl" if kind == "definitionList" else ("ol" if get_number(doc, child, "ordered") != 0.0 else "ul")
+            try indent(output, spaces)
+            try opening(output, tag)
+            try output.byte('\n')
+            var items = try doc.children(child)
+            defer items.close()
+            for entry in items.span():
+                if kind == "list":
+                    try item(doc, entry, "li", output, spaces + 2, depth + 1)
+                elif type_of(doc, entry) == "definition":
+                    try item(doc, entry, "dd", output, spaces + 2, depth + 1)
+                elif type_of(doc, entry) == "term":
+                    try indent(output, spaces + 2)
+                    try output.text("<dt>")
+                    try inline_content(doc, entry, output, depth + 1)
+                    try output.text("</dt>\n")
+            try indent(output, spaces)
+            try closing(output, tag)
+            try output.byte('\n')
+        elif kind == "table":
+            try table(doc, child, output, spaces, depth + 1)
+        elif kind == "rawHtml":
+            try output.text(get_text(doc, child, "text"))
+            if output.used > 0 and output.data[output.used - 1] != '\n':
+                try output.byte('\n')
+
+pub func encode(doc: const DocumentData*) -> Buffer!:
+    if type_of(doc, "/document") != "document":
+        error(invalid, "HTML requires the structured-document model")
+    var output: Buffer
+    errdefer output.close()
+    try blocks(doc, "/document", &output, 0, 0)
+    return output

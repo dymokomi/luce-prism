@@ -1,0 +1,63 @@
+## Luce-facing coordinates use f64; affine arithmetic retains the original f32 rounding.
+pub struct Point32:
+    pub var x: f32
+    pub var y: f32
+
+pub struct Matrix32:
+    pub var a: f32 = 1.0
+    pub var b: f32
+    pub var c: f32
+    pub var d: f32 = 1.0
+    pub var tx: f32
+    pub var ty: f32
+
+    pub func mul(other: Matrix32) -> Matrix32:
+        return Matrix32(self.a * other.a + self.c * other.b,
+            self.b * other.a + self.d * other.b,
+            self.a * other.c + self.c * other.d,
+            self.b * other.c + self.d * other.d,
+            self.a * other.tx + self.c * other.ty + self.tx,
+            self.b * other.tx + self.d * other.ty + self.ty)
+
+    pub func apply(point: Point32) -> Point32:
+        return Point32(self.a * point.x + self.c * point.y + self.tx,
+            self.b * point.x + self.d * point.y + self.ty)
+
+    pub func inverse() -> Matrix32:
+        let determinant = self.a * self.d - self.b * self.c
+        if determinant == 0.0:
+            return Matrix32()
+        let factor = (f32)1.0 / determinant
+        let a = self.d * factor
+        let b = -self.b * factor
+        let c = -self.c * factor
+        let d = self.a * factor
+        return Matrix32(a, b, c, d, -(a * self.tx + c * self.ty), -(b * self.tx + d * self.ty))
+
+pub struct Vec2:
+    pub var x: f64
+    pub var y: f64
+
+pub struct Affine2:
+    pub var a: f64 = 1.0
+    pub var b: f64
+    pub var c: f64
+    pub var d: f64 = 1.0
+    pub var tx: f64
+    pub var ty: f64
+
+    func native() -> Matrix32:
+        return Matrix32((f32)self.a, (f32)self.b, (f32)self.c, (f32)self.d, (f32)self.tx, (f32)self.ty)
+
+    pub func mul(other: Affine2) -> Affine2:
+        return widen(self.native().mul(other.native()))
+
+    pub func apply(point: Vec2) -> Vec2:
+        let result = self.native().apply(Point32((f32)point.x, (f32)point.y))
+        return Vec2((f64)result.x, (f64)result.y)
+
+    pub func inverse() -> Affine2:
+        return widen(self.native().inverse())
+
+pub func widen(matrix: Matrix32) -> Affine2:
+    return Affine2((f64)matrix.a, (f64)matrix.b, (f64)matrix.c, (f64)matrix.d, (f64)matrix.tx, (f64)matrix.ty)

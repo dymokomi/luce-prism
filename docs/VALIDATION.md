@@ -1,60 +1,65 @@
 # Validation
 
-Local validation uses ARM64 macOS, Luce Base commit
-`162ff10fce15997abe38337029069971643614b2` and Luce commit
-`88d0e5d1847b489c0c3fb44425e8f56ee3bcc033`. The compilers were built under a
-temporary toolchain directory from the checked-out sources. Neither compiler
-checkout nor `luce-image` was modified.
-
-Run the same package gate with explicit paths:
+Toolchain pins: Base `162ff10fce15997abe38337029069971643614b2`, Luce
+`88d0e5d1847b489c0c3fb44425e8f56ee3bcc033`, and the C++ reference
+`ce92a4b37887d4ebb14194ca2ba4084af657c34a`. Compiler binaries and the independently
+linked C++ oracle are built in a temporary toolchain directory. No sibling
+compiler or `luce-image` source is modified.
 
 ```sh
 ./test.sh --base /path/to/luce-base --luce /path/to/luce
+# Also regenerate encodings with the independently built reference executable:
+./test.sh --base /path/to/luce-base --luce /path/to/luce --oracle /path/to/oracle
+# One optimization level during development:
+./test.sh --base /path/to/luce-base --luce /path/to/luce --opt 0
 ```
 
-The gate builds and executes both Base and high-level Luce consumers with native
-optimization levels 0–3, `--backend=c`, and `--backend=c --release`. It verifies:
+## Gate and evidence
 
-- All 14 dtype codes, scalar integer endpoints, half floats, multidimensional
-  arrays, empty arrays, strings, aliases and legacy tuple/array roles.
-- Byte-identical v4 binary output against an independently built C++ fixture.
-- Legacy compressed input, newly compressed output, and package asset retention.
-- Byte-for-byte media round trips through ASCII text, binary, compressed binary
-  and packages: a 512×512 RGBA byte buffer containing every possible byte, an
-  encoded 2×2 PNG, an empty byte array, and the entire uint16 range.
-- Every finite float16 bit pattern, plus float32/64 signed zeros, subnormals,
-  extrema and precision-sensitive values, preserved through those same modes.
-  These checks do not assert non-finite floating-point preservation.
-- Typed pixel construction and byte extraction through high-level Luce in every
-  encoding, and text→compressed-binary media preservation.
-- The high-level external-media example writes ASCII inline bytes and a reference
-  to a separate compressed binary document, loads that document explicitly, and
-  verifies that re-encoding the page preserves its unexpanded reference.
-- Text→binary→text→binary stability, keyframe handles and all v4 layer records.
-- Concrete connection resolution, linear samples, cycle errors, rename/reparent
-  path fixes, removal, and retained independent values after mutation.
-- Missing headers, unsupported versions/flags, truncated records, malformed
-  values/shapes, implausible counts, and decompression-size limits.
-- Quoted delimiter strings, retained escaped names, boolean arrays,
-  embedded-NUL path rejection and malformed trailing tokens.
-- Allocation failure at each of 240 successive allocation positions during text
-  parsing, with a counting heap requiring zero outstanding allocations after every
-  successful or failed attempt.
+The default runner builds and executes native optimization levels 0–3,
+`--backend=c`, and `--backend=c --release`. It runs Base suites, three high-level
+Luce consumers, the explicit-reference media example, and codec/oracle adapters.
+Builds and output files use temporary directories. The complete case inventory
+must pass before compilation begins.
 
-The optional `--oracle` gate uses a freshly linked C++ executable to decode new
-text/binary/compressed output, and to produce new encodings for the Luce decoder.
-All paths are checked against canonical binary documents. A generated image
-document also exchanges RGBA pixels, the PNG fixture and all 256 byte values with
-the C++ implementation in both directions.
-It also calls the legacy composer on the external-media example and checks the
-composed pixels, opaque payload and inline preview against a canonical document.
-This checks reference-format compatibility; Luce does not yet provide composition.
+| Check | Scope |
+| --- | --- |
+| Legacy inventory | 373 applicable native cases mapped; 40 C ABI and four C++ global-interner cases retained with scope reasons |
+| Foreign codecs | 70 inputs; 153 independently pinned C++ model/output comparisons per mode |
+| Math/logic surface | Seven inputs; 21 pinned C++ outputs per mode, 42 checks with a fresh oracle |
+| Native formats | Eight rich inputs; 32 pinned binary-model comparisons per mode, 128 cross-reader/writer checks with a fresh oracle |
+| Ownership/failure | 5,748 injected allocation-failure positions across codecs, composition, queries, schema, evaluation, surfaces, projections, logs, caches and handles |
+| Media | 512×512 RGBA, an actual PNG, all byte values, all uint16 values, every finite half pattern, float32/64 extrema/subnormals and signed zeros |
+| Authoring | Stable IDs/handles, exact copy isolation, transactional edits and 50,000-element assembly |
+| Malformed input | Every truncated prefix of representative crates/packages, corrupt counts/offsets/compression, bad syntax, invalid shapes, versions and nesting |
 
-CI is configured for macOS, Linux and Windows with exact compiler pins. ARM64
-macOS has executed the full media and external-reference gate locally. The hosted
-macOS/Linux [media correctness run](https://github.com/dymokomi/luce-prism/actions/runs/34897436376)
-passed. The Windows build failed on an unresolved `_snprintf_l` symbol
-from the Base standard library; see the separate
-[language follow-up](LUCE-BASE-ISSUES.md#windows-ucrt64-stringsformat_f64-fails-to-link-in-native-mode).
-Consult the repository's Actions page for subsequent hosted results. No GPU,
-performance, composition, query or codec-parity claim is made by this gate.
+Format checks include all 14 dtypes, named aliases, arrays, animation, complete
+Bézier handles, layer/tombstone records, concrete and wildcard connections,
+reference directives, compression, package assets, and both ASCII/binary scene
+chunks. Determinism tests construct the same wiring through different edit orders.
+Decoded values and composed scenes are checked separately from re-encoded bytes.
+
+Reference tests cover explicit loading, local opinions, nested references,
+cycles, default targets, wildcard grafts, a diamond graph, and relative file paths.
+The media example opens an ASCII document without loading its external payload,
+then explicitly loads its binary sidecar. A fresh C++ composer independently
+verifies the resulting inline and referenced pixels.
+
+Callback tests exercise native and high-level producers, retained results,
+expired bake views, query mutation guards, partial codec lenses, and closing
+projections/caches during callback execution. Allocation tests check cleanup after
+every failure and state preservation for transactional mutations.
+
+## What the numbers mean
+
+The inventory is a behavioral test mapping, not line/branch instrumentation.
+The gate does not claim measured 100% source coverage or every possible input.
+C++ ABI tests cannot certify native Luce calling conventions; the high-level
+consumer programs test those boundaries directly. See
+[compatibility notes](LEGACY-DIFFERENCES.md) for resource bounds and API differences.
+
+CI uses pinned compilers on macOS, Linux and Windows. Current results are visible
+on the [Actions page](https://github.com/dymokomi/luce-prism/actions). The prior
+Windows UCRT64 run failed on Base's `_snprintf_l` linkage; its reproduction is in
+[LUCE-BASE-ISSUES.md](LUCE-BASE-ISSUES.md). Hosted status is reported separately from
+local ARM64 macOS results; a successful local gate does not certify Windows.

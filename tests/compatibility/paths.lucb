@@ -1,0 +1,140 @@
+import prism
+import interop
+import memory
+
+func path(text: str) -> interop.Reference[prism.Path]!:
+    return try interop.Reference[prism.Path].adopt(try new prism.Path(text) in memory.heap, prism.path_type, memory.heap)
+
+func parse_element_and_property() -> !:
+    var a = try prism.Path("/world/sphere")
+    defer a.close()
+    var b = try prism.Path("/world/sphere.reflectance")
+    defer b.close()
+    assert(a.text() == "/world/sphere" and a.property() == none and a.name() == "sphere")
+    assert(b.property() == "reflectance")
+    let element = try b.element()
+    defer element.release()
+    assert(element.value().text() == a.text())
+
+func root() -> !:
+    var value = try prism.Path()
+    defer value.close()
+    assert(value.is_root() and value.text() == "/" and value.name() == none and try value.parent() == none)
+
+func malformed_rejected() -> !:
+    let bad: str[9] = ["world/sphere", "", "/world//sphere", "/world/", "/world/a.b/c", "/world/a.b.c", "/world/a b", "/.x", "/world/a."]
+    for text in bad:
+        assert(not prism.valid_path(text))
+        var value = prism.Path(text) catch failure:
+            assert(failure.code == prism.invalid)
+            continue
+        value.close()
+        assert(false)
+
+func hierarchy_helpers() -> !:
+    var value = try prism.Path("/a/b/c")
+    defer value.close()
+    let parent = (try value.parent()) else error(prism.invalid, "missing parent")
+    defer parent.release()
+    assert(parent.value().text() == "/a/b")
+    let grandparent = (try parent.value().parent()) else error(prism.invalid, "missing grandparent")
+    defer grandparent.release()
+    assert(grandparent.value().text() == "/a")
+    let child = try grandparent.value().child("b")
+    defer child.release()
+    assert(child.value().text() == "/a/b")
+    let x = try child.value().with_property("x")
+    defer x.release()
+    let y = try x.value().with_property("y")
+    defer y.release()
+    assert(x.value().text() == "/a/b.x" and y.value().text() == "/a/b.y")
+
+func ancestry_reflexive_and_slot_ignoring() -> !:
+    assert(prism.is_descendant("/a/b/c", "/a"))
+    assert(prism.is_descendant("/a/b", "/a/b"))
+    assert(prism.is_descendant("/a/b.slot", "/a"))
+    assert(not prism.is_descendant("/a/c", "/a/b"))
+    assert(not prism.is_descendant("/a/b", "/a/b/c"))
+
+func reparent_prefix_substitution() -> !:
+    let origin = try path("/a/b")
+    defer origin.release()
+    let destination = try path("/c/b")
+    defer destination.release()
+    let inputs: str[4] = ["/a/b", "/a/b/leaf", "/a/b/leaf.x", "/other"]
+    let expected: str[4] = ["/c/b", "/c/b/leaf", "/c/b/leaf.x", "/other"]
+    for i in 0..<(usize)4:
+        var value = try prism.Path(inputs[i])
+        defer value.close()
+        let rebased = try value.reparented(origin, destination)
+        defer rebased.release()
+        assert(rebased.value().text() == expected[i])
+
+func round_trip_string() -> !:
+    let strings: str[5] = ["/", "/a", "/a/b/c", "/a/b.slot", "/world/Sphere_1.reflectance"]
+    for text in strings:
+        var value = try prism.Path(text)
+        defer value.close()
+        assert(value.text() == text)
+        let duplicate = try path(value.text())
+        defer duplicate.release()
+        assert(try value.equals(duplicate))
+
+func equality_and_hash() -> !:
+    let a = try path("/a/b")
+    defer a.release()
+    let b = try path("/a/b")
+    defer b.release()
+    let c = try path("/a/c")
+    defer c.release()
+    assert(try a.value().equals(b) and not try a.value().equals(c))
+    assert(a.value().hash_code() == b.value().hash_code())
+
+func pattern_single_level_wildcard():
+    assert(prism.matches("/parts/*", "/parts/bolt") and prism.matches("/parts/*", "/parts/nut"))
+    assert(not prism.matches("/parts/*", "/parts") and not prism.matches("/parts/*", "/parts/bolt/head"))
+    assert(not prism.matches("/parts/*", "/other/bolt"))
+    assert(prism.pattern_prefix("/parts/*") == "/parts" and prism.has_wildcard("/parts/*"))
+
+func pattern_name_glob_within_segment():
+    assert(prism.matches("/parts/bolt_*", "/parts/bolt_m4") and prism.matches("/parts/bolt_*", "/parts/bolt_"))
+    assert(not prism.matches("/parts/bolt_*", "/parts/nut"))
+    assert(prism.matches("/parts/*_lod0", "/parts/tree_lod0") and not prism.matches("/parts/*_lod0", "/parts/tree_lod1"))
+    assert(prism.matches("/p/b*t", "/p/bolt") and not prism.matches("/p/b*t", "/p/bob"))
+
+func pattern_recursive_descent():
+    assert(prism.matches("/world/**", "/world/a") and prism.matches("/world/**", "/world/a/b/c") and prism.matches("/world/**", "/world"))
+    assert(not prism.matches("/world/**", "/other"))
+    assert(prism.pattern_prefix("/world/**") == "/world")
+    assert(prism.matches("/world/**/camera", "/world/camera") and prism.matches("/world/**/camera", "/world/rig/a/camera"))
+    assert(not prism.matches("/world/**/camera", "/world/camera/lens"))
+
+func pattern_parse_rejects_bad_input():
+    assert(not prism.valid_pattern("parts/*") and not prism.valid_pattern("/a//b") and not prism.valid_pattern("/a/b c"))
+    assert(prism.has_wildcard("/a/*") and not prism.has_wildcard("/a/b"))
+
+func document_find_by_pattern() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"world\" { def camera \"cam_a\" {} def camera \"cam_b\" {} def light \"light\" {} def group \"rig\" { def camera \"cam_c\" {} } }")
+    defer doc.release()
+    let patterns: str[6] = ["/world/cam_*", "/world/**", "/world/**/cam_c", "/world/light", "/nope/*", "/a//b"]
+    let counts: usize[6] = [2,6,1,1,0,0]
+    for i in 0..<(usize)6:
+        let found = try doc.value().find(patterns[i])
+        defer found.release()
+        assert(found.value().count() == counts[i])
+
+pub func run() -> !:
+    try parse_element_and_property()
+    try root()
+    try malformed_rejected()
+    try hierarchy_helpers()
+    try ancestry_reflexive_and_slot_ignoring()
+    try reparent_prefix_substitution()
+    try round_trip_string()
+    try equality_and_hash()
+    pattern_single_level_wildcard()
+    pattern_name_glob_within_segment()
+    pattern_recursive_descent()
+    pattern_parse_rejects_bad_input()
+    try document_find_by_pattern()
+    print("PASS 8 legacy path and 5 pattern cases")

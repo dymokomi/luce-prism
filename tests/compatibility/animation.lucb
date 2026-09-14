@@ -1,0 +1,95 @@
+import prism
+import interop
+import math
+
+var no_handles: f64[]
+var no_shape: i64[]
+
+func curve() -> interop.Reference[prism.Document]!:
+    return try prism.Document.parse("#prisma 4.0\ndef node \"n\" { float value = 0 float value.timeSamples = {0: 0 (interp=bezier), 10: 100 (interp=bezier)} }")
+
+func value(document: interop.Reference[prism.Document], time: f64, component: usize = 0) -> f64!:
+    let result = try document.value().resolve("/n", "value", time)
+    defer result.release()
+    return try result.value().number_at(component)
+
+func near(a: f64, b: f64):
+    if math.abs(a - b) >= 0.001:
+        print(f"animation values {a} {b}")
+    assert(math.abs(a - b) < 0.001)
+
+func bezier_with_symmetric_flat_handles_makes_an_s_curve() -> !:
+    let document = try curve()
+    defer document.release()
+    try document.value().set_handles("/n", "value", 0.0, prism.HandleType.freeform, no_handles, [3.0, 0.0])
+    try document.value().set_handles("/n", "value", 10.0, prism.HandleType.freeform, [-3.0, 0.0], no_handles)
+    near(try value(document, 0.0), 0.0)
+    near(try value(document, 10.0), 100.0)
+    near(try value(document, 5.0), 50.0)
+    assert(try value(document, 2.5) < 25.0)
+    assert(try value(document, 7.5) > 75.0)
+
+func bezier_with_asymmetric_handles_shifts_midpoint() -> !:
+    let document = try curve()
+    defer document.release()
+    try document.value().set_handles("/n", "value", 0.0, prism.HandleType.freeform, no_handles, [1.0, 30.0])
+    try document.value().set_handles("/n", "value", 10.0, prism.HandleType.freeform, [-1.0, 0.0], no_handles)
+    let midpoint = try value(document, 5.0)
+    assert(midpoint > 55.0 and midpoint < 80.0)
+    # Updating the value/interpolation at an existing key retains authored handles.
+    let replacement = try prism.Value.numbers(no_shape, [0.0], prism.DType.float32)
+    defer replacement.release()
+    try document.value().set_sample("/n", "value", 0.0, replacement, prism.Interpolation.bezier)
+    near(try value(document, 5.0), midpoint)
+    for encoding in [prism.Encoding.text, prism.Encoding.binary, prism.Encoding.package]:
+        let encoded = try document.value().encode(encoding)
+        defer encoded.release()
+        let decoded = try prism.Document.decode(encoded.value().bytes())
+        defer decoded.release()
+        near(try value(decoded, 5.0), midpoint)
+
+func bezier_is_monotonic_in_time_with_clamped_handles() -> !:
+    let document = try curve()
+    defer document.release()
+    try document.value().set_handles("/n", "value", 0.0, prism.HandleType.freeform, no_handles, [20.0, 0.0])
+    try document.value().set_handles("/n", "value", 10.0, prism.HandleType.freeform, [-20.0, 0.0], no_handles)
+    var last = -1.0
+    for i in 0..<101:
+        let current = try value(document, (f64)i / 10.0)
+        assert(current >= last - 0.0001)
+        last = current
+
+func bezier_segment_in_a_longer_animation_continues_smoothly() -> !:
+    let document = try prism.Document.parse("#prisma 4.0\ndef node \"n\" { float value = 0 float value.timeSamples = {0: 0 (interp=bezier), 10: 50 (interp=held), 20: 99} }")
+    defer document.release()
+    near(try value(document, 0.0), 0.0)
+    near(try value(document, 10.0), 50.0)
+    near(try value(document, 15.0), 50.0)
+    near(try value(document, 20.0), 99.0)
+    try document.value().remove_sample("/n", "value", 10.0)
+    assert(try document.value().sample_count("/n", "value") == 2)
+    try document.value().remove_sample("/n", "value", 123.0)
+    assert(try document.value().sample_count("/n", "value") == 2)
+
+func bezier_resolves_per_component_for_vector_types() -> !:
+    let document = try prism.Document.parse("#prisma 4.0\ndef node \"n\" { float2 value = (0,0) float2 value.timeSamples = {0: (0,0) (interp=bezier), 10: (100,-50)} }")
+    defer document.release()
+    near(try value(document, 5.0), 50.0)
+    near(try value(document, 5.0, 1), -25.0)
+    near(try value(document, 10.0), 100.0)
+    near(try value(document, 10.0, 1), -50.0)
+
+func bezier_int_property_rounds() -> !:
+    let document = try prism.Document.parse("#prisma 4.0\ndef node \"n\" { int value = 0 int value.timeSamples = {0: 0 (interp=bezier), 10: 100} }")
+    defer document.release()
+    near(try value(document, 5.0), 50.0)
+    near(try value(document, 2.6), 26.0)
+
+pub func run() -> !:
+    try bezier_with_symmetric_flat_handles_makes_an_s_curve()
+    try bezier_with_asymmetric_handles_shifts_midpoint()
+    try bezier_is_monotonic_in_time_with_clamped_handles()
+    try bezier_segment_in_a_longer_animation_continues_smoothly()
+    try bezier_resolves_per_component_for_vector_types()
+    try bezier_int_property_rounds()
+    print("PASS 6 legacy Bezier cases, authored handle retention and animation encodings")

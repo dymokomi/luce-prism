@@ -1,0 +1,351 @@
+## Value.
+import memory
+import interop
+import math
+from luce_prism.storage import equal_bytes, Buffer, List, Reader, copied
+from luce_prism.types import DType, invalid, limit_exceeded, max_bytes
+
+pub func dtype_width(dtype: DType) -> usize:
+    if dtype == DType.string:
+        return 0
+    if dtype == DType.int16 or dtype == DType.uint16 or dtype == DType.float16:
+        return 2
+    if dtype == DType.int32 or dtype == DType.uint32 or dtype == DType.float32:
+        return 4
+    if dtype == DType.int64 or dtype == DType.uint64 or dtype == DType.float64:
+        return 8
+    return 1
+
+pub func dtype_from(code: u64) -> DType!:
+    let types: DType[14] = [DType.boolean, DType.character, DType.int8, DType.int16, DType.int32, DType.int64, DType.uint8, DType.uint16, DType.uint32, DType.uint64, DType.float32, DType.float64, DType.string, DType.float16]
+    if code >= 14:
+        error(invalid, "unknown Prism dtype")
+    return types[(usize)code]
+
+pub func floating(dtype: DType) -> bool:
+    return dtype == DType.float16 or dtype == DType.float32 or dtype == DType.float64
+
+pub func shape_count(shape: const u32[]) -> usize!:
+    if shape.length > 16:
+        error(limit_exceeded, "Prism values support at most 16 dimensions")
+    var count: usize = 1
+    for dimension in shape:
+        count = count *? (usize)dimension else error(limit_exceeded, "Prism shape overflow")
+    if count > max_bytes:
+        error(limit_exceeded, "Prism value element limit exceeded")
+    return count
+
+pub struct ValueData:
+    pub var kind: DType = DType.boolean
+    pub var shape: List[u32]
+    pub var payload: Buffer
+
+    pub func count() -> usize:
+        var result: usize = 1
+        for dimension in self.shape.span():
+            result *= (usize)dimension
+        return result
+
+    pub func copy() -> ValueData!:
+        var out = try value_header(self.kind, self.shape.span())
+        errdefer out.close()
+        out.payload = try self.payload.copy()
+        return out
+
+    pub func bits(index: usize) -> u64:
+        let width = dtype_width(self.kind)
+        var bits: u64 = 0
+        for i in 0..<width:
+            bits |= (u64)self.payload.data[index * width + i] << (i * 8)
+        return bits
+
+    pub func number(index: usize) -> f64!:
+        if index >= self.count() or self.kind == DType.string:
+            error(invalid, "expected a numeric Prism component")
+        var bits = self.bits(index)
+        if self.kind == DType.boolean:
+            return 1.0 if bits != 0 else 0.0
+        if self.kind == DType.float64:
+            return memory.read[f64](&bits)
+        if self.kind == DType.float32:
+            var narrow = (u32)bits
+            return (f64)memory.read[f32](&narrow)
+        if self.kind == DType.float16:
+            return half_number((u16)bits)
+        if self.kind == DType.int8 or self.kind == DType.int16 or self.kind == DType.int32 or self.kind == DType.int64:
+            return (f64)self.signed(index)
+        return (f64)bits
+
+    pub func signed(index: usize) -> i64:
+        let width = dtype_width(self.kind)
+        var bits = self.bits(index)
+        if width < 8 and (bits & ((u64)1 << (width * 8 - 1))) != 0:
+            bits |= 18446744073709551615 << (width * 8)
+        return memory.read[i64](&bits)
+
+    pub mutating func close():
+        self.shape.close()
+        self.payload.close()
+
+pub func value_header(dtype: DType, shape: const u32[]) -> ValueData!:
+    discard(try shape_count(shape))
+    var out = ValueData(kind = dtype)
+    errdefer out.close()
+    for dimension in shape:
+        try out.shape.push(dimension)
+    return out
+
+pub func read_value(reader: Reader*) -> ValueData!:
+    let dtype = try dtype_from(try reader.uint(1))
+    let rank = (usize)try reader.uint(1)
+    if rank > 16:
+        error(limit_exceeded, "Prism rank exceeds 16")
+    var shape: u32[16]
+    for i in 0..<rank:
+        shape[i] = (u32)try reader.uint(4)
+    var out = try value_header(dtype, shape[..<rank])
+    errdefer out.close()
+    let count = out.count()
+    if dtype == DType.string:
+        if count > reader.remaining() // 4:
+            error(invalid, "truncated Prism string array")
+        for i in 0..<count:
+            try out.payload.sized(try reader.text())
+    else:
+        let size = count *? dtype_width(dtype) else error(limit_exceeded, "Prism payload overflow")
+        out.payload = try copied(try reader.take(size))
+    return out
+
+pub func write_value(out: Buffer*, value: const ValueData*) -> !:
+    try out.uint((u64)value.kind, 1)
+    try out.uint((u64)value.shape.count, 1)
+    for dimension in value.shape.span():
+        try out.uint((u64)dimension, 4)
+    # Preserve half bit patterns, as the C++ writer does. Other non-finite
+    # floating payloads normalize to zero in both legacy encodings.
+    if value.kind == DType.float32 or value.kind == DType.float64:
+        for i in 0..<value.count():
+            let finite = math.is_finite(try value.number(i))
+            try out.uint(value.bits(i) if finite else 0, dtype_width(value.kind))
+    else:
+        try out.put(value.payload.bytes())
+
+pub func scalar_bits(dtype: DType, bits: u64) -> ValueData!:
+    var out = ValueData(kind = dtype)
+    errdefer out.close()
+    try out.payload.uint(bits, dtype_width(dtype))
+    return out
+
+pub func half_number(bits: u16) -> f64:
+    let sign = -1.0 if (bits & 32768) != 0 else 1.0
+    let exponent = (bits >> 10) & 31
+    let mantissa = bits & 1023
+    if exponent == 31:
+        var raw: u64 = 9218868437227405312 if mantissa == 0 else 9221120237041090560
+        return sign * memory.read[f64](&raw)
+    var value = (f64)mantissa / 1024.0 if exponent == 0 else 1.0 + (f64)mantissa / 1024.0
+    var power = -14 if exponent == 0 else (i32)exponent - 15
+    while power < 0:
+        value *= 0.5
+        power += 1
+    while power > 0:
+        value *= 2.0
+        power -= 1
+    return sign * value
+
+pub func half_bits(number: f64) -> u16:
+    var value = (f32)number
+    let bits = memory.read[u32](&value)
+    let sign = (bits >> 16) & 32768
+    var mantissa = bits & 8388607
+    let exponent = (i32)((bits >> 23) & 255) - 112
+    if ((bits >> 23) & 255) == 255:
+        return (u16)(sign | 31744 | (512 if mantissa != 0 else 0))
+    if exponent >= 31:
+        return (u16)(sign | 31744)
+    if exponent <= 0:
+        if exponent < -10:
+            return (u16)sign
+        mantissa |= 8388608
+        let shift = (u32)(14 - exponent)
+        var rounded = mantissa >> shift
+        if ((mantissa >> (shift - 1)) & 1) != 0:
+            rounded += 1
+        return (u16)(sign | rounded)
+    var result = sign | ((u32)exponent << 10) | (mantissa >> 13)
+    if (mantissa & 4096) != 0:
+        result += 1
+    return (u16)result
+
+pub func append_number(payload: Buffer*, kind: DType, value: f64) -> !:
+    if kind == DType.float64:
+        var number = value
+        try payload.uint(memory.read[u64](&number), 8)
+    elif kind == DType.float32:
+        var number = (f32)value
+        try payload.uint((u64)memory.read[u32](&number), 4)
+    else:
+        try payload.uint((u64)half_bits(value), 2)
+
+pub struct Value:
+    var data: ValueData
+
+    pub func view_data() -> const ValueData*:
+        return &self.data
+
+    pub func init(number: f64 = 0.0) -> !:
+        var value = number
+        self.data = try scalar_bits(DType.float64, memory.read[u64](&value))
+
+    pub static func integer(value: i64) -> interop.Reference[Value]!:
+        var signed_value = value
+        return try own_value(try scalar_bits(DType.int64, memory.read[u64](&signed_value)))
+
+    pub static func unsigned(value: u64) -> interop.Reference[Value]!:
+        return try own_value(try scalar_bits(DType.uint64, value))
+
+    pub static func number(value: f64) -> interop.Reference[Value]!:
+        var number = value
+        return try own_value(try scalar_bits(DType.float64, memory.read[u64](&number)))
+
+    pub static func lerp(left: interop.Reference[Value], right: interop.Reference[Value], amount: f64) -> interop.Reference[Value]!:
+        let a = (try left.get()).view_data()
+        let b = (try right.get()).view_data()
+        if not same_shape(a, b) or not floating(a.kind):
+            return try own_value(try a.copy())
+        var output = try value_header(a.kind, a.shape.span())
+        errdefer output.close()
+        for i in 0..<a.count():
+            let first = try a.number(i)
+            let last = try b.number(i)
+            let delta = last - first if a.kind == DType.float64 else (f64)((f32)last - (f32)first)
+            try append_number(&output.payload, a.kind, first + delta * amount)
+        let owned = output
+        output = ValueData()
+        return try own_value(owned)
+
+    pub func equals(other: interop.Reference[Value]) -> bool!:
+        return equal_values(&self.data, (try other.get()).view_data())
+
+    pub static func boolean(value: bool) -> interop.Reference[Value]!:
+        return try own_value(try scalar_bits(DType.boolean, 1 if value else 0))
+
+    pub static func text(value: str) -> interop.Reference[Value]!:
+        var data = ValueData(kind = DType.string)
+        data.payload.sized(value) catch failure:
+            data.close()
+            error(failure.code, failure.message)
+        return try own_value(data)
+
+    ## Numeric payload bytes are little-endian, shape is row-major. Input is copied.
+    pub static func array(dtype: DType, shape: const i64[], bytes: const u8[]) -> interop.Reference[Value]!:
+        var scratch: u32[16]
+        let dimensions = try checked_shape(shape, scratch)
+        if dtype == DType.string:
+            error(invalid, "use Value.strings for string arrays")
+        let count = try shape_count(dimensions)
+        if count > max_bytes // dtype_width(dtype) or bytes.length != count * dtype_width(dtype):
+            error(invalid, "Prism array payload does not match its shape and dtype")
+        var data = try value_header(dtype, dimensions)
+        data.payload = copied(bytes) catch failure:
+            data.close()
+            error(failure.code, failure.message)
+        return try own_value(data)
+
+    pub static func strings(shape: const i64[], values: const str[]) -> interop.Reference[Value]!:
+        var scratch: u32[16]
+        let dimensions = try checked_shape(shape, scratch)
+        if try shape_count(dimensions) != values.length:
+            error(invalid, "Prism string count does not match its shape")
+        var data = try value_header(DType.string, dimensions)
+        for value in values:
+            data.payload.sized(value) catch failure:
+                data.close()
+                error(failure.code, failure.message)
+        return try own_value(data)
+
+    pub static func numbers(shape: const i64[], values: const f64[], dtype: DType = DType.float64) -> interop.Reference[Value]!:
+        var scratch: u32[16]
+        let dimensions = try checked_shape(shape, scratch)
+        if not floating(dtype) or try shape_count(dimensions) != values.length:
+            error(invalid, "expected a floating dtype and matching Prism shape")
+        var data = try value_header(dtype, dimensions)
+        for value in values:
+            append_number(&data.payload, dtype, value) catch failure:
+                data.close()
+                error(failure.code, failure.message)
+        return try own_value(data)
+
+    pub func dtype() -> DType:
+        return self.data.kind
+
+    pub func rank() -> usize:
+        return self.data.shape.count
+
+    pub func dimension(index: usize) -> usize!:
+        if index >= self.data.shape.count:
+            error(invalid, "Prism dimension index is out of bounds")
+        return self.data.shape.items[index]
+
+    pub func count() -> usize:
+        return self.data.count()
+
+    pub func bytes() -> const u8[]:
+        return self.data.payload.bytes()
+
+    pub func number_at(index: usize = 0) -> f64!:
+        return try self.data.number(index)
+
+    pub func integer_at(index: usize = 0) -> i64!:
+        let kind = self.data.kind
+        if index >= self.count() or (kind != DType.int8 and kind != DType.int16 and kind != DType.int32 and kind != DType.int64):
+            error(invalid, "expected a signed integer Prism component")
+        return self.data.signed(index)
+
+    pub func unsigned_at(index: usize = 0) -> u64!:
+        if index >= self.count() or floating(self.data.kind) or self.data.kind == DType.string:
+            error(invalid, "expected an integer Prism component")
+        return self.data.bits(index)
+
+    pub func text_at(index: usize = 0) -> str!:
+        if self.data.kind != DType.string or index >= self.count():
+            error(invalid, "expected a Prism string component")
+        var reader = Reader(data = self.data.payload.bytes())
+        for i in 0..<index:
+            discard(try reader.text())
+        return try reader.text()
+
+    pub mutating func close():
+        self.data.close()
+
+pub let value_type = interop.Type[Value]("Prism value", Value.close, closeable = true)
+
+pub func own_value(data: ValueData) -> interop.Reference[Value]!:
+    var owned = data
+    let native = new Value() in memory.heap catch failure:
+        owned.close()
+        error(failure.code, failure.message)
+    native.data.close()
+    native.data = owned
+    return try interop.Reference[Value].adopt(native, value_type, memory.heap)
+
+
+pub func checked_shape(shape: const i64[], output: u32[]) -> const u32[]!:
+    if shape.length > 16:
+        error(limit_exceeded, "Prism values support at most 16 dimensions")
+    for i in 0..<shape.length:
+        if shape[i] < 0 or shape[i] > 4294967295:
+            error(invalid, "Prism dimensions must fit uint32")
+        output[i] = (u32)shape[i]
+    return output[..<shape.length]
+
+pub func same_shape(a: const ValueData*, b: const ValueData*) -> bool:
+    if a.kind != b.kind or a.shape.count != b.shape.count:
+        return false
+    for i in 0..<a.shape.count:
+        if a.shape.items[i] != b.shape.items[i]:
+            return false
+    return true
+
+pub func equal_values(a: const ValueData*, b: const ValueData*) -> bool:
+    return same_shape(a, b) and equal_bytes(a.payload.bytes(), b.payload.bytes())

@@ -1,0 +1,102 @@
+## Open-addressed UTF-8 key index with ordered buckets and amortized constant append.
+import memory
+from luce_prism.storage import Buffer, List, text_copy
+from luce_prism.types import limit_exceeded
+
+pub struct Bucket:
+    pub var key: Buffer
+    pub var rows: List[usize]
+
+    pub mutating func close():
+        self.key.close()
+        self.rows.close()
+
+func hash_key(key: str) -> usize:
+    var value: u64 = 2166136261
+    for byte in key.bytes:
+        value = ((value ^ (u64)byte) * 16777619) & 4294967295
+    return (usize)value
+
+## Prepared appends let the model update several indexes without partial writes.
+## At most one append may be pending on an index; commit performs no allocation.
+pub struct Pending:
+    pub var existing: usize?
+    pub var row: usize
+    pub var bucket: Bucket
+
+    pub mutating func close():
+        self.bucket.close()
+
+pub struct Index:
+    pub var buckets: List[Bucket]
+    var slots: usize[]
+
+    pub func find(key: str) -> usize?:
+        if self.slots.length == 0:
+            return none
+        var position = hash_key(key) & (self.slots.length - 1)
+        while self.slots[position] != 0:
+            let index = self.slots[position] - 1
+            if self.buckets.items[index].key.view() == key:
+                return index
+            position = (position + 1) & (self.slots.length - 1)
+        return none
+
+    mutating func capacity(count: usize) -> !:
+        if count <= self.slots.length // 2:
+            return
+        if count > 1048576:
+            error(limit_exceeded, "Prism index key limit exceeded")
+        let size = self.slots.length * 2 if self.slots.length > 0 else 16
+        let slots = try alloc usize[size] in memory.heap
+        for i in 0..<slots.length:
+            slots[i] = 0
+        for index in 0..<self.buckets.count:
+            var position = hash_key(self.buckets.items[index].key.view()) & (size - 1)
+            while slots[position] != 0:
+                position = (position + 1) & (size - 1)
+            slots[position] = index + 1
+        if self.slots.length > 0:
+            free(self.slots) in memory.heap
+        self.slots = slots
+
+    pub mutating func add(key: str, row: usize) -> usize!:
+        var pending = try self.prepare(key, row)
+        return self.commit(&pending)
+
+    pub mutating func prepare(key: str, row: usize) -> Pending!:
+        if let index = self.find(key):
+            try self.buckets.items[index].rows.reserve(self.buckets.items[index].rows.count + 1)
+            return Pending(existing = index, row = row)
+        try self.capacity(self.buckets.count + 1)
+        try self.buckets.reserve(self.buckets.count + 1)
+        var bucket: Bucket
+        errdefer bucket.close()
+        bucket.key = try text_copy(key)
+        try bucket.rows.push(row)
+        return Pending(row = row, bucket = bucket)
+
+    pub mutating func commit(pending: Pending*) -> usize:
+        if let index = pending.existing:
+            let rows = &self.buckets.items[index].rows
+            rows.items[rows.count] = pending.row
+            rows.count += 1
+            return index
+        let index = self.buckets.count
+        self.buckets.items[index] = pending.bucket
+        self.buckets.count += 1
+        pending.bucket = Bucket()
+        var position = hash_key(self.buckets.items[index].key.view()) & (self.slots.length - 1)
+        while self.slots[position] != 0:
+            position = (position + 1) & (self.slots.length - 1)
+        self.slots[position] = index + 1
+        return index
+
+    pub mutating func close():
+        for i in 0..<self.buckets.count:
+            self.buckets.items[i].close()
+        self.buckets.close()
+        if self.slots.length > 0:
+            free(self.slots) in memory.heap
+        var empty: usize[]
+        self.slots = empty

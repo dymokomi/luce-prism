@@ -86,9 +86,11 @@ legacy writer. Binary float16 payload bits are retained, including NaNs; text
 normalizes non-finite values, so bitwise identity is not promised for those values.
 Boolean values should use canonical 0/1 bytes.
 
-The new writer uses general dtype/shape spellings and preserves catalog labels.
-Its parser accepts both those spellings and legacy roles (`float2`, `matrix`,
-`float2[]`, etc.). The legacy C++ text parser has some asymmetries: for example its
+The writer uses the legacy role spellings (`float`, `float2`, `matrix`,
+`float2[]`, etc.) when applicable, general dtype/shape syntax otherwise, and
+preserves explicit catalog labels. Both representations are accepted on input.
+Unlike the old text formatter, signed zero is retained and key times/handles
+retain full double precision. The legacy C++ text parser has some asymmetries: for example its
 `bool` legacy-type branch rejects general boolean array declarations emitted by
 its own writer. Binary interchange covers that case; the new parser supports it.
 Quoted animated property names and unusual sparse/anonymous documents also need

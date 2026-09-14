@@ -1,13 +1,81 @@
 import prism
 import strings
+import memory
+import files
+import c
 
 pub func main(arguments: str[]) -> i32!:
-    if arguments.length != 4:
-        print("usage: codec INPUT OUTPUT text|binary|compressed|package")
+    if arguments.length < 4 or arguments.length > 6:
+        print("usage: codec INPUT OUTPUT MODE [OTHER [THIRD]]")
         return 2
-    let document = try prism.Document.load(arguments[1])
-    defer document.release()
     let mode = arguments[3]
-    let encoding = prism.Encoding.text if mode == "text" else (prism.Encoding.package if mode == "package" else prism.Encoding.binary)
+    if mode == "parse-surface":
+        with memory.heap:
+            let name = try strings.copy(arguments[1])
+            defer strings.release(name)
+            let bytes = try files.read_limit((c.str)name, 268435456)
+            defer free(bytes) in memory.heap
+            let document = try prism.parse_surface((str)bytes)
+            defer document.release()
+            try document.value().save(arguments[2])
+        return 0
+    if mode.length > 7 and (str)mode.bytes[..<7] == "decode-":
+        let codec = prism.codec_by_name((str)mode.bytes[7..]) else return 2
+        with memory.heap:
+            let name = try strings.copy(arguments[1])
+            defer strings.release(name)
+            let bytes = try files.read_limit((c.str)name, 268435456)
+            defer free(bytes) in memory.heap
+            let document = try prism.decode(bytes, codec)
+            defer document.release()
+            try document.value().save(arguments[2])
+        return 0
+    let document = try prism.compose_file(arguments[1]) if mode == "compose" else try prism.Document.load(arguments[1])
+    defer document.release()
+    if mode == "compute" or mode == "derive":
+        let result = try prism.compute(document) if mode == "compute" else try prism.derive(document)
+        defer result.release()
+        try result.value().save(arguments[2])
+        return 0
+    if mode == "serialize-surface":
+        let encoded = try prism.serialize_surface(document)
+        defer encoded.release()
+        with memory.heap:
+            let name = try strings.copy(arguments[2])
+            defer strings.release(name)
+            try files.write((c.str)name, encoded.value().bytes())
+        return 0
+    if mode.length > 7 and (str)mode.bytes[..<7] == "encode-":
+        let codec = prism.codec_by_name((str)mode.bytes[7..]) else return 2
+        let encoded = try prism.encode(document, codec)
+        defer encoded.release()
+        with memory.heap:
+            let name = try strings.copy(arguments[2])
+            defer strings.release(name)
+            try files.write((c.str)name, encoded.value().bytes())
+        return 0
+    if mode == "overlay" or mode == "diff" or mode == "merge":
+        if arguments.length < 5:
+            return 2
+        let other = try prism.Document.load(arguments[4])
+        defer other.release()
+        if mode == "merge":
+            if arguments.length != 6:
+                return 2
+            let third = try prism.Document.load(arguments[5])
+            defer third.release()
+            let merged = try prism.merge(document, other, third)
+            defer merged.release()
+            if not merged.value().ok():
+                return 4
+            let result = try merged.value().document()
+            defer result.release()
+            try result.value().save(arguments[2])
+        else:
+            let result = try document.value().overlay(other) if mode == "overlay" else try document.value().diff(other)
+            defer result.release()
+            try result.value().save(arguments[2])
+        return 0
+    let encoding = prism.Encoding.text if mode == "text" else (prism.Encoding.package if (mode == "package" or mode == "package-empty") else prism.Encoding.binary)
     try document.value().save(arguments[2], encoding, mode == "compressed")
     return 0

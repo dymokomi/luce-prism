@@ -1,0 +1,77 @@
+import prism
+import interop
+import strings
+
+struct Case:
+    var name: str
+    var target: str
+    var records: usize
+    var text: bool = false
+
+func parse(body: str) -> interop.Reference[prism.Document]!:
+    let source = try strings.join(["#prisma 4.0\n", body], "")
+    defer strings.release(source)
+    return try prism.Document.parse(source)
+
+func verify(base: interop.Reference[prism.Document], item: Case) -> !:
+    let target = try parse(item.target)
+    defer target.release()
+    let layer = try base.value().diff(target)
+    defer layer.release()
+    assert(layer.value().element_count() == item.records)
+    let output = try base.value().overlay(layer)
+    defer output.release()
+    if not (try output.value().equals(target)):
+        print(item.name)
+    assert(try output.value().equals(target))
+    for encoding in [prism.Encoding.text, prism.Encoding.binary, prism.Encoding.package]:
+        if encoding == prism.Encoding.text and not item.text:
+            continue
+        let encoded = try layer.value().encode(encoding)
+        defer encoded.release()
+        let restored = try prism.Document.decode(encoded.value().bytes())
+        defer restored.release()
+        let applied = try base.value().overlay(restored)
+        defer applied.release()
+        assert(try applied.value().equals(target))
+    let unchanged = try output.value().diff(target)
+    defer unchanged.release()
+    assert(unchanged.value().element_count() == 0)
+    assert(unchanged.value().view_data().deletions.count == 0)
+
+pub func run() -> !:
+    let source = "def column \"board\" { float gap = 8 def markdown \"title\" { string text = \"Issues\" } def card \"c1\" { float flex = 1 string status = \"open\" } def card \"c2\" { string status = \"open\" } }"
+    let base = try parse(source)
+    defer base.release()
+    let cases = [
+        Case("diff_property_change_is_a_minimal_over", "def column \"board\" { float gap = 12 def markdown \"title\" { string text = \"Issues\" } def card \"c1\" { float flex = 1 string status = \"open\" } def card \"c2\" { string status = \"open\" } }", 1, true),
+        Case("diff_metadata_change_is_an_over", "def column \"board\" { float gap = 8 def markdown \"title\" { string text = \"Issues\" } def card \"c1\" { float flex = 1 string status = \"done\" } def card \"c2\" { string status = \"open\" } }", 1),
+        Case("diff_added_child_is_a_def", "def column \"board\" { float gap = 8 def markdown \"title\" { string text = \"Issues\" } def card \"c1\" { float flex = 1 string status = \"open\" } def card \"c2\" { string status = \"open\" } def card \"c3\" { string status = \"open\" } }", 1),
+        Case("diff_removed_child_is_a_delete", "def column \"board\" { float gap = 8 def markdown \"title\" { string text = \"Issues\" } def card \"c1\" { float flex = 1 string status = \"open\" } }", 0, true),
+        Case("diff_property_removal_is_an_over_tombstone_not_a_replace", "def column \"board\" { float gap = 8 def markdown \"title\" { string text = \"Issues\" } def card \"c1\" { float flex = 1 } def card \"c2\" { string status = \"open\" } }", 1),
+        Case("diff_property_removal_round_trips_through_text", "def column \"board\" { float gap = 20 def markdown \"title\" { string text = \"Issues\" } def card \"c1\" { float flex = 1 } def card \"c2\" { string status = \"open\" } }", 2, true),
+        Case("diff_no_change_is_empty", source, 0, true),
+        Case("apply_collapses_a_diff_into_a_clean_standalone_base", "def column \"board\" { float gap = 16 def markdown \"title\" { string text = \"Issues\" } def card \"c1\" { float flex = 1 string status = \"done\" } def card \"c2\" {} def card \"c3\" { string status = \"open\" } }", 4, true),
+        Case("diff_simultaneous_changes_round_trip", "def column \"board\" { float gap = 16 def card \"c1\" { float flex = 1 string status = \"done\" } def card \"c2\" {} def card \"c3\" { string status = \"open\" } }", 4, true),
+        Case("diff_named_sibling_reorder_round_trips", "def column \"board\" { float gap = 8 def card \"c2\" { string status = \"open\" } def card \"c1\" { float flex = 1 string status = \"open\" } def markdown \"title\" { string text = \"Issues\" } }", 0, true),
+        Case("diff_reorder_round_trips_through_text_and_binary", "def column \"board\" { float gap = 8 def card \"c2\" { string status = \"open\" } def markdown \"title\" { string text = \"Issues\" } def card \"c1\" { float flex = 1 string status = \"open\" } }", 0, true),
+        Case("diff_midsequence_insertion_round_trips", "def column \"board\" { float gap = 8 def markdown \"title\" { string text = \"Issues\" } def card \"c1\" { float flex = 1 string status = \"open\" } def card \"c3\" { string status = \"open\" } def card \"c2\" { string status = \"open\" } }", 1)
+    ]
+    for item in cases:
+        try verify(base, item)
+    try diff_connection_changes_round_trip()
+    print("PASS 13 legacy diff/apply cases, exact order, minimal patches and layer serialization")
+
+func diff_connection_changes_round_trip() -> !:
+    let base = try parse("def node \"src\" { float out = 1 } def node \"a\" {} def node \"b\" {} connect </a.in> = </src.out>")
+    defer base.release()
+    let target = try base.value().copy()
+    defer target.release()
+    target.value().disconnect("/a.in")
+    try target.value().connect("/src.out", "/b.in")
+    let layer = try base.value().diff(target)
+    defer layer.release()
+    assert(layer.value().view_data().disconnections.count == 1)
+    let output = try base.value().overlay(layer)
+    defer output.release()
+    assert(try output.value().equals(target))

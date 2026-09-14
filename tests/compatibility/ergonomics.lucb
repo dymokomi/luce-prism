@@ -1,0 +1,194 @@
+import prism
+import interop
+
+func document() -> interop.Reference[prism.Document]!:
+    return try prism.Document.parse("#prisma 4.0\ndef object \"a\" { float radius = 2 int count = 3 bool visible = true float2 pos = (1,2) float3 rgb = (0.1,0.2,0.3) string label = \"hi\" float64 d = 3.5 }")
+
+func path_string_ctor_parses() -> !:
+    var path = try prism.Path("/world/sphere.radius")
+    defer path.close()
+    assert(path.name() == "sphere" and path.property() == "radius")
+
+func path_string_ctor_throws_on_malformed() -> !:
+    var path = prism.Path("no leading slash") catch failure:
+        assert(failure.code == prism.invalid)
+        return
+    path.close()
+    assert(false)
+
+func element_set_sugar_equals_verbose() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\n")
+    defer doc.release()
+    let handle = try prism.define(doc, "/a", "object")
+    defer handle.release()
+    let value = try prism.Value.number(2.0)
+    defer value.release()
+    let edited = try handle.value().set("radius", value)
+    defer edited.release()
+    let expected = try prism.Document.parse("#prisma 4.0\ndef object \"a\" { float64 radius = 2 }")
+    defer expected.release()
+    assert(try expected.value().equals(doc))
+
+func element_typed_getters_coerce_and_default() -> !:
+    let doc = try document()
+    defer doc.release()
+    let handle = try prism.edit(doc, "/a")
+    defer handle.release()
+    assert(try handle.value().get_number("radius") == 2.0)
+    assert(try handle.value().get_integer("count") == 3)
+    assert(try handle.value().get_boolean("visible"))
+    assert((try handle.value().get_vec2("pos")).y == 2.0)
+    assert(try handle.value().get_number("missing", 9.0) == 9.0)
+    assert(try handle.value().get_boolean("missing", true))
+
+func lenient_getters_default_on_wrong_type() -> !:
+    let doc = try document()
+    defer doc.release()
+    let handle = try prism.edit(doc, "/a")
+    defer handle.release()
+    assert(try handle.value().get_number("label", 9.0) == 9.0)
+    assert(try handle.value().get_integer("label", 7) == 7)
+    assert(try handle.value().get_boolean("label", true))
+    assert(try handle.value().get_number("pos", 9.0) == 9.0)
+    assert(try handle.value().get_integer("pos", 7) == 7)
+    assert((try handle.value().get_vec3("pos", prism.Vec3(9.0,8.0,7.0))).z == 7.0)
+
+func fails_number(handle: interop.Reference[prism.ElementHandle], name: str) -> !:
+    discard(handle.value().require_number(name) catch failure:
+        return
+    )
+    assert(false)
+
+func element_require_getters_value_missing_mismatch() -> !:
+    let doc = try document()
+    defer doc.release()
+    let handle = try prism.edit(doc, "/a")
+    defer handle.release()
+    assert(try handle.value().require_number("radius") == 2.0)
+    assert(try handle.value().require_integer("count") == 3)
+    assert(try handle.value().require_boolean("visible"))
+    assert((try handle.value().require_vec2("pos")).y == 2.0)
+    let rgb = try handle.value().require_vec3("rgb")
+    assert(rgb.z > 0.299 and rgb.z < 0.301)
+    let property = try handle.value().require_value("radius")
+    defer property.release()
+    assert(property.value().dtype() == prism.DType.float32)
+    try fails_number(handle, "nope")
+    var failed = false
+    discard(handle.value().require_vec3("radius") catch failure:
+        failed = true
+        recover prism.Vec3()
+    )
+    assert(failed)
+    failed = false
+    discard(handle.value().require_boolean("count") catch failure:
+        failed = true
+        recover false
+    )
+    assert(failed)
+
+func require_float_int_coerce_any_numeric_scalar() -> !:
+    let doc = try document()
+    defer doc.release()
+    let handle = try prism.edit(doc, "/a")
+    defer handle.release()
+    assert(try handle.value().require_number("d") == 3.5)
+    assert(try handle.value().require_integer("d") == 3)
+    assert(try handle.value().require_number("count") == 3.0)
+    try fails_number(handle, "label")
+    try fails_number(handle, "pos")
+
+func handle_require_getters_and_absent_element() -> !:
+    let doc = try document()
+    defer doc.release()
+    let handle = try prism.edit(doc, "/a")
+    defer handle.release()
+    assert(try handle.value().require_number("radius") == 2.0)
+    try fails_number(handle, "nope")
+    let ghost = try prism.edit(doc, "/missing")
+    defer ghost.release()
+    assert(not ghost.value().valid() and try ghost.value().get_number("radius", 9.0) == 9.0)
+    try fails_number(ghost, "radius")
+
+func element_animate_sugar() -> !:
+    let doc = try document()
+    defer doc.release()
+    let handle = try prism.edit(doc, "/a")
+    defer handle.release()
+    let zero = try prism.Value.number(0.0)
+    defer zero.release()
+    let tau = try prism.Value.number(6.2832)
+    defer tau.release()
+    let start = try handle.value().sample("rotation", 0.0, zero)
+    defer start.release()
+    let end = try start.value().sample("rotation", 24.0, tau)
+    defer end.release()
+    assert(try end.value().get_number("rotation", 0.0, 0.0) == 0.0)
+    let midpoint = try end.value().get_number("rotation", 0.0, 12.0)
+    assert(midpoint > 3.1415 and midpoint < 3.1417)
+    assert(try doc.value().sample_count("/a", "rotation") == 2)
+
+func doc_define_returns_chainable_handle() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\n")
+    defer doc.release()
+    let lens = try prism.define(doc, "/world/lens", "object")
+    defer lens.release()
+    let shape: i64[1] = [2]
+    let coords: f64[2] = [170.0,150.0]
+    let position = try prism.Value.numbers(shape, coords, prism.DType.float32)
+    defer position.release()
+    let radius = try prism.Value.number(2.0)
+    defer radius.release()
+    let first = try lens.value().set("position", position)
+    defer first.release()
+    let second = try first.value().set("radius", radius)
+    defer second.release()
+    assert(second.value().valid() and second.value().path() == "/world/lens")
+    assert(try second.value().get_number("radius") == 2.0)
+    assert((try second.value().get_vec2("position")).y == 150.0)
+    assert(doc.value().contains("/world/lens"))
+
+func handle_survives_stage_reallocation() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\n")
+    defer doc.release()
+    let first = try prism.define(doc, "/a", "object")
+    defer first.release()
+    for i in 0..<64:
+        var scratch: u8[32]
+        try doc.value().add(try format(scratch, f"/n{i}"), "object")
+    let value = try prism.Value.number(2.0)
+    defer value.release()
+    let edited = try first.value().set("v", value)
+    defer edited.release()
+    assert(edited.value().valid() and try first.value().get_number("v") == 2.0)
+    try doc.value().remove("/a")
+    assert(not first.value().valid())
+
+func doc_edit_handle_to_existing() -> !:
+    let doc = try document()
+    defer doc.release()
+    let handle = try prism.edit(doc, "/a")
+    defer handle.release()
+    let value = try prism.Value.number(0.5)
+    defer value.release()
+    let edited = try handle.value().set("opacity", value)
+    defer edited.release()
+    assert(try edited.value().get_number("opacity") == 0.5)
+    let ghost = try prism.edit(doc, "/missing")
+    defer ghost.release()
+    assert(not ghost.value().valid())
+
+pub func run() -> !:
+    try path_string_ctor_parses()
+    try path_string_ctor_throws_on_malformed()
+    try element_set_sugar_equals_verbose()
+    try element_typed_getters_coerce_and_default()
+    try lenient_getters_default_on_wrong_type()
+    try element_require_getters_value_missing_mismatch()
+    try require_float_int_coerce_any_numeric_scalar()
+    try handle_require_getters_and_absent_element()
+    try element_animate_sugar()
+    try doc_define_returns_chainable_handle()
+    try handle_survives_stage_reallocation()
+    try doc_edit_handle_to_existing()
+    print("PASS 12 legacy authoring ergonomics cases, typed defaults and stable editing handles")

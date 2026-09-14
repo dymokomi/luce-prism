@@ -1,0 +1,107 @@
+## Surface declarations share canonical data, math, and structured logic builders.
+import strings
+import memory
+import luce_prism.surface.math as math
+import luce_prism.surface.logic as logic
+from luce_prism.model import DocumentData
+from luce_prism.serialization.lexer import tokenize
+from luce_prism.storage import Buffer
+from luce_prism.types import invalid, limit_exceeded, max_bytes, max_depth, DType
+from luce_prism.codecs.common import whitespace, put, set_boolean
+from luce_prism.value import scalar_bits
+from luce_prism.path import joined
+from luce_prism.authoring.names import unique_path
+
+func data(doc: DocumentData*, name: str, body: str, override: bool) -> !:
+    var requested = try joined("/", name)
+    defer requested.close()
+    var path = try unique_path(doc, requested.view())
+    defer path.close()
+    try doc.insert(path.view(), "", override)
+    var parser = try tokenize(body.bytes)
+    defer parser.close()
+    while parser.kind() != 0:
+        let kind = try parser.name()
+        let property = try parser.name()
+        discard(try parser.accept("="))
+        let value = try parser.take()
+        if kind == "bool":
+            if value != "true" and value != "false":
+                error(invalid, "invalid boolean in Prism surface data")
+            try set_boolean(doc, path.view(), property, value == "true")
+        elif kind == "int":
+            var number = strings.parse_i64(value) else error(invalid, "invalid integer in Prism surface data")
+            var typed = try scalar_bits(DType.int64, memory.read[u64](&number))
+            defer typed.close()
+            try put(doc, path.view(), property, &typed)
+        else:
+            try math.set_number(doc, path.view(), property, try strings.parse_f64(value))
+
+pub func parse(source: str) -> DocumentData!:
+    if source.length > max_bytes:
+        error(limit_exceeded, "Prism surface input is too large")
+    var stripped: Buffer
+    defer stripped.close()
+    var comment = false
+    for byte in source.bytes:
+        if byte == '\n':
+            comment = false
+        elif byte == '#':
+            comment = true
+        if not comment:
+            try stripped.byte(byte)
+    let text = stripped.view()
+    var position: usize = 0
+    var doc = DocumentData()
+    errdefer doc.close()
+    while position < text.length:
+        while position < text.length and whitespace(text.bytes[position]):
+            position += 1
+        if position == text.length:
+            break
+        let start = position
+        while position < text.length and text.bytes[position] != '"' and not whitespace(text.bytes[position]):
+            position += 1
+        let kind = (str)text.bytes[start..<position]
+        while position < text.length and whitespace(text.bytes[position]):
+            position += 1
+        if position == text.length or text.bytes[position] != '"':
+            error(invalid, "expected a quoted Prism surface name")
+        position += 1
+        let name_start = position
+        while position < text.length and text.bytes[position] != '"':
+            position += 1
+        if position == text.length:
+            error(invalid, "unterminated Prism surface name")
+        let name = (str)text.bytes[name_start..<position]
+        position += 1
+        while position < text.length and whitespace(text.bytes[position]):
+            position += 1
+        if position == text.length or text.bytes[position] != '{':
+            error(invalid, "expected a Prism surface body")
+        position += 1
+        let body_start = position
+        var depth: usize = 1
+        while position < text.length:
+            if text.bytes[position] == '{':
+                depth += 1
+                if depth > max_depth:
+                    error(limit_exceeded, "Prism surface body is too deep")
+            elif text.bytes[position] == '}':
+                depth -= 1
+                if depth == 0:
+                    break
+            position += 1
+        if depth != 0:
+            error(invalid, "unterminated Prism surface body")
+        let body = (str)text.bytes[body_start..<position]
+        position += 1
+        if kind == "def" or kind == "over":
+            try data(&doc, name, body, kind == "over")
+        elif kind == "math":
+            try math.compile(&doc, name, body)
+        elif kind == "logic":
+            try logic.compile(&doc, name, body)
+        else:
+            error(invalid, "unknown Prism surface declaration")
+    return doc

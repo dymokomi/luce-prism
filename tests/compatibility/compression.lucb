@@ -1,0 +1,98 @@
+import prism
+import memory
+
+func roundtrip(bytes: const u8[]) -> usize!:
+    let packed = try prism.compress(bytes)
+    defer packed.release()
+    let back = try prism.decompress(packed.value().bytes())
+    defer back.release()
+    assert(back.value().size() == bytes.length)
+    for i in 0..<bytes.length:
+        assert(back.value().bytes()[i] == bytes[i])
+    return packed.value().size()
+
+func reject(bytes: const u8[]) -> !:
+    let decoded = prism.decompress(bytes) catch failure:
+        assert(failure.code == prism.invalid or failure.code == prism.limit_exceeded)
+        return
+    decoded.release()
+    assert(false)
+
+func compress_empty_and_tiny() -> !:
+    discard(try roundtrip(b""))
+    discard(try roundtrip(b"x"))
+    discard(try roundtrip(b"hi there"))
+
+func compress_overlapping_back_reference() -> !:
+    let bytes = try alloc u8[9000] in memory.heap
+    defer free(bytes) in memory.heap
+    for i in 0..<bytes.length:
+        bytes[i] = 'Z'
+    assert(try roundtrip(bytes[..<5000]) < 500)
+    for i in 0..<bytes.length:
+        bytes[i] = (u8)(97 + i % 3)
+    assert(try roundtrip(bytes) < 900)
+
+func compress_identity_past_window() -> !:
+    let bytes = try alloc u8[80000] in memory.heap
+    defer free(bytes) in memory.heap
+    var seed: u32 = 12648430
+    for i in 0..<bytes.length:
+        if i < 40000:
+            bytes[i] = 'A'
+        else:
+            seed ^= seed << 13
+            seed ^= seed >> 17
+            seed ^= seed << 5
+            bytes[i] = (u8)(seed & 255)
+    assert(try roundtrip(bytes) < bytes.length)
+
+func compress_round_trips_all_shapes() -> !:
+    discard(try roundtrip(b"hello world"))
+    let bytes = try alloc u8[64000] in memory.heap
+    defer free(bytes) in memory.heap
+    let record = b"name=widget; size=10; color=red; "
+    for i in 0..<bytes.length:
+        bytes[i] = record[i % record.length]
+    discard(try roundtrip(bytes))
+    for i in 0..<(usize)4096:
+        bytes[i] = (u8)(i * 37)
+    discard(try roundtrip(bytes[..<4096]))
+
+func compress_actually_shrinks_repetitive_data() -> !:
+    let bytes = try alloc u8[50000] in memory.heap
+    defer free(bytes) in memory.heap
+    for i in 0..<bytes.length:
+        bytes[i] = 0
+    assert(try roundtrip(bytes) < bytes.length // 10)
+
+func decompress_rejects_corrupt_input() -> !:
+    try reject(b"")
+    try reject(b"\0\0\0\0")
+    let bomb: u8[8] = [255,255,255,255,0,0,0,0]
+    try reject(bomb)
+    let impossible: u8[12] = [8,0,0,0,0,0,0,0,1,0,0,4]
+    try reject(impossible)
+
+func compress_fails_closed_on_corrupt() -> !:
+    let bytes = try alloc u8[2000] in memory.heap
+    defer free(bytes) in memory.heap
+    for i in 0..<bytes.length:
+        bytes[i] = 'Q'
+    let packed = try prism.compress(bytes)
+    defer packed.release()
+    let data = packed.value().bytes()
+    try reject(data[..<data.length // 4])
+    try reject(data[..<data.length // 2])
+    try reject(data[..<data.length - 1])
+    try reject(b"garbage")
+
+pub func run() -> !:
+    try compress_empty_and_tiny()
+    try compress_overlapping_back_reference()
+    try compress_identity_past_window()
+    try compress_round_trips_all_shapes()
+    try compress_actually_shrinks_repetitive_data()
+    try decompress_rejects_corrupt_input()
+    try compress_fails_closed_on_corrupt()
+    print("PASS 7 legacy compression cases, sliding-window identity and corrupt back-references")

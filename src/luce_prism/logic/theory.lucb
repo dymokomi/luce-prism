@@ -1,0 +1,235 @@
+## Ground the structured theory over its finite universe of constants.
+import luce_prism.collections.sort as sorting
+from luce_prism.logic.atoms import AtomData, RuleKind, read_atom, read_text
+from luce_prism.model import DocumentData
+from luce_prism.collections.index import Index
+from luce_prism.storage import List, Buffer, text_copy
+from luce_prism.path import path_name
+from luce_prism.types import invalid, limit_exceeded, max_items
+
+pub struct Literal:
+    pub var atom: AtomData
+    pub var key: Buffer
+    pub var complement: usize
+    pub var fact: bool
+    pub var definite: bool
+    pub var proof: bool
+    pub var refute: bool
+    pub var supporters: List[usize]
+    pub var rules: List[usize]
+
+    pub mutating func close():
+        self.atom.close()
+        self.key.close()
+        self.supporters.close()
+        self.rules.close()
+
+pub struct GroundRule:
+    pub var name: usize
+    pub var kind: RuleKind
+    pub var head: usize
+    pub var body: List[usize]
+
+    pub mutating func close():
+        self.body.close()
+
+struct RawRule:
+    var name: Buffer
+    var kind: RuleKind
+    var fact: bool
+    var head: AtomData
+    var body: List[AtomData]
+
+    mutating func close():
+        self.name.close()
+        self.head.close()
+        for i in 0..<self.body.count:
+            self.body.items[i].close()
+        self.body.close()
+
+pub struct Theory:
+    pub var literals: List[Literal]
+    pub var rules: List[GroundRule]
+    pub var order: List[usize]
+    pub var names: Index
+    var keys: Index
+    var superiority: Index
+
+    pub func find(key: str) -> usize?:
+        let bucket = self.keys.find(key) else return none
+        return self.keys.buckets.items[bucket].rows.items[0]
+
+    pub func superior(a: usize, b: usize) -> bool:
+        let bucket = self.superiority.find(self.names.buckets.items[a].key.view()) else return false
+        for name in self.superiority.buckets.items[bucket].rows.span():
+            if name == b:
+                return true
+        return false
+
+    mutating func note_one(atom: const AtomData*, fact: bool) -> usize!:
+        var key = try atom.key()
+        defer key.close()
+        if let index = self.find(key.view()):
+            self.literals.items[index].fact = self.literals.items[index].fact or fact
+            return index
+        var literal = Literal(fact = fact)
+        errdefer literal.close()
+        literal.atom = try atom.copy()
+        literal.key = try key.copy()
+        try self.literals.reserve(self.literals.count + 1)
+        let index = self.literals.count
+        discard(try self.keys.add(key.view(), index))
+        try self.literals.push(literal)
+        return index
+
+    mutating func note(atom: const AtomData*, fact: bool = false) -> usize!:
+        let index = try self.note_one(atom, fact)
+        var opposite = try atom.copy()
+        defer opposite.close()
+        opposite.negative = not opposite.negative
+        let complement = try self.note_one(&opposite, false)
+        self.literals.items[index].complement = complement
+        self.literals.items[complement].complement = index
+        return index
+
+    mutating func ground(rule: const RawRule*, constants: const str[], variables: const Index*, assignment: const usize[]) -> !:
+        var ground = GroundRule(kind = rule.kind)
+        errdefer ground.close()
+        ground.name = try intern(&self.names, rule.name.view())
+        var head = try substitute(&rule.head, constants, variables, assignment)
+        defer head.close()
+        ground.head = try self.note(&head)
+        try ground.body.reserve(rule.body.count)
+        for atom in rule.body.span():
+            var body = try substitute(&atom, constants, variables, assignment)
+            defer body.close()
+            try ground.body.push(try self.note(&body))
+        try self.rules.reserve(self.rules.count + 1)
+        let literal = &self.literals.items[ground.head]
+        try literal.rules.reserve(literal.rules.count + 1)
+        if rule.kind != RuleKind.defeater:
+            try literal.supporters.reserve(literal.supporters.count + 1)
+            try literal.supporters.push(self.rules.count)
+        try literal.rules.push(self.rules.count)
+        try self.rules.push(ground)
+
+    pub mutating func close():
+        for i in 0..<self.literals.count:
+            self.literals.items[i].close()
+        self.literals.close()
+        for i in 0..<self.rules.count:
+            self.rules.items[i].close()
+        self.rules.close()
+        self.order.close()
+        self.names.close()
+        self.keys.close()
+        self.superiority.close()
+
+func intern(index: Index*, name: str) -> usize!:
+    if let existing = index.find(name):
+        return existing
+    return try index.add(name, 0)
+
+func substitute(atom: const AtomData*, constants: const str[], variables: const Index*, assignment: const usize[]) -> AtomData!:
+    var result = AtomData(negative = atom.negative)
+    errdefer result.close()
+    result.predicate = try atom.predicate.copy()
+    for arg in atom.arguments.span():
+        var name = arg.name.view()
+        if arg.variable:
+            if let index = variables.find(name):
+                name = constants[assignment[index]]
+        try result.append(name, false)
+    return result
+
+func collect(atom: const AtomData*, constants: Index*, variables: Index*, fact: bool) -> !:
+    for arg in atom.arguments.span():
+        if fact or not arg.variable:
+            discard(try intern(constants, arg.name.view()))
+        elif arg.variable:
+            discard(try intern(variables, arg.name.view()))
+
+func close_raw(rules: List[RawRule]*):
+    for i in 0..<rules.count:
+        rules.items[i].close()
+    rules.close()
+
+pub func build(doc: const DocumentData*) -> Theory!:
+    var theory: Theory
+    errdefer theory.close()
+    var raw: List[RawRule]
+    defer close_raw(&raw)
+    var constants: Index
+    defer constants.close()
+    var ignored: Index
+    defer ignored.close()
+    for element in doc.elements.span():
+        let kind = element.kind.view()
+        if kind == "sup":
+            var superior = try read_text(doc, element.path.view(), "superior")
+            defer superior.close()
+            var inferior = try read_text(doc, element.path.view(), "inferior")
+            defer inferior.close()
+            discard(try intern(&theory.names, superior.view()))
+            let name = try intern(&theory.names, inferior.view())
+            discard(try theory.superiority.add(superior.view(), name))
+            continue
+        if kind != "fact" and kind != "strict" and kind != "defeasible" and kind != "defeater":
+            continue
+        var rule = RawRule(fact = kind == "fact", kind = RuleKind.strict if kind == "strict" else (RuleKind.defeater if kind == "defeater" else RuleKind.defeasible))
+        errdefer rule.close()
+        rule.name = try text_copy(path_name(element.path.view()))
+        for i in 0..<doc.child_count(element.path.view()):
+            let child = doc.child_at(element.path.view(), i) else error(invalid, "invalid Prism rule child index")
+            var atom = try read_atom(doc, child)
+            errdefer atom.close()
+            if path_name(child) == "head":
+                rule.head.close()
+                rule.head = atom
+            else:
+                try rule.body.push(atom)
+            atom = AtomData()
+        try collect(&rule.head, &constants, &ignored, rule.fact)
+        if not rule.fact:
+            for atom in rule.body.span():
+                try collect(&atom, &constants, &ignored, false)
+        try raw.push(rule)
+    var constant_names: List[str]
+    defer constant_names.close()
+    for bucket in constants.buckets.span():
+        try constant_names.push(bucket.key.view())
+    sorting.text(constant_names.span())
+    for rule in raw.span():
+        if rule.fact:
+            discard(try theory.note(&rule.head, true))
+            continue
+        var variables: Index
+        defer variables.close()
+        try collect(&rule.head, &constants, &variables, false)
+        for atom in rule.body.span():
+            try collect(&atom, &constants, &variables, false)
+        var combinations: usize = 1
+        for i in 0..<variables.buckets.count:
+            combinations = combinations *? constant_names.count else error(limit_exceeded, "Prism logic grounding exceeds the rule limit")
+            if combinations > max_items - theory.rules.count:
+                error(limit_exceeded, "Prism logic grounding exceeds the rule limit")
+        var assignment: List[usize]
+        defer assignment.close()
+        for i in 0..<variables.buckets.count:
+            try assignment.push(0)
+        for ordinal in 0..<combinations:
+            var remaining = ordinal
+            var position = assignment.count
+            while position > 0:
+                position -= 1
+                assignment.items[position] = remaining % constant_names.count
+                remaining = remaining // constant_names.count
+            try theory.ground(&rule, constant_names.span(), &variables, assignment.span())
+    var keys: List[str]
+    defer keys.close()
+    for literal in theory.literals.span():
+        try keys.push(literal.key.view())
+    sorting.text(keys.span())
+    for key in keys.span():
+        try theory.order.push(theory.find(key) else error(invalid, "invalid grounded Prism literal index"))
+    return theory

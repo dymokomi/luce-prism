@@ -1,0 +1,145 @@
+from prism import Document, Value, Codec, Encoding, Bundle, NodeRegistry, Evaluator, BakeContext, ReferenceLibrary, LayerStack
+from prism import decode, encode, compute, merge, set_document_lens, document_lens
+from prism import Query, Predicate, Comparison, Aggregate, FieldIndex, Schema, DType, ColumnTable, RowMask, Row, JoinType, join_on
+from prism import SpatialIndex, Vec3, TextIndex, VectorIndex, Metric
+from prism import Vec2, Affine2, world_matrix, Scene
+from prism import renames, Atom, Atoms, Logic, RuleKind, ProofTag, parse_surface, serialize_surface, conclude, why, derive
+
+class EditDuringQuery:
+    var source: Document? = none
+    var retained: Row? = none
+
+    pub func accept(self, row: Row) -> bool!:
+        self.retained = row
+        let source = self.source else trap("missing source document")
+        source.remove(row.path())
+        return true
+
+class Sum:
+    var calls: int = 0
+    var saved: BakeContext? = none
+
+    pub func bake(self, context: BakeContext) -> unit!:
+        self.calls += 1
+        self.saved = context
+        context.set_output("out", Value.number(context.input("a").number_at() + context.input("b").number_at()))
+
+pub func main(arguments: list[str]) -> int!:
+    let notes = decode(b"# Notes\n\nText with **emphasis**.\n", Codec.markdown)
+    let html = encode(notes, Codec.html)
+    assert(notes.equals(decode(html.bytes(), Codec.html)))
+    set_document_lens(notes, Codec.markdown)
+    assert(document_lens(Document.decode(notes.encode(Encoding.binary).bytes())) == Codec.markdown)
+    let media = Bundle()
+    let folder = media.add_folder("/bundle", "images")
+    let file = media.add_file(folder, "pixel.bin", b"\x00\xff\x80\x01")
+    assert(media.materialize(file).bytes() == b"\x00\xff\x80\x01")
+    assert(Bundle.from_document(Document.decode(media.document().encode(Encoding.text).bytes())).materialize(file).bytes() == b"\x00\xff\x80\x01")
+
+    let source = decode(b"{\"x\":3}", Codec.json)
+    let library = ReferenceLibrary()
+    library.add("source.prism", source)
+    let root = Document.parse("#prisma 4.0\ndef object \"use\" { reference \"source.prism\" }")
+    library.add("root.prisma", root)
+    assert(library.compose("root.prisma").get("/use", "x").number_at() == 3.0)
+    assert(root.has_metadata("/use", "reference"))
+
+    let base = Document.parse("#prisma 4.0\ndef node \"a\" { float x = 1 float y = 2 }")
+    let a = Document.parse("#prisma 4.0\nover node \"a\" { float x = 3 }")
+    let b = Document.parse("#prisma 4.0\nover node \"a\" { float y = 4 }")
+    let result = merge(base, a, b)
+    assert(result.ok())
+    let combined = result.document()
+    assert(base.overlay(base.diff(combined)).equals(combined))
+    let stack = LayerStack(base)
+    stack.push(a)
+    stack.push(b)
+    stack.compact(1)
+    assert(stack.resolve().equals(combined))
+
+    let registry = NodeRegistry()
+    let sum = Sum()
+    registry.add("sum", sum.bake)
+    registry.declare_input("sum", "b", Value.number(10.0))
+    let graph = Document.parse("#prisma 4.0\ndef sum \"sum\" { float a = 2 }")
+    let evaluator = Evaluator(graph, registry)
+    assert(evaluator.output("/sum.out").number_at() == 12.0)
+    assert(evaluator.output("/sum.out").number_at() == 12.0)
+    assert(sum.calls == 1)
+    let captured = sum.saved else trap("missing bake context")
+    var expired = false
+    let attempt: Value? = captured.input("a") catch failure:
+        expired = true
+        recover none
+    assert(expired)
+    let math = Document.parse("#prisma 4.0\ndef mul \"m\" { float a = 6 float b = 7 }")
+    assert(compute(math).get("/m", "out").number_at() == 42.0)
+    let data = Document.parse("#prisma 4.0\ndef table \"t\" { def row \"a\" { int64 id = 9007199254740992 str kind = \"x\" int n = 3 } def row \"b\" { int64 id = 9007199254740993 str kind = \"x\" int n = 1 } }")
+    let query = Query(data, "/t/*")
+    assert(query.order_by("n").first() == "/t/b")
+    assert(query.filter(Predicate.field("id", Comparison.equal, Value.integer(9007199254740993))).one() == "/t/b")
+    assert(query.aggregate("n", Aggregate.sum) == 4.0)
+    assert(query.group_by("kind").row_count(0) == 2)
+    assert(query.aggregate_by(["kind"], "n", Aggregate.sum).get("x") == 4.0)
+    let index = FieldIndex(data, "id")
+    assert(index.equals(Value.integer(9007199254740993)).path_at(0) == "/t/b")
+    assert(join_on(query, "id", query, "id", JoinType.inner).count() == 2)
+    let schema = Schema()
+    schema.add_field("row", "id", DType.int64, true, true)
+    assert(schema.validate(data).count() == 0)
+    let table = Document.parse("#prisma 4.0\ndef table \"t\" { float[3] amount = [10,20,30] }")
+    let columns = ColumnTable(table, "/t")
+    assert(columns.aggregate("amount", Aggregate.sum, columns.filter("amount", Comparison.greater, 15.0)) == 50.0)
+    assert(columns.aggregate("amount", Aggregate.average, RowMask([0,999])) == 10.0)
+    let editor = EditDuringQuery()
+    editor.source = table
+    let unsafe_query = Query(table).filter(Predicate.custom(editor.accept))
+    var rejected = false
+    let count = unsafe_query.count() catch failure:
+        rejected = true
+        recover 0
+    assert(rejected and table.element_count() == 0)
+    let retained = editor.retained else trap("missing retained query row")
+    assert(retained.path() == "/t" and retained.get("amount").count() == 3)
+    let cloud = Document.parse("#prisma 4.0\ndef point \"p\" { float3 loc = (1,0,0) str body = \"hello world\" }")
+    assert(SpatialIndex(cloud, "loc", 1.0).nearest(Vec3(1.0, 0.0, 0.0)).path_at(0) == "/p")
+    assert(TextIndex(cloud, "body").search_all("HELLO world").path_at(0) == "/p")
+    assert(VectorIndex(cloud, "loc", Metric.cosine).nearest([1.0, 0.0, 0.0], 1).path_at(0) == "/p")
+    let point = Affine2(tx = 3.0, ty = 4.0).apply(Vec2(1.0, 2.0))
+    assert(point.x == 4.0 and point.y == 6.0)
+    assert(world_matrix(cloud, "/p").a == 1.0)
+    assert(Scene(cloud, registry).world_at(0).a == 1.0)
+    let authoring = Document.parse("#prisma 4.0\ndef group \"g\" { def object \"o\" {} }")
+    let id = authoring.element_id("/g/o") else trap("missing node ID")
+    let before = authoring.copy()
+    assert(authoring.move("/g/o", "/g/moved") == "/g/moved")
+    assert(authoring.path_for_id(id) == "/g/moved")
+    assert(renames(before, authoring).origin_at(0) == "/g/o")
+    assert(authoring.children("/g").at(0) == "/g/moved")
+    assert(authoring.add_child("/g", "paragraph") == "/g/[1]")
+    let fragment = authoring.extract("/g")
+    assert(authoring.instantiate(fragment).at(0) == "/g_1")
+    let theory = parse_surface("logic \"f\" { bird(tweety) } logic \"r\" { bird(X) => flies(X) }")
+    let question = Atom("flies")
+    question.constant("tweety")
+    let solved = Logic(theory)
+    assert(solved.conclude(question) == ProofTag.defeasible_proof)
+    assert(why(theory, question).fired_at(0) == "r")
+    assert(derive(theory).child_count("/derived") == 1)
+    let restored = parse_surface(serialize_surface(theory).text())
+    assert(conclude(restored, question) == ProofTag.defeasible_proof)
+    let head = Atom("wings")
+    head.variable("X")
+    let condition = Atom("bird")
+    condition.variable("X")
+    let body = Atoms()
+    body.append(condition)
+    theory.add_rule("w", RuleKind.strict, head, body)
+    let fact = Atom("bird")
+    fact.constant("robin")
+    theory.add_fact("f2", fact)
+    theory.add_superiority("priority", "w", "r")
+    theory.compile_math("n", "1 + 2 * 3")
+    assert(compute(theory).get("/n", "out").number_at() == 7.0)
+    print("PASS high-level codecs, composition, custom nodes, query callbacks, joins, schemas and columns")
+    return 0

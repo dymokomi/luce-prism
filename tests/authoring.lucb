@@ -1,0 +1,9 @@
+import compatibility.ergonomics as ergonomics
+import compatibility.authoring as authoring
+import compatibility.prefab as prefab
+
+pub func main(arguments: str[]) -> i32!:
+    try authoring.run()
+    try prefab.run()
+    try ergonomics.run()
+    return 0

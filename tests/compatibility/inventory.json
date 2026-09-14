@@ -1,0 +1,2781 @@
+{
+  "reference_commit": "ce92a4b37887d4ebb14194ca2ba4084af657c34a",
+  "suites": [
+    {
+      "source": "tests/anonymous_test.cpp",
+      "cases": [
+        {
+          "name": "anonymous_segment_recognition",
+          "luce_test": [
+            "tests/compatibility/authoring.lucb::anonymous_segment_recognition"
+          ]
+        },
+        {
+          "name": "anonymous_paths_parse_and_roundtrip",
+          "luce_test": [
+            "tests/compatibility/authoring.lucb::anonymous_paths_parse_and_roundtrip"
+          ]
+        },
+        {
+          "name": "append_child_indexes_positionally",
+          "luce_test": [
+            "tests/compatibility/authoring.lucb::append_child_indexes_positionally"
+          ]
+        },
+        {
+          "name": "anonymous_prims_serialize_without_names",
+          "luce_test": [
+            "tests/compatibility/authoring.lucb::anonymous_prims_serialize_without_names"
+          ]
+        },
+        {
+          "name": "anonymous_index_is_positional_after_removal",
+          "luce_test": [
+            "tests/compatibility/authoring.lucb::anonymous_index_is_positional_after_removal"
+          ]
+        },
+        {
+          "name": "named_and_anonymous_children_mix",
+          "luce_test": [
+            "tests/compatibility/authoring.lucb::named_and_anonymous_children_mix"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/appsettings_test.cpp",
+      "cases": [
+        {
+          "name": "appsettings_defaults_when_file_missing",
+          "luce_test": [
+            "tests/compatibility/settings.lucb::appsettings_defaults_when_file_missing"
+          ]
+        },
+        {
+          "name": "appsettings_round_trips_typed_values",
+          "luce_test": [
+            "tests/compatibility/settings.lucb::appsettings_round_trips_typed_values"
+          ]
+        },
+        {
+          "name": "appsettings_set_overwrites_and_remove_deletes",
+          "luce_test": [
+            "tests/compatibility/settings.lucb::appsettings_set_overwrites_and_remove_deletes"
+          ]
+        },
+        {
+          "name": "appsettings_string_list_round_trips",
+          "luce_test": [
+            "tests/compatibility/settings.lucb::appsettings_string_list_round_trips"
+          ]
+        },
+        {
+          "name": "appsettings_recent_files_promote_cap_and_drop_missing",
+          "luce_test": [
+            "tests/compatibility/settings.lucb::appsettings_recent_files_promote_cap_and_drop_missing"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/asset_reparent_test.cpp",
+      "cases": [
+        {
+          "name": "rename_with_assetstore_reparent_keeps_blob_addressable",
+          "luce_test": [
+            "tests/compatibility/package.lucb::rename_with_assetstore_reparent_keeps_blob_addressable"
+          ]
+        },
+        {
+          "name": "remove_subtree_drops_assets_in_lockstep",
+          "luce_test": [
+            "tests/compatibility/package.lucb::remove_subtree_drops_assets_in_lockstep"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/bezier_test.cpp",
+      "cases": [
+        {
+          "name": "bezier_with_symmetric_flat_handles_makes_an_s_curve",
+          "luce_test": [
+            "tests/compatibility/animation.lucb::bezier_with_symmetric_flat_handles_makes_an_s_curve"
+          ]
+        },
+        {
+          "name": "bezier_with_asymmetric_handles_shifts_midpoint",
+          "luce_test": [
+            "tests/compatibility/animation.lucb::bezier_with_asymmetric_handles_shifts_midpoint"
+          ]
+        },
+        {
+          "name": "bezier_is_monotonic_in_time_with_clamped_handles",
+          "luce_test": [
+            "tests/compatibility/animation.lucb::bezier_is_monotonic_in_time_with_clamped_handles"
+          ]
+        },
+        {
+          "name": "bezier_segment_in_a_longer_animation_continues_smoothly",
+          "luce_test": [
+            "tests/compatibility/animation.lucb::bezier_segment_in_a_longer_animation_continues_smoothly"
+          ]
+        },
+        {
+          "name": "bezier_resolves_per_component_for_vector_types",
+          "luce_test": [
+            "tests/compatibility/animation.lucb::bezier_resolves_per_component_for_vector_types"
+          ]
+        },
+        {
+          "name": "bezier_int_property_rounds",
+          "luce_test": [
+            "tests/compatibility/animation.lucb::bezier_int_property_rounds"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/bundle_test.cpp",
+      "cases": [
+        {
+          "name": "bundle_builds_a_typed_filesystem_tree",
+          "luce_test": [
+            "tests/compatibility/bundle.lucb::bundle_builds_a_typed_filesystem_tree"
+          ]
+        },
+        {
+          "name": "bundle_blob_is_byte_exact_through_binary",
+          "luce_test": [
+            "tests/compatibility/bundle.lucb::bundle_blob_is_byte_exact_through_binary"
+          ]
+        },
+        {
+          "name": "bundle_document_renders_as_html_then_markdown",
+          "luce_test": [
+            "tests/compatibility/bundle.lucb::bundle_document_renders_as_html_then_markdown"
+          ]
+        },
+        {
+          "name": "bundle_svg_file_is_structural",
+          "luce_test": [
+            "tests/compatibility/bundle.lucb::bundle_svg_file_is_structural"
+          ]
+        },
+        {
+          "name": "bundle_whole_tree_round_trips_through_kinogaki",
+          "luce_test": [
+            "tests/compatibility/bundle.lucb::bundle_whole_tree_round_trips_through_kinogaki"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/c_api_coverage_test.cpp",
+      "cases": [
+        {
+          "name": "c_api_connect_enumerate_and_rename_follows",
+          "luce_test": null,
+          "scope": "C ABI entry points; equivalent format operations are covered by the native suites."
+        },
+        {
+          "name": "c_api_evaluate_resolves_through_connection",
+          "luce_test": null,
+          "scope": "C ABI entry points; equivalent format operations are covered by the native suites."
+        },
+        {
+          "name": "c_api_geometry_array_count_query_then_fill",
+          "luce_test": null,
+          "scope": "C ABI entry points; equivalent format operations are covered by the native suites."
+        },
+        {
+          "name": "c_api_string_metadata_vs_string_property",
+          "luce_test": null,
+          "scope": "C ABI entry points; equivalent format operations are covered by the native suites."
+        },
+        {
+          "name": "c_api_anonymous_children",
+          "luce_test": null,
+          "scope": "C ABI entry points; equivalent format operations are covered by the native suites."
+        },
+        {
+          "name": "c_api_path_matches",
+          "luce_test": null,
+          "scope": "C ABI entry points; equivalent format operations are covered by the native suites."
+        },
+        {
+          "name": "c_api_visibility_inherits",
+          "luce_test": null,
+          "scope": "C ABI entry points; equivalent format operations are covered by the native suites."
+        }
+      ]
+    },
+    {
+      "source": "tests/c_api_test.cpp",
+      "cases": [
+        {
+          "name": "c_api_stage_lifecycle_and_load_save_round_trip",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_binary_round_trip_via_detect",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_world_matrix_picks_up_parent_transform",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_animated_property_survives_save_load_and_resolves",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_double_keeps_full_precision_through_save_load",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_string_array_round_trips",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_asset_store_and_package_round_trip",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_topology_enumeration_and_mutation",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_connection_enumeration_and_evaluate",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_vector_and_array_getters",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_float3_sample_animates",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_strings_metadata_and_reference",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_codec_encode_decode_and_file_io",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_compose_file_resolves_references",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_diff_then_overlay_reproduces_target",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_node_registry_and_evaluator_lifecycle",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_bool_and_flat_arrays_round_trip",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_set_reference_stores_reserved_metadata",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_set_get_array_handles_any_dtype_and_shape",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_named_types_via_catalog",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_value_type_introspects_general_dtype_and_shape",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_connect_wildcard_and_incoming",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_connect_disconnect_report_honestly",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_load_diagnosed_reports_location",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_asset_store_erase_reparent_subtree",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_load_garbage_bytes_returns_null",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_truncated_binary_does_not_throw",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_ops_on_empty_and_null_handles_are_neutral",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_odd_paths_and_patterns_do_not_throw",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_predicates_and_query_from_odd_input_are_neutral",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_index_and_column_on_odd_input_are_neutral",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "c_api_eventlog_on_odd_input_is_neutral",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        },
+        {
+          "name": "capi_arrays_coerce_general_dtypes",
+          "luce_test": null,
+          "scope": "C ABI ownership, pointer and buffer contracts; Luce exposes owned interop objects instead."
+        }
+      ]
+    },
+    {
+      "source": "tests/codec_parity_test.cpp",
+      "cases": [
+        {
+          "name": "text_and_binary_round_trip_identically",
+          "luce_test": [
+            "tests/compatibility/state.lucb::text_and_binary_round_trip_identically"
+          ]
+        },
+        {
+          "name": "overlay_tombstones_survive_each_codec_specifically",
+          "luce_test": [
+            "tests/compatibility/state.lucb::overlay_tombstones_survive_each_codec_specifically"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/codec_test.cpp",
+      "cases": [
+        {
+          "name": "codec_seam_round_trips_through_the_interface",
+          "luce_test": [
+            "tests/compatibility/codec_api.lucb::codec_seam_round_trips_through_the_interface"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/codecs_api_test.cpp",
+      "cases": [
+        {
+          "name": "codec_name_and_lookup",
+          "luce_test": [
+            "tests/compatibility/codec_api.lucb::codec_name_and_lookup"
+          ]
+        },
+        {
+          "name": "document_loadString_and_toString",
+          "luce_test": [
+            "tests/compatibility/codec_api.lucb::document_loadString_and_toString"
+          ]
+        },
+        {
+          "name": "decode_auto_sniffs_native",
+          "luce_test": [
+            "tests/compatibility/codec_api.lucb::decode_auto_sniffs_native"
+          ]
+        },
+        {
+          "name": "document_load_save_round_trip_by_extension",
+          "luce_test": [
+            "tests/compatibility/settings.lucb::document_load_save_round_trip_by_extension"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/columnar_test.cpp",
+      "cases": [
+        {
+          "name": "columnar_where_and_aggregate",
+          "luce_test": [
+            "tests/compatibility/columnar.lucb::columnar_where_and_aggregate"
+          ]
+        },
+        {
+          "name": "columnar_avg_ignores_out_of_range_rows",
+          "luce_test": [
+            "tests/compatibility/columnar.lucb::columnar_avg_ignores_out_of_range_rows"
+          ]
+        },
+        {
+          "name": "columnar_filter_one_column_aggregate_another",
+          "luce_test": [
+            "tests/compatibility/columnar.lucb::columnar_filter_one_column_aggregate_another"
+          ]
+        },
+        {
+          "name": "columnar_missing_or_nonnumeric",
+          "luce_test": [
+            "tests/compatibility/columnar.lucb::columnar_missing_or_nonnumeric"
+          ]
+        },
+        {
+          "name": "columnar_int_dtype",
+          "luce_test": [
+            "tests/compatibility/columnar.lucb::columnar_int_dtype"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/compact_test.cpp",
+      "cases": [
+        {
+          "name": "compact_preserves_the_head_for_every_keep",
+          "luce_test": [
+            "tests/compatibility/merge.lucb::compact_preserves_the_head_for_every_keep"
+          ]
+        },
+        {
+          "name": "compact_zero_collapses_to_one_base",
+          "luce_test": [
+            "tests/compatibility/merge.lucb::compact_zero_collapses_to_one_base"
+          ]
+        },
+        {
+          "name": "compact_keep_all_is_a_noop",
+          "luce_test": [
+            "tests/compatibility/merge.lucb::compact_keep_all_is_a_noop"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/compose_test.cpp",
+      "cases": [
+        {
+          "name": "compose_grafts_referenced_subtree",
+          "luce_test": [
+            "tests/compatibility/references.lucb::compose_grafts_referenced_subtree"
+          ]
+        },
+        {
+          "name": "compose_local_opinions_win",
+          "luce_test": [
+            "tests/compatibility/references.lucb::compose_local_opinions_win"
+          ]
+        },
+        {
+          "name": "compose_reference_path_picks_subprim",
+          "luce_test": [
+            "tests/compatibility/references.lucb::compose_reference_path_picks_subprim"
+          ]
+        },
+        {
+          "name": "compose_resolves_nested_references",
+          "luce_test": [
+            "tests/compatibility/references.lucb::compose_resolves_nested_references"
+          ]
+        },
+        {
+          "name": "compose_detects_cycles",
+          "luce_test": [
+            "tests/compatibility/references.lucb::compose_detects_cycles"
+          ]
+        },
+        {
+          "name": "compose_missing_reference_fails",
+          "luce_test": [
+            "tests/compatibility/references.lucb::compose_missing_reference_fails"
+          ]
+        },
+        {
+          "name": "compose_no_references_is_identity",
+          "luce_test": [
+            "tests/compatibility/references.lucb::compose_no_references_is_identity"
+          ]
+        },
+        {
+          "name": "compose_file_resolves_relative_paths",
+          "luce_test": [
+            "tests/compatibility/references.lucb::compose_file_resolves_relative_paths"
+          ]
+        },
+        {
+          "name": "compose_diamond_dag_is_linear_not_exponential",
+          "luce_test": [
+            "tests/compatibility/references.lucb::compose_diamond_dag_is_linear_not_exponential"
+          ]
+        },
+        {
+          "name": "compose_local_subtree_wins_wholesale",
+          "luce_test": [
+            "tests/compatibility/references.lucb::compose_local_subtree_wins_wholesale"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/compress_coverage_test.cpp",
+      "cases": [
+        {
+          "name": "compress_identity_past_window",
+          "luce_test": [
+            "tests/compatibility/compression.lucb::compress_identity_past_window"
+          ]
+        },
+        {
+          "name": "compress_overlapping_back_reference",
+          "luce_test": [
+            "tests/compatibility/compression.lucb::compress_overlapping_back_reference"
+          ]
+        },
+        {
+          "name": "compress_empty_and_tiny",
+          "luce_test": [
+            "tests/compatibility/compression.lucb::compress_empty_and_tiny"
+          ]
+        },
+        {
+          "name": "compress_fails_closed_on_corrupt",
+          "luce_test": [
+            "tests/compatibility/compression.lucb::compress_fails_closed_on_corrupt"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/compress_test.cpp",
+      "cases": [
+        {
+          "name": "compress_round_trips_all_shapes",
+          "luce_test": [
+            "tests/compatibility/compression.lucb::compress_round_trips_all_shapes"
+          ]
+        },
+        {
+          "name": "compress_actually_shrinks_repetitive_data",
+          "luce_test": [
+            "tests/compatibility/compression.lucb::compress_actually_shrinks_repetitive_data"
+          ]
+        },
+        {
+          "name": "decompress_rejects_corrupt_input",
+          "luce_test": [
+            "tests/compatibility/compression.lucb::decompress_rejects_corrupt_input"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/compute_test.cpp",
+      "cases": [
+        {
+          "name": "default_math_registry_is_the_closed_vocabulary",
+          "luce_test": [
+            "tests/compatibility/evaluation.lucb::default_math_registry_is_the_closed_vocabulary"
+          ]
+        },
+        {
+          "name": "compute_materializes_results_into_out",
+          "luce_test": [
+            "tests/compatibility/evaluation.lucb::compute_materializes_results_into_out"
+          ]
+        },
+        {
+          "name": "compute_slot_resolves_one_value",
+          "luce_test": [
+            "tests/compatibility/evaluation.lucb::compute_slot_resolves_one_value"
+          ]
+        },
+        {
+          "name": "layering_an_input_override_cascades_only_downstream",
+          "luce_test": [
+            "tests/compatibility/evaluation.lucb::layering_an_input_override_cascades_only_downstream"
+          ]
+        },
+        {
+          "name": "compute_is_idempotent",
+          "luce_test": [
+            "tests/compatibility/evaluation.lucb::compute_is_idempotent"
+          ]
+        },
+        {
+          "name": "comparison_op_yields_bool",
+          "luce_test": [
+            "tests/compatibility/evaluation.lucb::comparison_op_yields_bool"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/cow_test.cpp",
+      "cases": [
+        {
+          "name": "copy_is_isolated_across_every_mutator",
+          "luce_test": [
+            "tests/compatibility/state.lucb::copy_is_isolated_across_every_mutator"
+          ]
+        },
+        {
+          "name": "mutating_a_copy_leaves_the_original_intact",
+          "luce_test": [
+            "tests/compatibility/state.lucb::mutating_a_copy_leaves_the_original_intact"
+          ]
+        },
+        {
+          "name": "equality_and_ids_hold_across_copy",
+          "luce_test": [
+            "tests/compatibility/state.lucb::equality_and_ids_hold_across_copy"
+          ]
+        },
+        {
+          "name": "snapshot_chain_stays_independent",
+          "luce_test": [
+            "tests/compatibility/state.lucb::snapshot_chain_stays_independent"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/diff_test.cpp",
+      "cases": [
+        {
+          "name": "diff_property_change_is_a_minimal_over",
+          "luce_test": [
+            "tests/compatibility/diff.lucb::diff_property_change_is_a_minimal_over"
+          ]
+        },
+        {
+          "name": "diff_metadata_change_is_an_over",
+          "luce_test": [
+            "tests/compatibility/diff.lucb::diff_metadata_change_is_an_over"
+          ]
+        },
+        {
+          "name": "diff_added_child_is_a_def",
+          "luce_test": [
+            "tests/compatibility/diff.lucb::diff_added_child_is_a_def"
+          ]
+        },
+        {
+          "name": "diff_removed_child_is_a_delete",
+          "luce_test": [
+            "tests/compatibility/diff.lucb::diff_removed_child_is_a_delete"
+          ]
+        },
+        {
+          "name": "diff_property_removal_is_an_over_tombstone_not_a_replace",
+          "luce_test": [
+            "tests/compatibility/diff.lucb::diff_property_removal_is_an_over_tombstone_not_a_replace"
+          ]
+        },
+        {
+          "name": "diff_property_removal_round_trips_through_text",
+          "luce_test": [
+            "tests/compatibility/diff.lucb::diff_property_removal_round_trips_through_text"
+          ]
+        },
+        {
+          "name": "diff_connection_changes_round_trip",
+          "luce_test": [
+            "tests/compatibility/diff.lucb::diff_connection_changes_round_trip"
+          ]
+        },
+        {
+          "name": "diff_no_change_is_empty",
+          "luce_test": [
+            "tests/compatibility/diff.lucb::diff_no_change_is_empty"
+          ]
+        },
+        {
+          "name": "apply_collapses_a_diff_into_a_clean_standalone_base",
+          "luce_test": [
+            "tests/compatibility/diff.lucb::apply_collapses_a_diff_into_a_clean_standalone_base"
+          ]
+        },
+        {
+          "name": "diff_simultaneous_changes_round_trip",
+          "luce_test": [
+            "tests/compatibility/diff.lucb::diff_simultaneous_changes_round_trip"
+          ]
+        },
+        {
+          "name": "diff_named_sibling_reorder_round_trips",
+          "luce_test": [
+            "tests/compatibility/diff.lucb::diff_named_sibling_reorder_round_trips"
+          ]
+        },
+        {
+          "name": "diff_reorder_round_trips_through_text_and_binary",
+          "luce_test": [
+            "tests/compatibility/diff.lucb::diff_reorder_round_trips_through_text_and_binary"
+          ]
+        },
+        {
+          "name": "diff_midsequence_insertion_round_trips",
+          "luce_test": [
+            "tests/compatibility/diff.lucb::diff_midsequence_insertion_round_trips"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/document_test.cpp",
+      "cases": [
+        {
+          "name": "unique_sibling_names",
+          "luce_test": [
+            "tests/compatibility/authoring.lucb::unique_sibling_names"
+          ]
+        },
+        {
+          "name": "children_and_roots",
+          "luce_test": [
+            "tests/compatibility/authoring.lucb::children_and_roots"
+          ]
+        },
+        {
+          "name": "rename_rewrites_subtree_and_connections",
+          "luce_test": [
+            "tests/compatibility/authoring.lucb::rename_rewrites_subtree_and_connections"
+          ]
+        },
+        {
+          "name": "reparent_into_another_group_keeps_wire",
+          "luce_test": [
+            "tests/compatibility/authoring.lucb::reparent_into_another_group_keeps_wire"
+          ]
+        },
+        {
+          "name": "rename_rejects_cycle_and_uniquifies",
+          "luce_test": [
+            "tests/compatibility/authoring.lucb::rename_rejects_cycle_and_uniquifies"
+          ]
+        },
+        {
+          "name": "remove_deletes_subtree_and_touching_connections",
+          "luce_test": [
+            "tests/compatibility/authoring.lucb::remove_deletes_subtree_and_touching_connections"
+          ]
+        },
+        {
+          "name": "connect_replaces_per_input_and_disconnect",
+          "luce_test": [
+            "tests/compatibility/authoring.lucb::connect_replaces_per_input_and_disconnect"
+          ]
+        },
+        {
+          "name": "assembly_is_linear_not_quadratic",
+          "luce_test": [
+            "tests/compatibility/authoring.lucb::assembly_is_linear_not_quadratic"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/ergonomics_test.cpp",
+      "cases": [
+        {
+          "name": "path_string_ctor_parses",
+          "luce_test": [
+            "tests/compatibility/ergonomics.lucb::path_string_ctor_parses"
+          ]
+        },
+        {
+          "name": "path_string_ctor_throws_on_malformed",
+          "luce_test": [
+            "tests/compatibility/ergonomics.lucb::path_string_ctor_throws_on_malformed"
+          ]
+        },
+        {
+          "name": "element_set_sugar_equals_verbose",
+          "luce_test": [
+            "tests/compatibility/ergonomics.lucb::element_set_sugar_equals_verbose"
+          ]
+        },
+        {
+          "name": "element_typed_getters_coerce_and_default",
+          "luce_test": [
+            "tests/compatibility/ergonomics.lucb::element_typed_getters_coerce_and_default"
+          ]
+        },
+        {
+          "name": "lenient_getters_default_on_wrong_type",
+          "luce_test": [
+            "tests/compatibility/ergonomics.lucb::lenient_getters_default_on_wrong_type"
+          ]
+        },
+        {
+          "name": "element_require_getters_value_missing_mismatch",
+          "luce_test": [
+            "tests/compatibility/ergonomics.lucb::element_require_getters_value_missing_mismatch"
+          ]
+        },
+        {
+          "name": "require_float_int_coerce_any_numeric_scalar",
+          "luce_test": [
+            "tests/compatibility/ergonomics.lucb::require_float_int_coerce_any_numeric_scalar"
+          ]
+        },
+        {
+          "name": "handle_require_getters_and_absent_element",
+          "luce_test": [
+            "tests/compatibility/ergonomics.lucb::handle_require_getters_and_absent_element"
+          ]
+        },
+        {
+          "name": "element_animate_sugar",
+          "luce_test": [
+            "tests/compatibility/ergonomics.lucb::element_animate_sugar"
+          ]
+        },
+        {
+          "name": "doc_define_returns_chainable_handle",
+          "luce_test": [
+            "tests/compatibility/ergonomics.lucb::doc_define_returns_chainable_handle"
+          ]
+        },
+        {
+          "name": "handle_survives_stage_reallocation",
+          "luce_test": [
+            "tests/compatibility/ergonomics.lucb::handle_survives_stage_reallocation"
+          ]
+        },
+        {
+          "name": "doc_edit_handle_to_existing",
+          "luce_test": [
+            "tests/compatibility/ergonomics.lucb::doc_edit_handle_to_existing"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/evalcache_test.cpp",
+      "cases": [
+        {
+          "name": "evalcache_hit_and_miss",
+          "luce_test": [
+            "tests/compatibility/cache.lucb::evalcache_hit_and_miss"
+          ]
+        },
+        {
+          "name": "evalcache_fresh_is_not_a_phantom_hit",
+          "luce_test": [
+            "tests/compatibility/cache.lucb::evalcache_fresh_is_not_a_phantom_hit"
+          ]
+        },
+        {
+          "name": "evalcache_throwing_producer_leaves_prior_entry_intact",
+          "luce_test": [
+            "tests/compatibility/cache.lucb::evalcache_throwing_producer_leaves_prior_entry_intact"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/evaluate_test.cpp",
+      "cases": [
+        {
+          "name": "registry_lookup",
+          "luce_test": [
+            "tests/compatibility/evaluation.lucb::registry_lookup"
+          ]
+        },
+        {
+          "name": "dag_evaluates_through_connections",
+          "luce_test": [
+            "tests/compatibility/evaluation.lucb::dag_evaluates_through_connections"
+          ]
+        },
+        {
+          "name": "unconnected_input_uses_property_default",
+          "luce_test": [
+            "tests/compatibility/evaluation.lucb::unconnected_input_uses_property_default"
+          ]
+        },
+        {
+          "name": "value_cache_bakes_each_node_once",
+          "luce_test": [
+            "tests/compatibility/evaluation.lucb::value_cache_bakes_each_node_once"
+          ]
+        },
+        {
+          "name": "cycle_resolves_to_default_without_hanging",
+          "luce_test": [
+            "tests/compatibility/evaluation.lucb::cycle_resolves_to_default_without_hanging"
+          ]
+        },
+        {
+          "name": "animated_param_flows_through_dag_over_time",
+          "luce_test": [
+            "tests/compatibility/evaluation.lucb::animated_param_flows_through_dag_over_time"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/eventlog_test.cpp",
+      "cases": [
+        {
+          "name": "commit_offsets_and_replay",
+          "luce_test": [
+            "tests/compatibility/event_log.lucb::commit_offsets_and_replay"
+          ]
+        },
+        {
+          "name": "since_is_the_catch_up_feed",
+          "luce_test": [
+            "tests/compatibility/event_log.lucb::since_is_the_catch_up_feed"
+          ]
+        },
+        {
+          "name": "compaction_gcs_old_history_keeping_head",
+          "luce_test": [
+            "tests/compatibility/event_log.lucb::compaction_gcs_old_history_keeping_head"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/file_codecs_test.cpp",
+      "cases": [
+        {
+          "name": "text_codec_round_trips_byte_exact",
+          "luce_test": [
+            "tests/compatibility/codecs.lucb::text_codec_round_trips_byte_exact",
+            "tests/compatibility/codecs.json::text_codec_round_trips_byte_exact"
+          ]
+        },
+        {
+          "name": "blob_codec_round_trips_byte_exact",
+          "luce_test": [
+            "tests/compatibility/codecs.lucb::blob_codec_round_trips_byte_exact",
+            "tests/compatibility/codecs.json::blob_codec_round_trips_byte_exact"
+          ]
+        },
+        {
+          "name": "file_codecs_decline_mismatched_stages",
+          "luce_test": [
+            "tests/compatibility/codecs.lucb::file_codecs_decline_mismatched_stages"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/highlight_test.cpp",
+      "cases": [
+        {
+          "name": "highlight_markdown_heading_marks_hashes_and_bolds_text",
+          "luce_test": [
+            "tests/compatibility/highlight.lucb::highlight_markdown_heading_marks_hashes_and_bolds_text"
+          ]
+        },
+        {
+          "name": "highlight_markdown_lists_code_emphasis_fence",
+          "luce_test": [
+            "tests/compatibility/highlight.lucb::highlight_markdown_lists_code_emphasis_fence"
+          ]
+        },
+        {
+          "name": "highlight_prisma_comment_string_number_keywords",
+          "luce_test": [
+            "tests/compatibility/highlight.lucb::highlight_prisma_comment_string_number_keywords"
+          ]
+        },
+        {
+          "name": "highlight_json_keys_strings_numbers_atoms",
+          "luce_test": [
+            "tests/compatibility/highlight.lucb::highlight_json_keys_strings_numbers_atoms"
+          ]
+        },
+        {
+          "name": "highlight_plain_text_has_no_spans",
+          "luce_test": [
+            "tests/compatibility/highlight.lucb::highlight_plain_text_has_no_spans"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/html_codec_test.cpp",
+      "cases": [
+        {
+          "name": "html_decodes_into_the_shared_model",
+          "luce_test": [
+            "tests/compatibility/codecs.json::html_decodes_into_the_shared_model"
+          ]
+        },
+        {
+          "name": "html_round_trip_is_stable",
+          "luce_test": [
+            "tests/compatibility/codecs.json::html_round_trip_is_stable"
+          ]
+        },
+        {
+          "name": "markdown_and_its_html_share_one_model",
+          "luce_test": [
+            "tests/compatibility/codecs.json::markdown_and_its_html_share_one_model"
+          ]
+        },
+        {
+          "name": "html_heading_id_round_trips",
+          "luce_test": [
+            "tests/compatibility/codecs.json::html_heading_id_round_trips"
+          ]
+        },
+        {
+          "name": "html_definition_list_round_trips",
+          "luce_test": [
+            "tests/compatibility/codecs.json::html_definition_list_round_trips"
+          ]
+        },
+        {
+          "name": "html_note_round_trips",
+          "luce_test": [
+            "tests/compatibility/codecs.json::html_note_round_trips"
+          ]
+        },
+        {
+          "name": "html_figure_with_svg_island_round_trips",
+          "luce_test": [
+            "tests/compatibility/codecs.json::html_figure_with_svg_island_round_trips"
+          ]
+        },
+        {
+          "name": "html_malformed_input_is_defined",
+          "luce_test": [
+            "tests/compatibility/codecs.json::html_malformed_input_is_defined"
+          ]
+        },
+        {
+          "name": "html_entity_and_utf8_edge_cases",
+          "luce_test": [
+            "tests/compatibility/codecs.json::html_entity_and_utf8_edge_cases"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/interner_test.cpp",
+      "cases": [
+        {
+          "name": "interner_round_trips_and_dedups",
+          "luce_test": null,
+          "scope": "C++ global string-interner implementation; native documents own their strings."
+        },
+        {
+          "name": "interner_refs_stay_valid_across_growth",
+          "luce_test": null,
+          "scope": "C++ global string-interner implementation; native documents own their strings."
+        },
+        {
+          "name": "global_tokens_table_is_shared",
+          "luce_test": null,
+          "scope": "C++ global string-interner implementation; native documents own their strings."
+        },
+        {
+          "name": "interner_is_thread_safe",
+          "luce_test": null,
+          "scope": "C++ global string-interner implementation; native documents own their strings."
+        }
+      ]
+    },
+    {
+      "source": "tests/io_test.cpp",
+      "cases": [
+        {
+          "name": "durable_write_lands_bytes_and_overwrites",
+          "luce_test": [
+            "tests/compatibility/settings.lucb::durable_write_lands_bytes_and_overwrites"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/json_codec_test.cpp",
+      "cases": [
+        {
+          "name": "json_round_trips_through_the_hierarchy",
+          "luce_test": [
+            "tests/compatibility/codecs.lucb::json_round_trips_through_the_hierarchy",
+            "tests/compatibility/codecs.json::json_round_trips_through_the_hierarchy"
+          ]
+        },
+        {
+          "name": "json_sparse_array_keeps_holes_as_null",
+          "luce_test": [
+            "tests/compatibility/codecs.lucb::json_sparse_array_keeps_holes_as_null"
+          ]
+        },
+        {
+          "name": "json_unicode_escapes_decode_to_utf8",
+          "luce_test": [
+            "tests/compatibility/codecs.lucb::json_unicode_escapes_decode_to_utf8",
+            "tests/compatibility/codecs.json::json_unicode_escapes_decode_to_utf8"
+          ]
+        },
+        {
+          "name": "decode_builds_a_navigable_hierarchy",
+          "luce_test": [
+            "tests/compatibility/codecs.lucb::decode_builds_a_navigable_hierarchy",
+            "tests/compatibility/codecs.json::decode_builds_a_navigable_hierarchy"
+          ]
+        },
+        {
+          "name": "json_codec_via_the_seam_and_rejects_garbage",
+          "luce_test": [
+            "tests/compatibility/codecs.lucb::json_codec_via_the_seam_and_rejects_garbage",
+            "tests/compatibility/codecs.json::json_codec_via_the_seam_and_rejects_garbage"
+          ]
+        },
+        {
+          "name": "unsafe_child_keys_fail_closed_not_corrupt",
+          "luce_test": [
+            "tests/compatibility/codecs.lucb::unsafe_child_keys_fail_closed_not_corrupt",
+            "tests/compatibility/codecs.json::unsafe_child_keys_fail_closed_not_corrupt"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/logic_test.cpp",
+      "cases": [
+        {
+          "name": "structured_rule_round_trips_to_the_canonical_form",
+          "luce_test": [
+            "tests/compatibility/logic.lucb::structured_rule_round_trips_to_the_canonical_form"
+          ]
+        },
+        {
+          "name": "base_policy_blocks_employee_on_confidential_doc",
+          "luce_test": [
+            "tests/compatibility/logic.lucb::base_policy_blocks_employee_on_confidential_doc"
+          ]
+        },
+        {
+          "name": "a_clearance_layer_defeats_the_confidentiality_block",
+          "luce_test": [
+            "tests/compatibility/logic.lucb::a_clearance_layer_defeats_the_confidentiality_block"
+          ]
+        },
+        {
+          "name": "retracting_the_clearance_rule_reverts_the_conclusion",
+          "luce_test": [
+            "tests/compatibility/logic.lucb::retracting_the_clearance_rule_reverts_the_conclusion"
+          ]
+        },
+        {
+          "name": "strict_rule_yields_a_definite_conclusion",
+          "luce_test": [
+            "tests/compatibility/logic.lucb::strict_rule_yields_a_definite_conclusion"
+          ]
+        },
+        {
+          "name": "derive_materializes_provable_conclusions",
+          "luce_test": [
+            "tests/compatibility/logic.lucb::derive_materializes_provable_conclusions"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/markdown_codec_test.cpp",
+      "cases": [
+        {
+          "name": "markdown_decodes_into_the_shared_model",
+          "luce_test": [
+            "tests/compatibility/codecs.json::markdown_decodes_into_the_shared_model"
+          ]
+        },
+        {
+          "name": "markdown_handles_code_blocks_and_blockquotes",
+          "luce_test": [
+            "tests/compatibility/codecs.json::markdown_handles_code_blocks_and_blockquotes"
+          ]
+        },
+        {
+          "name": "markdown_code_block_with_backticks_round_trips",
+          "luce_test": [
+            "tests/compatibility/codecs.json::markdown_code_block_with_backticks_round_trips"
+          ]
+        },
+        {
+          "name": "markdown_nested_lists_parse_and_round_trip",
+          "luce_test": [
+            "tests/compatibility/codecs.json::markdown_nested_lists_parse_and_round_trip"
+          ]
+        },
+        {
+          "name": "markdown_malformed_input_is_defined",
+          "luce_test": [
+            "tests/compatibility/codecs.json::markdown_malformed_input_is_defined"
+          ]
+        },
+        {
+          "name": "markdown_degrades_doc_v1_constructs_as_documented",
+          "luce_test": [
+            "tests/compatibility/codecs.json::markdown_degrades_doc_v1_constructs_as_documented"
+          ]
+        },
+        {
+          "name": "markdown_round_trip_is_stable",
+          "luce_test": [
+            "tests/compatibility/codecs.json::markdown_round_trip_is_stable"
+          ]
+        },
+        {
+          "name": "markdown_encode_escapes_inline_syntax",
+          "luce_test": [
+            "tests/compatibility/codecs.json::markdown_encode_escapes_inline_syntax"
+          ]
+        },
+        {
+          "name": "markdown_encode_escapes_leading_block_markers",
+          "luce_test": [
+            "tests/compatibility/codecs.json::markdown_encode_escapes_leading_block_markers"
+          ]
+        },
+        {
+          "name": "markdown_code_span_with_backtick_round_trips",
+          "luce_test": [
+            "tests/compatibility/codecs.json::markdown_code_span_with_backtick_round_trips"
+          ]
+        },
+        {
+          "name": "markdown_tables_parse_render_and_round_trip",
+          "luce_test": [
+            "tests/compatibility/codecs.json::markdown_tables_parse_render_and_round_trip"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/merge_test.cpp",
+      "cases": [
+        {
+          "name": "disjoint_edits_merge_cleanly",
+          "luce_test": [
+            "tests/compatibility/merge.lucb::disjoint_edits_merge_cleanly"
+          ]
+        },
+        {
+          "name": "same_slot_different_values_conflicts",
+          "luce_test": [
+            "tests/compatibility/merge.lucb::same_slot_different_values_conflicts"
+          ]
+        },
+        {
+          "name": "same_slot_same_value_is_not_a_conflict",
+          "luce_test": [
+            "tests/compatibility/merge.lucb::same_slot_same_value_is_not_a_conflict"
+          ]
+        },
+        {
+          "name": "delete_vs_edit_conflicts",
+          "luce_test": [
+            "tests/compatibility/merge.lucb::delete_vs_edit_conflicts"
+          ]
+        },
+        {
+          "name": "conflicts_are_order_independent",
+          "luce_test": [
+            "tests/compatibility/merge.lucb::conflicts_are_order_independent"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/migration_test.cpp",
+      "cases": [
+        {
+          "name": "old_text_version_loads_and_upgrades_on_resave",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::old_text_version_loads_and_upgrades_on_resave"
+          ]
+        },
+        {
+          "name": "future_text_version_is_rejected_cleanly",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::future_text_version_is_rejected_cleanly"
+          ]
+        },
+        {
+          "name": "binary_round_trips_at_current_version",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::binary_round_trips_at_current_version"
+          ]
+        },
+        {
+          "name": "tampered_or_truncated_binary_is_rejected_cleanly",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::tampered_or_truncated_binary_is_rejected_cleanly"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/nodeid_test.cpp",
+      "cases": [
+        {
+          "name": "nodeid_unique_and_nonzero",
+          "luce_test": [
+            "tests/compatibility/authoring.lucb::nodeid_unique_and_nonzero"
+          ]
+        },
+        {
+          "name": "nodeid_survives_rename",
+          "luce_test": [
+            "tests/compatibility/authoring.lucb::nodeid_survives_rename"
+          ]
+        },
+        {
+          "name": "nodeid_dropped_on_remove",
+          "luce_test": [
+            "tests/compatibility/authoring.lucb::nodeid_dropped_on_remove"
+          ]
+        },
+        {
+          "name": "nodeid_preserved_through_copy_but_not_compared",
+          "luce_test": [
+            "tests/compatibility/authoring.lucb::nodeid_preserved_through_copy_but_not_compared"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/null_semantics_test.cpp",
+      "cases": [
+        {
+          "name": "is_null_and_not_null",
+          "luce_test": [
+            "tests/compatibility/state.lucb::is_null_and_not_null"
+          ]
+        },
+        {
+          "name": "three_valued_comparison",
+          "luce_test": [
+            "tests/compatibility/state.lucb::three_valued_comparison"
+          ]
+        },
+        {
+          "name": "aggregates_skip_null",
+          "luce_test": [
+            "tests/compatibility/state.lucb::aggregates_skip_null"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/overlay_test.cpp",
+      "cases": [
+        {
+          "name": "overlay_overrides_a_property_keeps_the_rest",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::overlay_overrides_a_property_keeps_the_rest"
+          ]
+        },
+        {
+          "name": "overlay_adds_a_new_element",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::overlay_adds_a_new_element"
+          ]
+        },
+        {
+          "name": "overlay_preserves_a_reference_it_does_not_mention",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::overlay_preserves_a_reference_it_does_not_mention"
+          ]
+        },
+        {
+          "name": "overlay_stacks_later_wins",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::overlay_stacks_later_wins"
+          ]
+        },
+        {
+          "name": "overlay_connection_replaces_into_same_target",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::overlay_connection_replaces_into_same_target"
+          ]
+        },
+        {
+          "name": "commit_is_overlay_then_keep_base_shape",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::commit_is_overlay_then_keep_base_shape"
+          ]
+        },
+        {
+          "name": "over_patches_existing_path",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::over_patches_existing_path"
+          ]
+        },
+        {
+          "name": "over_on_missing_path_is_skipped_not_orphaned",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::over_on_missing_path_is_skipped_not_orphaned"
+          ]
+        },
+        {
+          "name": "def_on_missing_path_adds",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::def_on_missing_path_adds"
+          ]
+        },
+        {
+          "name": "delete_removes_element_and_its_connections",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::delete_removes_element_and_its_connections"
+          ]
+        },
+        {
+          "name": "delete_removes_a_whole_subtree",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::delete_removes_a_whole_subtree"
+          ]
+        },
+        {
+          "name": "delete_of_absent_path_is_a_noop",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::delete_of_absent_path_is_a_noop"
+          ]
+        },
+        {
+          "name": "delete_then_readd_in_layers",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::delete_then_readd_in_layers"
+          ]
+        },
+        {
+          "name": "overlay_file_with_over_and_delete_round_trips",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::overlay_file_with_over_and_delete_round_trips"
+          ]
+        },
+        {
+          "name": "normal_document_has_no_override_or_deletions",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::normal_document_has_no_override_or_deletions"
+          ]
+        },
+        {
+          "name": "overlay_disconnect_removes_a_wire_keeps_endpoints",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::overlay_disconnect_removes_a_wire_keeps_endpoints"
+          ]
+        },
+        {
+          "name": "disconnect_tombstone_round_trips",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::disconnect_tombstone_round_trips"
+          ]
+        },
+        {
+          "name": "disconnect_of_an_unconnected_target_is_a_noop",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::disconnect_of_an_unconnected_target_is_a_noop"
+          ]
+        },
+        {
+          "name": "overlay_prunes_a_connection_left_dangling",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::overlay_prunes_a_connection_left_dangling"
+          ]
+        },
+        {
+          "name": "connection_equality_is_order_insensitive",
+          "luce_test": [
+            "tests/compatibility/layers.lucb::connection_equality_is_order_insensitive"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/package_test.cpp",
+      "cases": [
+        {
+          "name": "asset_store_get_set_erase",
+          "luce_test": [
+            "tests/compatibility/package.lucb::asset_store_get_set_erase"
+          ]
+        },
+        {
+          "name": "asset_store_slot_in_key_is_ignored",
+          "luce_test": [
+            "tests/compatibility/package.lucb::asset_store_slot_in_key_is_ignored"
+          ]
+        },
+        {
+          "name": "asset_store_reparent_and_remove_subtree",
+          "luce_test": [
+            "tests/compatibility/package.lucb::asset_store_reparent_and_remove_subtree"
+          ]
+        },
+        {
+          "name": "package_round_trip_recovers_stage_and_assets",
+          "luce_test": [
+            "tests/compatibility/package.lucb::package_round_trip_recovers_stage_and_assets"
+          ]
+        },
+        {
+          "name": "package_round_trip_byte_stable",
+          "luce_test": [
+            "tests/compatibility/package.lucb::package_round_trip_byte_stable"
+          ]
+        },
+        {
+          "name": "package_with_text_scene_chunk_round_trips",
+          "luce_test": [
+            "tests/compatibility/package.lucb::package_with_text_scene_chunk_round_trips"
+          ]
+        },
+        {
+          "name": "deserialize_routes_package_to_scene_only",
+          "luce_test": [
+            "tests/compatibility/package.lucb::deserialize_routes_package_to_scene_only"
+          ]
+        },
+        {
+          "name": "package_rejects_malformed",
+          "luce_test": [
+            "tests/compatibility/package.lucb::package_rejects_malformed"
+          ]
+        },
+        {
+          "name": "detect_recognises_package_magic",
+          "luce_test": [
+            "tests/compatibility/package.lucb::detect_recognises_package_magic"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/path_test.cpp",
+      "cases": [
+        {
+          "name": "parse_element_and_property",
+          "luce_test": [
+            "tests/compatibility/paths.lucb::parse_element_and_property"
+          ]
+        },
+        {
+          "name": "root",
+          "luce_test": [
+            "tests/compatibility/paths.lucb::root"
+          ]
+        },
+        {
+          "name": "malformed_rejected",
+          "luce_test": [
+            "tests/compatibility/paths.lucb::malformed_rejected"
+          ]
+        },
+        {
+          "name": "hierarchy_helpers",
+          "luce_test": [
+            "tests/compatibility/paths.lucb::hierarchy_helpers"
+          ]
+        },
+        {
+          "name": "ancestry_reflexive_and_slot_ignoring",
+          "luce_test": [
+            "tests/compatibility/paths.lucb::ancestry_reflexive_and_slot_ignoring"
+          ]
+        },
+        {
+          "name": "reparent_prefix_substitution",
+          "luce_test": [
+            "tests/compatibility/paths.lucb::reparent_prefix_substitution"
+          ]
+        },
+        {
+          "name": "round_trip_string",
+          "luce_test": [
+            "tests/compatibility/paths.lucb::round_trip_string"
+          ]
+        },
+        {
+          "name": "equality_and_hash",
+          "luce_test": [
+            "tests/compatibility/paths.lucb::equality_and_hash"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/pattern_reference_test.cpp",
+      "cases": [
+        {
+          "name": "pattern_single_level_wildcard",
+          "luce_test": [
+            "tests/compatibility/paths.lucb::pattern_single_level_wildcard"
+          ]
+        },
+        {
+          "name": "pattern_name_glob_within_segment",
+          "luce_test": [
+            "tests/compatibility/paths.lucb::pattern_name_glob_within_segment"
+          ]
+        },
+        {
+          "name": "pattern_recursive_descent",
+          "luce_test": [
+            "tests/compatibility/paths.lucb::pattern_recursive_descent"
+          ]
+        },
+        {
+          "name": "pattern_parse_rejects_bad_input",
+          "luce_test": [
+            "tests/compatibility/paths.lucb::pattern_parse_rejects_bad_input"
+          ]
+        },
+        {
+          "name": "document_find_by_pattern",
+          "luce_test": [
+            "tests/compatibility/paths.lucb::document_find_by_pattern"
+          ]
+        },
+        {
+          "name": "reference_wildcard_grafts_matches_as_children",
+          "luce_test": [
+            "tests/compatibility/references.lucb::reference_wildcard_grafts_matches_as_children"
+          ]
+        },
+        {
+          "name": "reference_wildcard_brings_subtrees_and_scaffolding",
+          "luce_test": [
+            "tests/compatibility/references.lucb::reference_wildcard_brings_subtrees_and_scaffolding"
+          ]
+        },
+        {
+          "name": "reference_wildcard_carries_internal_connections",
+          "luce_test": [
+            "tests/compatibility/references.lucb::reference_wildcard_carries_internal_connections"
+          ]
+        },
+        {
+          "name": "reference_wildcard_round_trips_in_text",
+          "luce_test": [
+            "tests/compatibility/state.lucb::reference_wildcard_round_trips_in_text"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/prefab_test.cpp",
+      "cases": [
+        {
+          "name": "extract_rebases_and_keeps_binding",
+          "luce_test": [
+            "tests/compatibility/prefab.lucb::extract_rebases_and_keeps_binding"
+          ]
+        },
+        {
+          "name": "instantiate_stamps_with_remapped_wiring",
+          "luce_test": [
+            "tests/compatibility/prefab.lucb::instantiate_stamps_with_remapped_wiring"
+          ]
+        },
+        {
+          "name": "second_instance_uniquifies_and_binds_its_own_material",
+          "luce_test": [
+            "tests/compatibility/prefab.lucb::second_instance_uniquifies_and_binds_its_own_material"
+          ]
+        },
+        {
+          "name": "extract_then_instantiate_round_trips_subtree",
+          "luce_test": [
+            "tests/compatibility/prefab.lucb::extract_then_instantiate_round_trips_subtree"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/query_agg_test.cpp",
+      "cases": [
+        {
+          "name": "scalar_aggregates",
+          "luce_test": [
+            "tests/compatibility/query_data.lucb::scalar_aggregates"
+          ]
+        },
+        {
+          "name": "aggregate_with_filter",
+          "luce_test": [
+            "tests/compatibility/query_data.lucb::aggregate_with_filter"
+          ]
+        },
+        {
+          "name": "group_by_sum_and_count",
+          "luce_test": [
+            "tests/compatibility/query_data.lucb::group_by_sum_and_count"
+          ]
+        },
+        {
+          "name": "aggregate_of_no_numeric_rows_is_nullopt",
+          "luce_test": [
+            "tests/compatibility/query_data.lucb::aggregate_of_no_numeric_rows_is_nullopt"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/query_breadth_test.cpp",
+      "cases": [
+        {
+          "name": "join_types",
+          "luce_test": [
+            "tests/compatibility/query_data.lucb::join_types"
+          ]
+        },
+        {
+          "name": "statistical_aggregates",
+          "luce_test": [
+            "tests/compatibility/query_data.lucb::statistical_aggregates"
+          ]
+        },
+        {
+          "name": "multi_key_group_by",
+          "luce_test": [
+            "tests/compatibility/query_data.lucb::multi_key_group_by"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/query_index_test.cpp",
+      "cases": [
+        {
+          "name": "index_equals_matches_the_scan",
+          "luce_test": [
+            "tests/compatibility/query_data.lucb::index_equals_matches_the_scan"
+          ]
+        },
+        {
+          "name": "index_matches_numerically_like_the_query",
+          "luce_test": [
+            "tests/compatibility/query_data.lucb::index_matches_numerically_like_the_query"
+          ]
+        },
+        {
+          "name": "index_misses_and_unindexed",
+          "luce_test": [
+            "tests/compatibility/query_data.lucb::index_misses_and_unindexed"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/query_intkey_test.cpp",
+      "cases": [
+        {
+          "name": "eq_distinguishes_large_int_ids",
+          "luce_test": [
+            "tests/compatibility/query_data.lucb::eq_distinguishes_large_int_ids"
+          ]
+        },
+        {
+          "name": "int_three_still_equals_float_three",
+          "luce_test": [
+            "tests/compatibility/query_data.lucb::int_three_still_equals_float_three"
+          ]
+        },
+        {
+          "name": "nunique_counts_large_ints_exactly",
+          "luce_test": [
+            "tests/compatibility/query_data.lucb::nunique_counts_large_ints_exactly"
+          ]
+        },
+        {
+          "name": "field_index_distinguishes_large_ints",
+          "luce_test": [
+            "tests/compatibility/query_data.lucb::field_index_distinguishes_large_ints"
+          ]
+        },
+        {
+          "name": "join_on_large_int_keys_matches_exactly",
+          "luce_test": [
+            "tests/compatibility/query_data.lucb::join_on_large_int_keys_matches_exactly"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/query_join_test.cpp",
+      "cases": [
+        {
+          "name": "equality_hash_join",
+          "luce_test": [
+            "tests/compatibility/query_data.lucb::equality_hash_join"
+          ]
+        },
+        {
+          "name": "connection_join_follows_foreign_key",
+          "luce_test": [
+            "tests/compatibility/query_data.lucb::connection_join_follows_foreign_key"
+          ]
+        },
+        {
+          "name": "join_skips_unmatched_rows",
+          "luce_test": [
+            "tests/compatibility/query_data.lucb::join_skips_unmatched_rows"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/query_test.cpp",
+      "cases": [
+        {
+          "name": "query_by_type_and_filters",
+          "luce_test": [
+            "tests/compatibility/query.lucb::query_by_type_and_filters"
+          ]
+        },
+        {
+          "name": "query_numeric_compare_and_f32_int_trap",
+          "luce_test": [
+            "tests/compatibility/query.lucb::query_numeric_compare_and_f32_int_trap"
+          ]
+        },
+        {
+          "name": "query_null_safety_ne_vs_not_eq",
+          "luce_test": [
+            "tests/compatibility/query.lucb::query_null_safety_ne_vs_not_eq"
+          ]
+        },
+        {
+          "name": "query_order_reverse_limit",
+          "luce_test": [
+            "tests/compatibility/query.lucb::query_order_reverse_limit"
+          ]
+        },
+        {
+          "name": "query_terminals",
+          "luce_test": [
+            "tests/compatibility/query.lucb::query_terminals"
+          ]
+        },
+        {
+          "name": "query_one_throws_on_zero_or_many",
+          "luce_test": [
+            "tests/compatibility/query.lucb::query_one_throws_on_zero_or_many"
+          ]
+        },
+        {
+          "name": "query_group_by",
+          "luce_test": [
+            "tests/compatibility/query.lucb::query_group_by"
+          ]
+        },
+        {
+          "name": "query_structural_predicates",
+          "luce_test": [
+            "tests/compatibility/query.lucb::query_structural_predicates"
+          ]
+        },
+        {
+          "name": "query_le_ge_contains_startswith_and_orderby_type",
+          "luce_test": [
+            "tests/compatibility/query.lucb::query_le_ge_contains_startswith_and_orderby_type"
+          ]
+        },
+        {
+          "name": "query_metadata_predicates_and_element_lambda",
+          "luce_test": [
+            "tests/compatibility/query.lucb::query_metadata_predicates_and_element_lambda"
+          ]
+        },
+        {
+          "name": "query_is_lazy_and_short_circuits",
+          "luce_test": [
+            "tests/compatibility/query.lucb::query_is_lazy_and_short_circuits"
+          ]
+        },
+        {
+          "name": "query_empty_document",
+          "luce_test": [
+            "tests/compatibility/query.lucb::query_empty_document"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/reference_test.cpp",
+      "cases": [
+        {
+          "name": "reference_directive_round_trips",
+          "luce_test": [
+            "tests/compatibility/state.lucb::reference_directive_round_trips"
+          ]
+        },
+        {
+          "name": "reference_with_inner_element_path",
+          "luce_test": [
+            "tests/compatibility/state.lucb::reference_with_inner_element_path"
+          ]
+        },
+        {
+          "name": "reference_authored_programmatically",
+          "luce_test": [
+            "tests/compatibility/state.lucb::reference_authored_programmatically"
+          ]
+        },
+        {
+          "name": "legacy_string_reference_still_parses",
+          "luce_test": [
+            "tests/compatibility/state.lucb::legacy_string_reference_still_parses"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/regression_test.cpp",
+      "cases": [
+        {
+          "name": "deserialize_rejects_malformed",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::deserialize_rejects_malformed"
+          ]
+        },
+        {
+          "name": "int64_property_round_trips_exactly",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::int64_property_round_trips_exactly"
+          ]
+        },
+        {
+          "name": "serialize_nonfinite_clamps_to_zero",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::serialize_nonfinite_clamps_to_zero"
+          ]
+        },
+        {
+          "name": "instantiate_skips_orphan_descendant",
+          "luce_test": [
+            "tests/compatibility/prefab.lucb::instantiate_skips_orphan_descendant"
+          ]
+        },
+        {
+          "name": "instantiate_into_populated_parent_uniquifies",
+          "luce_test": [
+            "tests/compatibility/prefab.lucb::instantiate_into_populated_parent_uniquifies"
+          ]
+        },
+        {
+          "name": "connect_rejects_slotless_endpoints",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::connect_rejects_slotless_endpoints"
+          ]
+        },
+        {
+          "name": "extract_leaf_and_drops_outgoing_wire",
+          "luce_test": [
+            "tests/compatibility/prefab.lucb::extract_leaf_and_drops_outgoing_wire"
+          ]
+        },
+        {
+          "name": "bezier_interp_uses_auto_tangent_when_handles_absent",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::bezier_interp_uses_auto_tangent_when_handles_absent"
+          ]
+        },
+        {
+          "name": "timesamples_rejects_nonfinite_time",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::timesamples_rejects_nonfinite_time"
+          ]
+        },
+        {
+          "name": "affine_inverse_of_singular_is_identity",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::affine_inverse_of_singular_is_identity"
+          ]
+        },
+        {
+          "name": "non_uniform_scale_then_rotation_produces_shear",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::non_uniform_scale_then_rotation_produces_shear"
+          ]
+        },
+        {
+          "name": "evaluator_unknown_type_and_property_fallback",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::evaluator_unknown_type_and_property_fallback"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/rename_detect_test.cpp",
+      "cases": [
+        {
+          "name": "detects_a_single_rename",
+          "luce_test": [
+            "tests/compatibility/prefab.lucb::detects_a_single_rename"
+          ]
+        },
+        {
+          "name": "no_rename_no_moves",
+          "luce_test": [
+            "tests/compatibility/prefab.lucb::no_rename_no_moves"
+          ]
+        },
+        {
+          "name": "move_detected_alongside_edits",
+          "luce_test": [
+            "tests/compatibility/prefab.lucb::move_detected_alongside_edits"
+          ]
+        },
+        {
+          "name": "reparent_under_a_new_parent_is_a_move",
+          "luce_test": [
+            "tests/compatibility/prefab.lucb::reparent_under_a_new_parent_is_a_move"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/review_followups_test.cpp",
+      "cases": [
+        {
+          "name": "text_parser_rejects_unknown_format_version",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::text_parser_rejects_unknown_format_version"
+          ]
+        },
+        {
+          "name": "text_parser_caps_nesting_depth",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::text_parser_caps_nesting_depth"
+          ]
+        },
+        {
+          "name": "binary_parser_rejects_implausible_count_fields",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::binary_parser_rejects_implausible_count_fields"
+          ]
+        },
+        {
+          "name": "package_rejects_overlapping_blob_offsets",
+          "luce_test": [
+            "tests/compatibility/package.lucb::package_rejects_overlapping_blob_offsets"
+          ]
+        },
+        {
+          "name": "every_type_round_trips_through_text",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::every_type_round_trips_through_text"
+          ]
+        },
+        {
+          "name": "every_type_round_trips_through_binary",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::every_type_round_trips_through_binary"
+          ]
+        },
+        {
+          "name": "every_type_round_trips_through_package_binary_scene",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::every_type_round_trips_through_package_binary_scene"
+          ]
+        },
+        {
+          "name": "every_type_round_trips_through_package_text_scene",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::every_type_round_trips_through_package_text_scene"
+          ]
+        },
+        {
+          "name": "bezier_keyframe_metadata_survives_round_trip",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::bezier_keyframe_metadata_survives_round_trip"
+          ]
+        },
+        {
+          "name": "root_only_and_empty_typeless_prims_round_trip",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::root_only_and_empty_typeless_prims_round_trip"
+          ]
+        },
+        {
+          "name": "deeply_nested_hierarchy_round_trips",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::deeply_nested_hierarchy_round_trips"
+          ]
+        },
+        {
+          "name": "connection_fanout_survives_round_trip",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::connection_fanout_survives_round_trip"
+          ]
+        },
+        {
+          "name": "empty_asset_store_round_trips_in_package",
+          "luce_test": [
+            "tests/compatibility/package.lucb::empty_asset_store_round_trips_in_package"
+          ]
+        },
+        {
+          "name": "zero_byte_and_nul_containing_assets_round_trip",
+          "luce_test": [
+            "tests/compatibility/package.lucb::zero_byte_and_nul_containing_assets_round_trip"
+          ]
+        },
+        {
+          "name": "all_three_encodings_describe_the_same_stage",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::all_three_encodings_describe_the_same_stage"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/scene_test.cpp",
+      "cases": [
+        {
+          "name": "evaluate_composes_world_visibility_properties",
+          "luce_test": [
+            "tests/compatibility/transforms.lucb::evaluate_composes_world_visibility_properties"
+          ]
+        },
+        {
+          "name": "evaluate_bakes_node_outputs_and_animation",
+          "luce_test": [
+            "tests/compatibility/transforms.lucb::evaluate_bakes_node_outputs_and_animation"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/schema_test.cpp",
+      "cases": [
+        {
+          "name": "valid_document_has_no_violations",
+          "luce_test": [
+            "tests/compatibility/schema.lucb::valid_document_has_no_violations"
+          ]
+        },
+        {
+          "name": "missing_required_field_violates",
+          "luce_test": [
+            "tests/compatibility/schema.lucb::missing_required_field_violates"
+          ]
+        },
+        {
+          "name": "wrong_dtype_violates",
+          "luce_test": [
+            "tests/compatibility/schema.lucb::wrong_dtype_violates"
+          ]
+        },
+        {
+          "name": "duplicate_unique_violates",
+          "luce_test": [
+            "tests/compatibility/schema.lucb::duplicate_unique_violates"
+          ]
+        },
+        {
+          "name": "large_distinct_ids_are_not_false_duplicates",
+          "luce_test": [
+            "tests/compatibility/schema.lucb::large_distinct_ids_are_not_false_duplicates"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/search_test.cpp",
+      "cases": [
+        {
+          "name": "text_search_term_and_ranking",
+          "luce_test": [
+            "tests/compatibility/indexes.lucb::text_search_term_and_ranking"
+          ]
+        },
+        {
+          "name": "text_search_all_is_AND",
+          "luce_test": [
+            "tests/compatibility/indexes.lucb::text_search_all_is_AND"
+          ]
+        },
+        {
+          "name": "vector_nearest_cosine",
+          "luce_test": [
+            "tests/compatibility/indexes.lucb::vector_nearest_cosine"
+          ]
+        },
+        {
+          "name": "vector_topk_bounds_and_metric",
+          "luce_test": [
+            "tests/compatibility/indexes.lucb::vector_topk_bounds_and_metric"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/serialize_determinism_test.cpp",
+      "cases": [
+        {
+          "name": "binary_is_deterministic_across_connection_order",
+          "luce_test": [
+            "tests/compatibility/state.lucb::binary_is_deterministic_across_connection_order"
+          ]
+        },
+        {
+          "name": "binary_is_deterministic_after_resourcing",
+          "luce_test": [
+            "tests/compatibility/state.lucb::binary_is_deterministic_after_resourcing"
+          ]
+        },
+        {
+          "name": "binary_round_trip_is_idempotent_and_stable",
+          "luce_test": [
+            "tests/compatibility/state.lucb::binary_round_trip_is_idempotent_and_stable"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/serialize_test.cpp",
+      "cases": [
+        {
+          "name": "doc_round_trip_structural",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::doc_round_trip_structural"
+          ]
+        },
+        {
+          "name": "namespaced_property_names_round_trip_text",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::namespaced_property_names_round_trip_text"
+          ]
+        },
+        {
+          "name": "geometry_arrays_round_trip_text_and_binary",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::geometry_arrays_round_trip_text_and_binary"
+          ]
+        },
+        {
+          "name": "string_metadata_round_trips_text_and_binary",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::string_metadata_round_trips_text_and_binary"
+          ]
+        },
+        {
+          "name": "non_identifier_keys_round_trip_text",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::non_identifier_keys_round_trip_text"
+          ]
+        },
+        {
+          "name": "every_dtype_and_shape_round_trips_text_and_binary",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::every_dtype_and_shape_round_trips_text_and_binary"
+          ]
+        },
+        {
+          "name": "named_type_aliases_round_trip",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::named_type_aliases_round_trip"
+          ]
+        },
+        {
+          "name": "connect_directive_relative_and_wildcard",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::connect_directive_relative_and_wildcard"
+          ]
+        },
+        {
+          "name": "doc_round_trip_byte_stable",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::doc_round_trip_byte_stable"
+          ]
+        },
+        {
+          "name": "bezier_keyframe_handles_round_trip",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::bezier_keyframe_handles_round_trip"
+          ]
+        },
+        {
+          "name": "format_is_versioned_and_uuid_free",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::format_is_versioned_and_uuid_free"
+          ]
+        },
+        {
+          "name": "animated_values_resolve_after_load",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::animated_values_resolve_after_load"
+          ]
+        },
+        {
+          "name": "usda_text_shape_is_clean",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::usda_text_shape_is_clean"
+          ]
+        },
+        {
+          "name": "binary_crate_round_trip_structural",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::binary_crate_round_trip_structural"
+          ]
+        },
+        {
+          "name": "binary_crate_round_trip_byte_stable",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::binary_crate_round_trip_byte_stable"
+          ]
+        },
+        {
+          "name": "text_and_binary_encodings_describe_the_same_stage",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::text_and_binary_encodings_describe_the_same_stage"
+          ]
+        },
+        {
+          "name": "binary_crate_rejects_malformed",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::binary_crate_rejects_malformed"
+          ]
+        },
+        {
+          "name": "detect_sniffs_encoding_from_leading_bytes",
+          "luce_test": [
+            "tests/compatibility/hardening.lucb::detect_sniffs_encoding_from_leading_bytes"
+          ]
+        },
+        {
+          "name": "parses_hand_written_input_with_comments_and_whitespace",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::parses_hand_written_input_with_comments_and_whitespace"
+          ]
+        },
+        {
+          "name": "general_dtypes_round_trip_text_and_binary",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::general_dtypes_round_trip_text_and_binary"
+          ]
+        },
+        {
+          "name": "text_parser_rejects_implausible_array_shapes",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::text_parser_rejects_implausible_array_shapes"
+          ]
+        },
+        {
+          "name": "values_read_is_bounded_by_buffer",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::values_read_is_bounded_by_buffer"
+          ]
+        },
+        {
+          "name": "binary_crate_compression_round_trips",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::binary_crate_compression_round_trips"
+          ]
+        },
+        {
+          "name": "parse_errors_are_located",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::parse_errors_are_located"
+          ]
+        },
+        {
+          "name": "non_identifier_property_names_round_trip_text",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::non_identifier_property_names_round_trip_text"
+          ]
+        },
+        {
+          "name": "non_identifier_type_tokens_round_trip_text",
+          "luce_test": [
+            "tests/compatibility/serialization.lucb::non_identifier_type_tokens_round_trip_text"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/spatial_test.cpp",
+      "cases": [
+        {
+          "name": "within_radius_matches_the_worked_example",
+          "luce_test": [
+            "tests/compatibility/indexes.lucb::within_radius_matches_the_worked_example"
+          ]
+        },
+        {
+          "name": "within_matches_brute_force",
+          "luce_test": [
+            "tests/compatibility/indexes.lucb::within_matches_brute_force"
+          ]
+        },
+        {
+          "name": "k_nearest_is_ordered_and_bounded",
+          "luce_test": [
+            "tests/compatibility/indexes.lucb::k_nearest_is_ordered_and_bounded"
+          ]
+        },
+        {
+          "name": "box_query",
+          "luce_test": [
+            "tests/compatibility/indexes.lucb::box_query"
+          ]
+        },
+        {
+          "name": "empty_and_misses",
+          "luce_test": [
+            "tests/compatibility/indexes.lucb::empty_and_misses"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/surface_test.cpp",
+      "cases": [
+        {
+          "name": "surface_math_compiles_and_computes",
+          "luce_test": [
+            "tests/compatibility/surface.lucb::surface_math_compiles_and_computes"
+          ]
+        },
+        {
+          "name": "surface_math_nested_expression_makes_stable_intermediates",
+          "luce_test": [
+            "tests/compatibility/surface.lucb::surface_math_nested_expression_makes_stable_intermediates"
+          ]
+        },
+        {
+          "name": "surface_math_precedence_and_literals",
+          "luce_test": [
+            "tests/compatibility/surface.lucb::surface_math_precedence_and_literals"
+          ]
+        },
+        {
+          "name": "surface_logic_fact_and_rule_derive",
+          "luce_test": [
+            "tests/compatibility/surface.lucb::surface_logic_fact_and_rule_derive"
+          ]
+        },
+        {
+          "name": "surface_logic_full_access_policy_blocks_alice",
+          "luce_test": [
+            "tests/compatibility/surface.lucb::surface_logic_full_access_policy_blocks_alice"
+          ]
+        },
+        {
+          "name": "surface_negation_in_rule_head",
+          "luce_test": [
+            "tests/compatibility/surface.lucb::surface_negation_in_rule_head"
+          ]
+        },
+        {
+          "name": "surface_layering_overrides_a_data_cell",
+          "luce_test": [
+            "tests/compatibility/surface.lucb::surface_layering_overrides_a_data_cell"
+          ]
+        },
+        {
+          "name": "surface_math_round_trips_text_stable_and_result_equal",
+          "luce_test": [
+            "tests/compatibility/surface.lucb::surface_math_round_trips_text_stable_and_result_equal"
+          ]
+        },
+        {
+          "name": "surface_nested_expression_serializes_with_parens",
+          "luce_test": [
+            "tests/compatibility/surface.lucb::surface_nested_expression_serializes_with_parens"
+          ]
+        },
+        {
+          "name": "surface_logic_round_trips_and_preserves_conclusions",
+          "luce_test": [
+            "tests/compatibility/surface.lucb::surface_logic_round_trips_and_preserves_conclusions"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/svg_codec_test.cpp",
+      "cases": [
+        {
+          "name": "svg_decodes_into_a_structural_element_tree",
+          "luce_test": [
+            "tests/compatibility/codecs.lucb::svg_decodes_into_a_structural_element_tree",
+            "tests/compatibility/codecs.json::svg_decodes_into_a_structural_element_tree"
+          ]
+        },
+        {
+          "name": "svg_text_labels_become_visible_text_prims",
+          "luce_test": [
+            "tests/compatibility/codecs.lucb::svg_text_labels_become_visible_text_prims",
+            "tests/compatibility/codecs.json::svg_text_labels_become_visible_text_prims"
+          ]
+        },
+        {
+          "name": "svg_round_trip_is_stable",
+          "luce_test": [
+            "tests/compatibility/codecs.lucb::svg_round_trip_is_stable",
+            "tests/compatibility/codecs.json::svg_round_trip_is_stable"
+          ]
+        },
+        {
+          "name": "svg_self_closing_and_comments_and_prolog",
+          "luce_test": [
+            "tests/compatibility/codecs.lucb::svg_self_closing_and_comments_and_prolog",
+            "tests/compatibility/codecs.json::svg_self_closing_and_comments_and_prolog"
+          ]
+        },
+        {
+          "name": "svg_encode_declines_a_non_vector_stage",
+          "luce_test": [
+            "tests/compatibility/codecs.lucb::svg_encode_declines_a_non_vector_stage"
+          ]
+        },
+        {
+          "name": "svg_malformed_input_fails_closed",
+          "luce_test": [
+            "tests/compatibility/codecs.lucb::svg_malformed_input_fails_closed",
+            "tests/compatibility/codecs.json::svg_malformed_input_fails_closed"
+          ]
+        },
+        {
+          "name": "svg_entities_round_trip_in_text_and_attrs",
+          "luce_test": [
+            "tests/compatibility/codecs.lucb::svg_entities_round_trip_in_text_and_attrs",
+            "tests/compatibility/codecs.json::svg_entities_round_trip_in_text_and_attrs"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/textprojection_test.cpp",
+      "cases": [
+        {
+          "name": "textprojection_starts_as_empty_prisma",
+          "luce_test": [
+            "tests/compatibility/projection.lucb::textprojection_starts_as_empty_prisma"
+          ]
+        },
+        {
+          "name": "textprojection_source_keeps_markdown_verbatim_and_derives_document",
+          "luce_test": [
+            "tests/compatibility/projection.lucb::textprojection_source_keeps_markdown_verbatim_and_derives_document"
+          ]
+        },
+        {
+          "name": "textprojection_settext_updates_document_when_it_parses",
+          "luce_test": [
+            "tests/compatibility/projection.lucb::textprojection_settext_updates_document_when_it_parses"
+          ]
+        },
+        {
+          "name": "textprojection_parse_error_keeps_last_good_document",
+          "luce_test": [
+            "tests/compatibility/projection.lucb::textprojection_parse_error_keeps_last_good_document"
+          ]
+        },
+        {
+          "name": "textprojection_codec_switch_rerenders_same_document",
+          "luce_test": [
+            "tests/compatibility/projection.lucb::textprojection_codec_switch_rerenders_same_document"
+          ]
+        },
+        {
+          "name": "textprojection_setdocument_with_view_renders_canonical_form",
+          "luce_test": [
+            "tests/compatibility/projection.lucb::textprojection_setdocument_with_view_renders_canonical_form"
+          ]
+        },
+        {
+          "name": "textprojection_declining_codec_leaves_state_unchanged",
+          "luce_test": [
+            "tests/compatibility/projection.lucb::textprojection_declining_codec_leaves_state_unchanged"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/transform_test.cpp",
+      "cases": [
+        {
+          "name": "affine_mul_apply_inverse",
+          "luce_test": [
+            "tests/compatibility/transforms.lucb::affine_mul_apply_inverse"
+          ]
+        },
+        {
+          "name": "lone_element_local_world",
+          "luce_test": [
+            "tests/compatibility/transforms.lucb::lone_element_local_world"
+          ]
+        },
+        {
+          "name": "group_translate_scale_child",
+          "luce_test": [
+            "tests/compatibility/transforms.lucb::group_translate_scale_child"
+          ]
+        },
+        {
+          "name": "group_rotate_child",
+          "luce_test": [
+            "tests/compatibility/transforms.lucb::group_rotate_child"
+          ]
+        },
+        {
+          "name": "nested_groups_compose",
+          "luce_test": [
+            "tests/compatibility/transforms.lucb::nested_groups_compose"
+          ]
+        },
+        {
+          "name": "non_uniform_group_scale",
+          "luce_test": [
+            "tests/compatibility/transforms.lucb::non_uniform_group_scale"
+          ]
+        },
+        {
+          "name": "pivot_rotation",
+          "luce_test": [
+            "tests/compatibility/transforms.lucb::pivot_rotation"
+          ]
+        },
+        {
+          "name": "hidden_propagates",
+          "luce_test": [
+            "tests/compatibility/transforms.lucb::hidden_propagates"
+          ]
+        },
+        {
+          "name": "visible_by_default_and_when_true",
+          "luce_test": [
+            "tests/compatibility/transforms.lucb::visible_by_default_and_when_true"
+          ]
+        },
+        {
+          "name": "animated_transform_resolves_over_time",
+          "luce_test": [
+            "tests/compatibility/transforms.lucb::animated_transform_resolves_over_time"
+          ]
+        },
+        {
+          "name": "connection_drives_a_transform_slot",
+          "luce_test": [
+            "tests/compatibility/transforms.lucb::connection_drives_a_transform_slot"
+          ]
+        },
+        {
+          "name": "connection_drives_visibility",
+          "luce_test": [
+            "tests/compatibility/transforms.lucb::connection_drives_visibility"
+          ]
+        },
+        {
+          "name": "authored_transform_unchanged_when_unconnected",
+          "luce_test": [
+            "tests/compatibility/transforms.lucb::authored_transform_unchanged_when_unconnected"
+          ]
+        }
+      ]
+    },
+    {
+      "source": "tests/value_test.cpp",
+      "cases": [
+        {
+          "name": "value_types",
+          "luce_test": [
+            "tests/compatibility/values.lucb::value_types"
+          ]
+        },
+        {
+          "name": "value_general_dtypes",
+          "luce_test": [
+            "tests/compatibility/values.lucb::value_general_dtypes"
+          ]
+        },
+        {
+          "name": "value_arrays_and_multidim",
+          "luce_test": [
+            "tests/compatibility/values.lucb::value_arrays_and_multidim"
+          ]
+        },
+        {
+          "name": "value_array_lerp",
+          "luce_test": [
+            "tests/compatibility/values.lucb::value_array_lerp"
+          ]
+        },
+        {
+          "name": "value_lerp",
+          "luce_test": [
+            "tests/compatibility/values.lucb::value_lerp"
+          ]
+        },
+        {
+          "name": "timesamples_resolve_linear_and_held",
+          "luce_test": [
+            "tests/compatibility/values.lucb::timesamples_resolve_linear_and_held"
+          ]
+        },
+        {
+          "name": "timesamples_sorted_insert_and_replace",
+          "luce_test": [
+            "tests/compatibility/values.lucb::timesamples_sorted_insert_and_replace"
+          ]
+        },
+        {
+          "name": "property_static_vs_animated",
+          "luce_test": [
+            "tests/compatibility/values.lucb::property_static_vs_animated"
+          ]
+        }
+      ]
+    }
+  ]
+}

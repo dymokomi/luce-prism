@@ -1,0 +1,108 @@
+import prism
+import interop
+import memory
+import math
+
+func near(point: prism.Vec2, x: f64, y: f64):
+    assert(math.abs((f64)point.x - x) < 0.0001)
+    assert(math.abs((f64)point.y - y) < 0.0001)
+
+func affine_mul_apply_inverse():
+    near(prism.Affine2().apply(prism.Vec2(3.0, 4.0)), 3.0, 4.0)
+    let transform = prism.Affine2(tx = 10.0, ty = 20.0)
+    let scaling = prism.Affine2(a = 2.0, d = 2.0)
+    let matrix = transform.mul(scaling)
+    near(matrix.apply(prism.Vec2(1.0, 1.0)), 12.0, 22.0)
+    near(matrix.inverse().mul(matrix).apply(prism.Vec2(5.0, 7.0)), 5.0, 7.0)
+    near(prism.Affine2(a = 0.0).inverse().apply(prism.Vec2(5.0, 7.0)), 5.0, 7.0)
+
+struct Case:
+    var name: str
+    var source: str
+    var path: str
+    var point: prism.Vec2
+    var x: f64
+    var y: f64
+
+func animated_transform_resolves_over_time() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"o\" { float2 position = (0,0) float2 position.timeSamples = { 0: (0,0), 10: (100,0) } }")
+    defer doc.release()
+    for time in [0.0, 5.0, 10.0]:
+        near((try prism.world_matrix(doc, "/o", time)).apply(prism.Vec2()), time * 10.0, 0.0)
+
+func hidden_propagates() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"g\" { bool visible = false def group \"o\" {} }")
+    defer doc.release()
+    assert(not try prism.is_visible(doc, "/g"))
+    assert(not try prism.is_visible(doc, "/g/o"))
+
+func visible_by_default_and_when_true() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"g\" { bool visible = true def group \"o\" {} } def group \"x\" {}")
+    defer doc.release()
+    assert(try prism.is_visible(doc, "/g/o"))
+    assert(try prism.is_visible(doc, "/x"))
+
+func connection_drives_visibility() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"obj\" { connect visible = </hide.out> } def value \"hide\" { bool out = false }")
+    defer doc.release()
+    assert(not try prism.is_visible(doc, "/obj"))
+
+func evaluate_composes_world_visibility_properties() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"g\" { float2 position = (10,0) bool visible = false def object \"o\" { float2 position = (1,0) int label = 7 } }")
+    defer doc.release()
+    let registry = try interop.Reference[prism.NodeRegistry].adopt(try new prism.NodeRegistry() in memory.heap, prism.registry_type, memory.heap)
+    defer registry.release()
+    var scene = try prism.Scene(doc, registry)
+    defer scene.close()
+    assert(scene.count() == 2)
+    assert(try scene.path_at(1) == "/g/o")
+    assert(try scene.type_at(1) == "object")
+    near((try scene.world_at(1)).apply(prism.Vec2()), 11.0, 0.0)
+    assert(not try scene.visible_at(1))
+    let label = try scene.property(1, "label")
+    defer label.release()
+    assert(try label.value().integer_at() == 7)
+    try doc.value().remove("/g")
+    assert(try scene.path_at(1) == "/g/o")
+
+func evaluate_bakes_node_outputs_and_animation() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef object \"src\" { float val = 0 float val.timeSamples = { 0: 0, 10: 10 } } def mul \"gain\" { float b = 3 connect a = </src.val> }")
+    defer doc.release()
+    let registry = try interop.Reference[prism.NodeRegistry].adopt(try new prism.NodeRegistry() in memory.heap, prism.registry_type, memory.heap)
+    defer registry.release()
+    try registry.value().add_math()
+    for time in [5.0, 10.0]:
+        var scene = try prism.Scene(doc, registry, time)
+        defer scene.close()
+        let value = try scene.output(1, "out")
+        defer value.release()
+        assert(try value.value().number_at() == time * 3.0)
+        let authored = try scene.property(0, "val")
+        defer authored.release()
+        assert(try authored.value().number_at() == time)
+        assert(scene.time() == time)
+
+pub func run() -> !:
+    affine_mul_apply_inverse()
+    let origin = prism.Vec2()
+    let cases = [
+        Case("lone_element_local_world", "#prisma 4.0\ndef group \"obj\" { float2 position = (5,5) }", "/obj", origin, 5.0, 5.0),
+        Case("group_translate_scale_child", "#prisma 4.0\ndef group \"g\" { float2 position = (10,0) float2 scale = (2,2) def group \"o\" { float2 position = (1,0) } }", "/g/o", origin, 12.0, 0.0),
+        Case("group_rotate_child", "#prisma 4.0\ndef group \"g\" { float rotation = 1.5707963267948966 def group \"o\" { float2 position = (1,0) } }", "/g/o", origin, 0.0, 1.0),
+        Case("nested_groups_compose", "#prisma 4.0\ndef group \"a\" { float2 position = (10,0) def group \"b\" { float2 position = (0,10) def group \"o\" { float2 position = (1,1) } } }", "/a/b/o", origin, 11.0, 11.0),
+        Case("non_uniform_group_scale", "#prisma 4.0\ndef group \"g\" { float2 scale = (2,3) def group \"o\" { float2 position = (1,1) } }", "/g/o", origin, 2.0, 3.0),
+        Case("pivot_rotation", "#prisma 4.0\ndef group \"o\" { float rotation = 1.5707963267948966 float2 pivot = (1,0) }", "/o", prism.Vec2(2.0, 0.0), 1.0, 1.0),
+        Case("connection_drives_a_transform_slot", "#prisma 4.0\ndef group \"obj\" { connect position = </src.out> } def value \"src\" { float2 out = (7,3) }", "/obj", origin, 7.0, 3.0),
+        Case("authored_transform_unchanged_when_unconnected", "#prisma 4.0\ndef group \"obj\" { float2 position = (5,9) }", "/obj", origin, 5.0, 9.0)
+    ]
+    for item in cases:
+        let doc = try prism.Document.parse(item.source)
+        defer doc.release()
+        near((try prism.world_matrix(doc, item.path)).apply(item.point), item.x, item.y)
+    try animated_transform_resolves_over_time()
+    try hidden_propagates()
+    try visible_by_default_and_when_true()
+    try connection_drives_visibility()
+    try evaluate_composes_world_visibility_properties()
+    try evaluate_bakes_node_outputs_and_animation()
+    print("PASS 13 transform and 2 evaluated-scene cases")

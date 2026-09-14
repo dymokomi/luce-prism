@@ -1,0 +1,48 @@
+## Types.
+import memory
+
+pub let invalid: ErrorCode = ErrorCode.package(180)
+pub let limit_exceeded: ErrorCode = ErrorCode.package(181)
+pub let missing: ErrorCode = ErrorCode.package(182)
+pub let unsupported: ErrorCode = ErrorCode.package(183)
+pub let format_version: u16 = 4
+
+pub enum Encoding as u8:
+    unknown = 0
+    text = 1
+    binary = 2
+    package = 3
+
+pub enum DType as u8:
+    boolean = 0
+    character = 1
+    int8 = 2
+    int16 = 3
+    int32 = 4
+    int64 = 5
+    uint8 = 6
+    uint16 = 7
+    uint32 = 8
+    uint64 = 9
+    float32 = 10
+    float64 = 11
+    string = 12
+    float16 = 13
+
+pub enum Interpolation as u8:
+    held = 0
+    linear = 1
+    bezier = 2
+
+# Each owned allocation uses memory.heap. Base copies borrow; close/release exactly
+# once. Exported objects are shared through standard interop, including from Luce.
+pub let max_bytes: usize = 268435456
+pub let max_items: usize = 1048576
+pub let max_depth: usize = 128
+
+
+pub enum HandleType as u8:
+    auto = 0
+    vector = 1
+    aligned = 2
+    freeform = 3

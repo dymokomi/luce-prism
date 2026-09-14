@@ -1,0 +1,129 @@
+## A solved, owned theory can answer many queries without grounding it again.
+import interop
+import memory
+import luce_prism.logic.theory as grounding
+import luce_prism.logic.solver as solver
+import luce_prism.logic.builders as builders
+import luce_prism.collections.sort as sorting
+from luce_prism.logic.atoms import Atom, ProofTag
+from luce_prism.document import Document, own_document
+from luce_prism.model import DocumentData
+from luce_prism.authoring.paths import Paths, own_paths
+from luce_prism.authoring.names import unique_path
+from luce_prism.collections.index import Index
+from luce_prism.storage import List
+from luce_prism.path import joined
+
+pub struct Justification:
+    var fired: Paths
+    var defeated: Paths
+
+    pub func init():
+        return
+
+    pub func fired_count() -> usize:
+        return self.fired.count()
+
+    pub func fired_at(index: usize) -> str!:
+        return try self.fired.at(index)
+
+    pub func defeated_count() -> usize:
+        return self.defeated.count()
+
+    pub func defeated_at(index: usize) -> str!:
+        return try self.defeated.at(index)
+
+    pub mutating func close():
+        self.fired.close()
+        self.defeated.close()
+
+pub let justification_type = interop.Type[Justification]("Prism logic justification", Justification.close, closeable = true)
+
+func ordered_names(index: const Index*, result: Paths*) -> !:
+    var names: List[str]
+    defer names.close()
+    for bucket in index.buckets.span():
+        try names.push(bucket.key.view())
+    sorting.text(names.span())
+    for name in names.span():
+        try result.append(name)
+
+pub struct Logic:
+    var theory: grounding.Theory
+
+    pub func init(document: interop.Reference[Document]) -> !:
+        self.theory = try grounding.build((try document.get()).view_data())
+        solver.solve(&self.theory)
+
+    pub func conclude(atom: interop.Reference[Atom]) -> ProofTag!:
+        var key = try (try atom.get()).view_data().key()
+        defer key.close()
+        let index = self.theory.find(key.view()) else return ProofTag.defeasible_refute
+        return solver.tag(&self.theory, index)
+
+    pub func why(atom: interop.Reference[Atom]) -> interop.Reference[Justification]!:
+        var result = Justification()
+        errdefer result.close()
+        var key = try (try atom.get()).view_data().key()
+        defer key.close()
+        if let index = self.theory.find(key.view()):
+            let literal = &self.theory.literals.items[index]
+            var fired: Index
+            defer fired.close()
+            var defeated: Index
+            defer defeated.close()
+            for id in literal.supporters.span():
+                let rule = &self.theory.rules.items[id]
+                if solver.applicable(&self.theory, rule):
+                    discard(try fired.add(self.theory.names.buckets.items[rule.name].key.view(), rule.name))
+            for id in self.theory.literals.items[literal.complement].rules.span():
+                let rule = &self.theory.rules.items[id]
+                if solver.discarded(&self.theory, rule):
+                    continue
+                for bucket in fired.buckets.span():
+                    if self.theory.superior(bucket.rows.items[0], rule.name):
+                        discard(try defeated.add(self.theory.names.buckets.items[rule.name].key.view(), rule.name))
+                        break
+            try ordered_names(&fired, &result.fired)
+            try ordered_names(&defeated, &result.defeated)
+        let owned = try new Justification() in memory.heap
+        owned[0] = result
+        result = Justification()
+        return try interop.Reference[Justification].adopt(owned, justification_type, memory.heap)
+
+    pub mutating func close():
+        self.theory.close()
+
+pub let logic_type = interop.Type[Logic]("Prism logic theory", Logic.close, closeable = true)
+
+pub func conclude(document: interop.Reference[Document], atom: interop.Reference[Atom]) -> ProofTag!:
+    var logic = try Logic(document)
+    defer logic.close()
+    return try logic.conclude(atom)
+
+pub func why(document: interop.Reference[Document], atom: interop.Reference[Atom]) -> interop.Reference[Justification]!:
+    var logic = try Logic(document)
+    defer logic.close()
+    return try logic.why(atom)
+
+pub func derive(document: interop.Reference[Document]) -> interop.Reference[Document]!:
+    var logic = try Logic(document)
+    defer logic.close()
+    var result = try (try document.get()).view_data().copy()
+    errdefer result.close()
+    var root = try unique_path(&result, "/derived")
+    defer root.close()
+    try result.insert(root.view(), "group")
+    var count: usize = 0
+    for id in logic.theory.order.span():
+        let literal = &logic.theory.literals.items[id]
+        if not literal.proof or literal.fact:
+            continue
+        var scratch: u8[32]
+        var path = try joined(root.view(), try format(scratch, f"[{count}]"))
+        defer path.close()
+        try builders.build_atom(&result, path.view(), &literal.atom, "derived", "+∂")
+        count += 1
+    let owned = result
+    result = DocumentData()
+    return try own_document(owned)

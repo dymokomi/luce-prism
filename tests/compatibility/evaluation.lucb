@@ -1,0 +1,231 @@
+import prism
+import interop
+import memory
+import ownership
+import math
+
+func close_number(value: interop.Reference[prism.Value], expected: f64, tolerance: f64 = 0.001) -> !:
+    defer value.release()
+    let actual = try value.value().number_at()
+    if math.abs(actual - expected) > tolerance:
+        print(f"expected {expected}, got {actual}")
+    assert(math.abs(actual - expected) <= tolerance)
+
+struct Behavior:
+    var operation: usize
+    var bakes: usize
+    var retained: interop.View[prism.BakeContext]?
+
+    func init(operation: usize):
+        self.operation = operation
+        self.bakes = 0
+        self.retained = none
+
+    mutating func run(view: interop.View[prism.BakeContext]) -> !:
+        self.bakes += 1
+        if let previous = self.retained:
+            previous.release()
+        self.retained = view.clone()
+        let context = try view.get()
+        if self.operation == 0:
+            let value = try context.param("value")
+            defer value.release()
+            try context.set_output("out", value)
+        else:
+            let a = try context.input("a")
+            defer a.release()
+            let b = try context.input("b")
+            defer b.release()
+            let left = try a.value().number_at()
+            let right = try b.value().number_at()
+            let value = try prism.Value.number(left + right if self.operation == 1 else left * right)
+            defer value.release()
+            try context.set_output("out", value)
+
+    pub mutating func bake(view: interop.View[prism.BakeContext]) -> interop.Outcome[unit]:
+        self.run(view) catch failure:
+            let message = interop.copy_text(failure.message) catch exhausted:
+                return interop.Outcome[unit].failure(exhausted.code, interop.Owned[str]("failed to copy bake error"))
+            return interop.Outcome[unit].failure(failure.code, message)
+        return interop.Outcome[unit].success(interop.Owned[unit](()))
+
+    pub mutating func close():
+        if let view = self.retained:
+            view.release()
+        self.retained = none
+
+    func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        if let view = self.retained:
+            view.trace(visit, context)
+
+let behavior_type = interop.Type[Behavior]("Test Prism behavior", Behavior.close, Behavior.trace, closeable = true)
+
+func register(registry: interop.Reference[prism.NodeRegistry], name: str, operation: usize) -> interop.Reference[Behavior]!:
+    let behavior = try interop.Reference[Behavior].adopt(try new Behavior(operation) in memory.heap, behavior_type, memory.heap)
+    errdefer behavior.release()
+    let callback = try interop.Callback[interop.View[prism.BakeContext], unit].bind_mutating(behavior, Behavior.bake)
+    defer callback.release()
+    try registry.value().add(name, callback)
+    if operation != 0:
+        let fallback = try prism.Value.number(1.0 if operation == 2 else 0.0)
+        defer fallback.release()
+        try registry.value().declare_input(name, "a", fallback)
+        try registry.value().declare_input(name, "b", fallback)
+    return behavior
+
+func make_registry() -> interop.Reference[prism.NodeRegistry]!:
+    let result = try interop.Reference[prism.NodeRegistry].adopt(try new prism.NodeRegistry() in memory.heap, prism.registry_type, memory.heap)
+    errdefer result.release()
+    let a = try register(result, "const", 0)
+    a.release()
+    let b = try register(result, "add", 1)
+    b.release()
+    let c = try register(result, "mul", 2)
+    c.release()
+    let d = try register(result, "countedConst", 0)
+    d.release()
+    return result
+
+func registry_lookup() -> !:
+    let types = try make_registry()
+    defer types.release()
+    assert(types.value().contains("add"))
+    assert(not types.value().contains("nope"))
+    assert(types.value().count() == 4)
+    assert(try types.value().input_count("mul") == 2)
+    assert(try types.value().input_name("mul", 0) == "a")
+
+func dag_evaluates_through_connections() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef const \"ca\" { float value = 2 } def const \"cb\" { float value = 3 } def const \"cc\" { float value = 4 } def add \"add\" { connect a = </ca.out> connect b = </cb.out> } def mul \"mul\" { connect a = </add.out> connect b = </cc.out> }")
+    defer doc.release()
+    let types = try make_registry()
+    defer types.release()
+    var evaluator = try prism.Evaluator(doc, types)
+    defer evaluator.close()
+    try close_number(try evaluator.output("/add.out"), 5.0)
+    try close_number(try evaluator.output("/mul.out"), 20.0)
+
+func unconnected_input_uses_property_default() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef add \"add\" { float a = 10 float b = 7 } def mul \"mul\" {}")
+    defer doc.release()
+    let types = try make_registry()
+    defer types.release()
+    var evaluator = try prism.Evaluator(doc, types)
+    defer evaluator.close()
+    try close_number(try evaluator.output("/add.out"), 17.0)
+    try close_number(try evaluator.output("/mul.out"), 1.0)
+
+func value_cache_bakes_each_node_once() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef countedConst \"src\" { float value = 5 } def add \"add\" { connect a = </src.out> connect b = </src.out> }")
+    defer doc.release()
+    let types = try make_registry()
+    defer types.release()
+    let counted = try register(types, "countedConst", 0)
+    defer counted.release()
+    var evaluator = try prism.Evaluator(doc, types)
+    defer evaluator.close()
+    try close_number(try evaluator.output("/add.out"), 10.0)
+    try close_number(try evaluator.output("/add.out"), 10.0)
+    assert(counted.value().bakes == 1)
+    assert(evaluator.cached_count() == 2)
+    let retained = counted.value().retained else trap("callback did not receive a context")
+    assert(not retained.is_valid())
+    try evaluator.set_time(1.0)
+    try close_number(try evaluator.output("/add.out"), 10.0)
+    assert(counted.value().bakes == 2)
+
+func cycle_resolves_to_default_without_hanging() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef add \"a\" { connect a = </a.out> connect b = </a.out> }")
+    defer doc.release()
+    let types = try make_registry()
+    defer types.release()
+    var evaluator = try prism.Evaluator(doc, types)
+    defer evaluator.close()
+    try close_number(try evaluator.output("/a.out"), 0.0)
+    try close_number(try evaluator.output("/missing.out"), 0.0)
+
+func animated_param_flows_through_dag_over_time() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef const \"c\" { float value = 0 float value.timeSamples = { 0: 0, 10: 100 } } def mul \"m\" { float b = 2 connect a = </c.out> }")
+    defer doc.release()
+    let types = try make_registry()
+    defer types.release()
+    var evaluator = try prism.Evaluator(doc, types)
+    defer evaluator.close()
+    for time in [0.0, 5.0, 10.0]:
+        try evaluator.set_time(time)
+        try close_number(try evaluator.output("/m.out"), time * 20.0)
+
+func revenue() -> interop.Reference[prism.Document]!:
+    return try prism.Document.parse("#prisma 4.0\ndef \"seats\" { float64 v = 50 } def \"price_per_seat\" { float64 v = 30 } def \"discount_pct\" { float64 v = 0.10 } def \"tax_rate\" { float64 v = 0.08 } def \"months\" { float64 v = 12 } def mul \"list_monthly\" { connect a = </seats.v> connect b = </price_per_seat.v> } def mul \"discount\" { connect a = </list_monthly.out> connect b = </discount_pct.v> } def sub \"net_monthly\" { connect a = </list_monthly.out> connect b = </discount.out> } def mul \"tax\" { connect a = </net_monthly.out> connect b = </tax_rate.v> } def mul \"contract_value\" { connect a = </net_monthly.out> connect b = </months.v> }")
+
+func default_math_registry_is_the_closed_vocabulary() -> !:
+    var types = prism.NodeRegistry()
+    defer types.close()
+    try types.add_math()
+    for name in ["add", "sub", "mul", "div", "neg", "min", "max", "eq", "ne", "lt", "le", "gt", "ge"]:
+        assert(types.contains(name))
+    assert(types.count() == 13)
+    assert(not types.contains("pow"))
+
+func compute_materializes_results_into_out() -> !:
+    let doc = try revenue()
+    defer doc.release()
+    let result = try prism.compute(doc)
+    defer result.release()
+    let paths: str[5] = ["/list_monthly", "/discount", "/net_monthly", "/tax", "/contract_value"]
+    let expected: f64[5] = [1500.0, 150.0, 1350.0, 108.0, 16200.0]
+    for i in 0..<paths.length:
+        try close_number(try result.value().get(paths[i], "out"), expected[i])
+    assert(not result.value().has_property("/seats", "out"))
+    assert(not doc.value().has_property("/list_monthly", "out"))
+
+func compute_slot_resolves_one_value() -> !:
+    let doc = try revenue()
+    defer doc.release()
+    try close_number(try prism.compute_slot(doc, "/contract_value.out"), 16200.0)
+
+func layering_an_input_override_cascades_only_downstream() -> !:
+    let doc = try revenue()
+    defer doc.release()
+    let layer = try prism.Document.parse("#prisma 4.0\nover \"seats\" { float64 v = 200 } over \"discount_pct\" { float64 v = 0.20 } over \"tax_rate\" { float64 v = 0 }")
+    defer layer.release()
+    let combined = try doc.value().overlay(layer)
+    defer combined.release()
+    let result = try prism.compute(combined)
+    defer result.release()
+    let paths: str[5] = ["/list_monthly", "/discount", "/net_monthly", "/tax", "/contract_value"]
+    let expected: f64[5] = [6000.0, 1200.0, 4800.0, 0.0, 57600.0]
+    for i in 0..<paths.length:
+        try close_number(try result.value().get(paths[i], "out"), expected[i])
+
+func compute_is_idempotent() -> !:
+    let doc = try revenue()
+    defer doc.release()
+    let once = try prism.compute(doc)
+    defer once.release()
+    let twice = try prism.compute(once)
+    defer twice.release()
+    assert(try once.value().equals(twice))
+
+func comparison_op_yields_bool() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef gt \"gt\" { float64 a = 5 float64 b = 3 }")
+    defer doc.release()
+    let value = try prism.compute_slot(doc, "/gt.out")
+    defer value.release()
+    assert(value.value().dtype() == prism.DType.boolean)
+    assert(try value.value().number_at() == 1.0)
+
+pub func run() -> !:
+    try registry_lookup()
+    try dag_evaluates_through_connections()
+    try unconnected_input_uses_property_default()
+    try value_cache_bakes_each_node_once()
+    try cycle_resolves_to_default_without_hanging()
+    try animated_param_flows_through_dag_over_time()
+    try default_math_registry_is_the_closed_vocabulary()
+    try compute_materializes_results_into_out()
+    try compute_slot_resolves_one_value()
+    try layering_an_input_override_cascades_only_downstream()
+    try compute_is_idempotent()
+    try comparison_op_yields_bool()
+    print("PASS 12 node evaluation and math cases, declared defaults and expired callback views")

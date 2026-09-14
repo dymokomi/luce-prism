@@ -1,0 +1,94 @@
+## Original Prism float32 affine transforms and inherited visibility.
+import math32
+import interop
+from luce_prism.document import Document
+from luce_prism.model import DocumentData
+from luce_prism.types import DType, invalid
+from luce_prism.path import element_path, parent_path, valid_path
+from luce_prism.storage import Buffer, List, text_copy
+
+from luce_prism.geometry.affine import Point32, Matrix32, Vec2, Affine2, widen
+
+func slot(path: str, name: str) -> Buffer!:
+    var output = try text_copy(path)
+    errdefer output.close()
+    try output.byte('.')
+    try output.text(name)
+    return output
+
+func vector(doc: const DocumentData*, path: str, name: str, time: f64, fallback: Point32) -> Point32!:
+    var target = try slot(path, name)
+    defer target.close()
+    let value = try doc.eval(target.view(), time)
+    defer value.release()
+    let data = value.value().view_data()
+    if data.kind != DType.float32 or data.shape.count != 1 or data.shape.items[0] != 2:
+        return fallback
+    return Point32((f32)try data.number(0), (f32)try data.number(1))
+
+func local_native(doc: const DocumentData*, path: str, time: f64) -> Matrix32!:
+    let root = element_path(path)
+    let position = try vector(doc, root, "position", time, Point32())
+    let scale = try vector(doc, root, "scale", time, Point32(1.0, 1.0))
+    let pivot = try vector(doc, root, "pivot", time, Point32())
+    var rotation: f32 = 0.0
+    var target = try slot(root, "rotation")
+    defer target.close()
+    let value = try doc.eval(target.view(), time)
+    defer value.release()
+    if value.value().dtype() == DType.float32 and value.value().rank() == 0:
+        rotation = (f32)try value.value().number_at()
+    let cs = math32.cos(rotation)
+    let sn = math32.sin(rotation)
+    let translate = Matrix32(tx = position.x, ty = position.y)
+    let to_pivot = Matrix32(tx = pivot.x, ty = pivot.y)
+    let rotate = Matrix32(a = cs, b = sn, c = -sn, d = cs)
+    let scaling = Matrix32(a = scale.x, d = scale.y)
+    let from_pivot = Matrix32(tx = -pivot.x, ty = -pivot.y)
+    return translate.mul(to_pivot.mul(rotate.mul(scaling.mul(from_pivot))))
+
+func world_native(doc: const DocumentData*, path: str, time: f64) -> Matrix32!:
+    if not valid_path(path):
+        error(invalid, "invalid Prism transform path")
+    var chain: List[str]
+    defer chain.close()
+    var current = element_path(path)
+    while current != "/":
+        try chain.push(current)
+        current = parent_path(current)
+    var matrix = Matrix32()
+    var index = chain.count
+    while index > 0:
+        index -= 1
+        if doc.contains(chain.items[index]):
+            matrix = matrix.mul(try local_native(doc, chain.items[index], time))
+    return matrix
+
+pub func local_matrix_data(doc: const DocumentData*, path: str, time: f64) -> Affine2!:
+    return widen(try local_native(doc, path, time))
+
+pub func world_matrix_data(doc: const DocumentData*, path: str, time: f64) -> Affine2!:
+    return widen(try world_native(doc, path, time))
+
+pub func visible_data(doc: const DocumentData*, path: str, time: f64) -> bool!:
+    if not valid_path(path):
+        error(invalid, "invalid Prism visibility path")
+    var current = element_path(path)
+    while current != "/":
+        var target = try slot(current, "visible")
+        defer target.close()
+        let value = try doc.eval(target.view(), time)
+        defer value.release()
+        if value.value().dtype() == DType.boolean and value.value().rank() == 0 and try value.value().number_at() == 0.0:
+            return false
+        current = parent_path(current)
+    return true
+
+pub func local_matrix(doc: interop.Reference[Document], path: str, time: f64 = 0.0) -> Affine2!:
+    return try local_matrix_data((try doc.get()).view_data(), path, time)
+
+pub func world_matrix(doc: interop.Reference[Document], path: str, time: f64 = 0.0) -> Affine2!:
+    return try world_matrix_data((try doc.get()).view_data(), path, time)
+
+pub func is_visible(doc: interop.Reference[Document], path: str, time: f64 = 0.0) -> bool!:
+    return try visible_data((try doc.get()).view_data(), path, time)

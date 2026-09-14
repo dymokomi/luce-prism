@@ -1,0 +1,702 @@
+## Owned document records and authoring operations. No serialization or external I/O.
+import interop
+import math
+from luce_prism.animation import Property, Sample, insert_sample, resolve_property
+from luce_prism.collections.topology import Topology
+from luce_prism.pattern import matches
+from luce_prism.path import element_path, is_descendant, parent_path, require_element, require_slot, slot_name, valid_path
+from luce_prism.storage import copy_list, copy_names, copy_pairs, find_pair, remove_pair, Blob, Buffer, List, Pair, add_name, close_names, copied, less, own_blob, pair, set_pair, sort_pairs, text_copy
+from luce_prism.types import DType, HandleType, Interpolation, invalid, limit_exceeded, missing
+from luce_prism.value import Value, ValueData, own_value, scalar_bits
+
+pub struct Element:
+    pub var identifier: usize
+    pub var path: Buffer
+    pub var kind: Buffer
+    pub var properties: List[Property]
+    pub var metadata: List[Pair]
+    pub var override: bool
+    pub var removed_properties: List[Buffer]
+    pub var removed_metadata: List[Buffer]
+
+    pub func property(name: str) -> usize?:
+        for i in 0..<self.properties.count:
+            if self.properties.items[i].name.view() == name:
+                return i
+        return none
+
+    pub func copy() -> Element!:
+        var output = Element(identifier = self.identifier, override = self.override)
+        errdefer output.close()
+        output.path = try self.path.copy()
+        output.kind = try self.kind.copy()
+        output.metadata = try copy_pairs(&self.metadata)
+        output.removed_properties = try copy_names(&self.removed_properties)
+        output.removed_metadata = try copy_names(&self.removed_metadata)
+        try output.properties.reserve(self.properties.count)
+        for prop in self.properties.span():
+            try output.properties.push(try prop.copy())
+        return output
+
+    pub mutating func put_property(prop: const Property*) -> !:
+        var owned = try prop.copy()
+        errdefer owned.close()
+        if let index = self.property(prop.name.view()):
+            self.properties.items[index].close()
+            self.properties.items[index] = owned
+        else:
+            try self.properties.push(owned)
+            var i = self.properties.count - 1
+            while i > 0 and less(self.properties.items[i].name.view(), self.properties.items[i - 1].name.view()):
+                let prior = self.properties.items[i - 1]
+                self.properties.items[i - 1] = self.properties.items[i]
+                self.properties.items[i] = prior
+                i -= 1
+
+    pub mutating func remove_property(name: str):
+        if let index = self.property(name):
+            self.properties.items[index].close()
+            self.properties.remove(index)
+
+    pub mutating func close():
+        self.path.close()
+        self.kind.close()
+        for i in 0..<self.properties.count:
+            self.properties.items[i].close()
+        self.properties.close()
+        for i in 0..<self.metadata.count:
+            self.metadata.items[i].close()
+        self.metadata.close()
+        close_names(&self.removed_properties)
+        close_names(&self.removed_metadata)
+
+pub struct Reorder:
+    pub var parent: Buffer
+    pub var children: List[Buffer]
+
+    pub mutating func close():
+        self.parent.close()
+        close_names(&self.children)
+
+pub struct Asset:
+    pub var path: Buffer
+    pub var mime: Buffer
+    pub var bytes: Buffer
+
+    pub mutating func close():
+        self.path.close()
+        self.mime.close()
+        self.bytes.close()
+
+pub struct DocumentData:
+    pub var elements: List[Element]
+    var topology: Topology
+    # Connection key is target, value is source, sorted by target.
+    pub var connections: List[Pair]
+    pub var deletions: List[Buffer]
+    pub var disconnections: List[Buffer]
+    pub var reorders: List[Reorder]
+    # Wildcard key is source, value is target specification.
+    pub var globs: List[Pair]
+    pub var assets: List[Asset]
+
+    pub func init():
+        return
+
+    pub func copy() -> DocumentData!:
+        var output = DocumentData()
+        errdefer output.close()
+        output.topology.last_id = self.topology.last_id
+        try output.elements.reserve(self.elements.count)
+        for element in self.elements.span():
+            try output.insert_copy(&element)
+        output.connections = try copy_pairs(&self.connections)
+        output.globs = try copy_pairs(&self.globs)
+        output.deletions = try copy_names(&self.deletions)
+        output.disconnections = try copy_names(&self.disconnections)
+        for order in self.reorders.span():
+            var children: List[str]
+            defer children.close()
+            for child in order.children.span():
+                try children.push(child.view())
+            try output.reorder(order.parent.view(), children.span())
+        for asset in self.assets.span():
+            try output.set_asset(asset.path.view(), asset.bytes.bytes(), asset.mime.view())
+        return output
+
+    pub mutating func insert_copy(element: const Element*) -> !:
+        var owned = try element.copy()
+        errdefer owned.close()
+        if let index = self.find(element.path.view()):
+            owned.identifier = self.elements.items[index].identifier
+            self.elements.items[index].close()
+            self.elements.items[index] = owned
+        else:
+            try self.elements.reserve(self.elements.count + 1)
+            owned.identifier = try self.topology.append(owned.path.view(), owned.identifier, self.elements.count)
+            try self.elements.push(owned)
+
+    pub func has_property(path: str, name: str) -> bool:
+        let index = self.find(path) else return false
+        return self.elements.items[index].property(name) != none
+
+    pub mutating func remove_property(path: str, name: str) -> !:
+        self.elements.items[try self.require(path)].remove_property(name)
+
+    pub mutating func remove_metadata(path: str, key: str) -> !:
+        remove_pair(&self.elements.items[try self.require(path)].metadata, key)
+
+    pub func has_metadata(path: str, key: str) -> bool:
+        let index = self.find(path) else return false
+        return find_pair(&self.elements.items[index].metadata, key) != none
+
+    pub func metadata_count(path: str) -> usize!:
+        return self.elements.items[try self.require(path)].metadata.count
+
+    pub func metadata_name(path: str, index: usize) -> str!:
+        let element = &self.elements.items[try self.require(path)]
+        if index >= element.metadata.count:
+            error(invalid, "Prism metadata index is out of bounds")
+        return element.metadata.items[index].key.view()
+
+    pub mutating func set_type(path: str, name: str) -> !:
+        let index = try self.require(path)
+        let replacement = try text_copy(name)
+        self.elements.items[index].kind.close()
+        self.elements.items[index].kind = replacement
+
+    pub func children(parent: str) -> List[str]!:
+        var output: List[str]
+        errdefer output.close()
+        for index in self.topology.children(parent):
+            try output.push(self.elements.items[index].path.view())
+        return output
+
+    pub func find(path: str) -> usize?:
+        return self.topology.find(path)
+
+    pub func element_id(path: str) -> usize?:
+        let index = self.find(element_path(path)) else return none
+        return self.elements.items[index].identifier
+
+    pub func path_for_id(identifier: usize) -> str?:
+        let index = self.topology.by_id(identifier) else return none
+        return self.elements.items[index].path.view()
+
+    pub func child_count(parent: str) -> usize:
+        return self.topology.children(parent).length
+
+    pub func child_at(parent: str, index: usize) -> str?:
+        let children = self.topology.children(parent)
+        return self.elements.items[children[index]].path.view() if index < children.length else none
+
+    pub mutating func clear_elements():
+        for i in 0..<self.elements.count:
+            self.elements.items[i].close()
+        self.elements.close()
+        self.topology.close()
+
+    pub func require(path: str) -> usize!:
+        return self.find(path) else error(missing, "Prism element does not exist")
+
+    pub func contains(path: str) -> bool:
+        return self.find(path) != none
+
+    pub func element_count() -> usize:
+        return self.elements.count
+
+    pub func path_at(index: usize) -> str!:
+        if index >= self.elements.count:
+            error(invalid, "Prism element index is out of bounds")
+        return self.elements.items[index].path.view()
+
+    pub func type_at(path: str) -> str!:
+        return self.elements.items[try self.require(path)].kind.view()
+
+    pub mutating func add(path: str, type_name: str, override: bool = false) -> !:
+        try require_element(path)
+        if self.contains(path):
+            error(invalid, "duplicate Prism element path")
+        let parent = parent_path(path)
+        if parent != "/" and not self.contains(parent):
+            error(missing, "add the Prism parent before its child")
+        try self.insert(path, type_name, override)
+
+    pub mutating func insert(path: str, type_name: str, override: bool = false) -> !:
+        try require_element(path)
+        if self.contains(path):
+            error(invalid, "duplicate Prism element path")
+        var element: Element
+        errdefer element.close()
+        element.path = try text_copy(path)
+        element.kind = try text_copy(type_name)
+        element.override = override
+        try self.elements.reserve(self.elements.count + 1)
+        element.identifier = try self.topology.append(path, 0, self.elements.count)
+        try self.elements.push(element)
+
+    pub mutating func put_value(path: str, name: str, value: ValueData, type_name: str = "") -> !:
+        var owned = value
+        errdefer owned.close()
+        let index = try self.require(path)
+        var label = try text_copy(type_name)
+        errdefer label.close()
+        let element = &self.elements.items[index]
+        if let position = element.property(name):
+            let prop = &element.properties.items[position]
+            prop.value.close()
+            prop.type_name.close()
+            prop.value = owned
+            prop.type_name = label
+            return
+        var key = try text_copy(name)
+        errdefer key.close()
+        try element.properties.push(Property(name = key, value = owned, type_name = label))
+        var position = element.properties.count - 1
+        while position > 0 and less(element.properties.items[position].name.view(), element.properties.items[position - 1].name.view()):
+            let previous = element.properties.items[position - 1]
+            element.properties.items[position - 1] = element.properties.items[position]
+            element.properties.items[position] = previous
+            position -= 1
+
+    ## Insert a deep snapshot. Later edits or closing Value never change the document.
+    pub mutating func set(path: str, name: str, value: interop.Reference[Value], type_name: str = "") -> !:
+        let native = try value.get()
+        try self.put_value(path, name, try native.view_data().copy(), type_name)
+
+    pub func get(path: str, name: str) -> interop.Reference[Value]!:
+        let element = &self.elements.items[try self.require(path)]
+        let index = element.property(name) else error(missing, "Prism property does not exist")
+        return try own_value(try element.properties.items[index].value.copy())
+
+    pub func property_count(path: str) -> usize!:
+        return self.elements.items[try self.require(path)].properties.count
+
+    pub func property_name(path: str, index: usize) -> str!:
+        let element = &self.elements.items[try self.require(path)]
+        if index >= element.properties.count:
+            error(invalid, "Prism property index is out of bounds")
+        return element.properties.items[index].name.view()
+
+    pub mutating func set_metadata(path: str, key: str, value: str) -> !:
+        let element = &self.elements.items[try self.require(path)]
+        try set_pair(&element.metadata, key, value)
+
+    pub func metadata(path: str, key: str) -> str!:
+        let element = &self.elements.items[try self.require(path)]
+        for item in element.metadata.span():
+            if item.key.view() == key:
+                return item.value.view()
+        error(missing, "Prism metadata does not exist")
+
+    pub mutating func connect(source: str, target: str) -> !:
+        try require_slot(source)
+        try require_slot(target)
+        try set_pair(&self.connections, target, source)
+
+    pub func connection_count() -> usize:
+        return self.connections.count
+
+    pub func incoming(target: str) -> str?:
+        for connection in self.connections.span():
+            if connection.key.view() == target:
+                return connection.value.view()
+        let name = slot_name(target)
+        if name.length > 0:
+            for glob in self.globs.span():
+                if slot_name(glob.value.view()) == name and matches(element_path(glob.value.view()), element_path(target)):
+                    return glob.key.view()
+        return none
+
+    pub func source(target: str) -> str!:
+        return self.incoming(target) else error(missing, "Prism input is not connected")
+
+    pub mutating func disconnect(target: str):
+        for i in 0..<self.connections.count:
+            if self.connections.items[i].key.view() == target:
+                self.connections.items[i].close()
+                self.connections.remove(i)
+                return
+
+    pub mutating func set_sample(path: str, name: str, time: f64, value: interop.Reference[Value], interpolation: Interpolation = Interpolation.linear) -> !:
+        if not math.is_finite(time):
+            error(invalid, "Prism keyframe time must be finite")
+        let element = &self.elements.items[try self.require(path)]
+        let index = element.property(name) else error(missing, "create a default before adding Prism samples")
+        let prop = &element.properties.items[index]
+        var sample = Sample(time = time, interpolation = interpolation)
+        errdefer sample.close()
+        sample.value = try (try value.get()).view_data().copy()
+        for current in prop.samples.span():
+            if current.time == time:
+                sample.handle = current.handle
+                sample.left = try copy_list(&current.left)
+                sample.right = try copy_list(&current.right)
+                break
+        try insert_sample(prop, sample)
+
+    pub mutating func set_handles(path: str, name: str, time: f64, kind: HandleType, left: const f64[], right: const f64[]) -> !:
+        if left.length % 2 != 0 or right.length % 2 != 0:
+            error(invalid, "Prism handles contain (time, value) pairs")
+        let element = &self.elements.items[try self.require(path)]
+        let position = element.property(name) else error(missing, "Prism property does not exist")
+        let prop = &element.properties.items[position]
+        for i in 0..<prop.samples.count:
+            if prop.samples.items[i].time == time:
+                var l: List[f64]
+                errdefer l.close()
+                var r: List[f64]
+                errdefer r.close()
+                for value in left:
+                    if not math.is_finite(value):
+                        error(invalid, "Prism handle must be finite")
+                    try l.push(value)
+                for value in right:
+                    if not math.is_finite(value):
+                        error(invalid, "Prism handle must be finite")
+                    try r.push(value)
+                let sample = &prop.samples.items[i]
+                sample.left.close()
+                sample.right.close()
+                sample.left = l
+                sample.right = r
+                sample.handle = (u8)kind
+                return
+
+    pub mutating func remove_sample(path: str, name: str, time: f64) -> !:
+        let element = &self.elements.items[try self.require(path)]
+        let index = element.property(name) else return
+        let prop = &element.properties.items[index]
+        for i in 0..<prop.samples.count:
+            if prop.samples.items[i].time == time:
+                prop.samples.items[i].close()
+                prop.samples.remove(i)
+                return
+
+    pub func sample_count(path: str, name: str) -> usize!:
+        let element = &self.elements.items[try self.require(path)]
+        let index = element.property(name) else error(missing, "Prism property does not exist")
+        return element.properties.items[index].samples.count
+
+    pub func resolve(path: str, name: str, time: f64 = 0.0) -> interop.Reference[Value]!:
+        if not math.is_finite(time):
+            error(invalid, "Prism evaluation time must be finite")
+        let element = &self.elements.items[try self.require(path)]
+        let index = element.property(name) else error(missing, "Prism property does not exist")
+        return try own_value(try resolve_property(&element.properties.items[index], time))
+
+    ## Attribute evaluation follows the authored incoming source, as in C++.
+    ## Computed DAGs use Evaluator; an absent source resolves to float32 zero.
+    pub func eval(slot: str, time: f64 = 0.0) -> interop.Reference[Value]!:
+        if not math.is_finite(time):
+            error(invalid, "Prism evaluation time must be finite")
+        if not valid_path(slot) or slot_name(slot).length == 0:
+            return try own_value(try scalar_bits(DType.float32, 0))
+        let current = self.incoming(slot) else slot
+        if not self.has_property(element_path(current), slot_name(current)):
+            return try own_value(try scalar_bits(DType.float32, 0))
+        return try self.resolve(element_path(current), slot_name(current), time)
+
+    pub mutating func mark_deleted(path: str) -> !:
+        try require_element(path)
+        try add_name(&self.deletions, path)
+
+    pub mutating func mark_disconnected(target: str) -> !:
+        try require_slot(target)
+        try add_name(&self.disconnections, target)
+
+    pub mutating func mark_unset(path: str, name: str, metadata: bool = false) -> !:
+        let element = &self.elements.items[try self.require(path)]
+        if metadata:
+            try add_name(&element.removed_metadata, name)
+        else:
+            try add_name(&element.removed_properties, name)
+
+    pub mutating func reorder(parent: str, children: const str[]) -> !:
+        if not valid_path(parent) or element_path(parent) != parent:
+            error(invalid, "invalid Prism reorder parent")
+        var order: Reorder
+        errdefer order.close()
+        order.parent = try text_copy(parent)
+        for child in children:
+            try require_element(child)
+            if parent_path(child) != parent:
+                error(invalid, "Prism reorder entries must be direct children")
+            for existing in order.children.span():
+                if existing.view() == child:
+                    error(invalid, "duplicate Prism reorder child")
+            var copy = try text_copy(child)
+            order.children.push(copy) catch failure:
+                copy.close()
+                error(failure.code, failure.message)
+        for i in 0..<self.reorders.count:
+            if self.reorders.items[i].parent.view() == parent:
+                self.reorders.items[i].close()
+                self.reorders.items[i] = order
+                return
+        try self.reorders.push(order)
+        sort_reorders(&self.reorders)
+
+    pub mutating func connect_pattern(source: str, target_pattern: str) -> !:
+        try require_slot(source)
+        if target_pattern.length == 0 or target_pattern.bytes[0] != '/':
+            error(invalid, "Prism wildcard target must be absolute")
+        for item in self.globs.span():
+            if item.key.view() == source and item.value.view() == target_pattern:
+                return
+        var item = try pair(source, target_pattern)
+        errdefer item.close()
+        try self.globs.push(item)
+
+    pub mutating func set_asset(key: str, bytes: const u8[], mime: str = "application/octet-stream") -> !:
+        if not valid_path(key):
+            error(invalid, "invalid Prism asset path")
+        let path = element_path(key)
+        var asset: Asset
+        errdefer asset.close()
+        asset.path = try text_copy(path)
+        asset.mime = try text_copy(mime)
+        asset.bytes = try copied(bytes)
+        for i in 0..<self.assets.count:
+            if self.assets.items[i].path.view() == path:
+                self.assets.items[i].close()
+                self.assets.items[i] = asset
+                return
+        try self.assets.push(asset)
+        var i = self.assets.count - 1
+        while i > 0 and less(self.assets.items[i].path.view(), self.assets.items[i - 1].path.view()):
+            let previous = self.assets.items[i - 1]
+            self.assets.items[i - 1] = self.assets.items[i]
+            self.assets.items[i] = previous
+            i -= 1
+
+    ## Rename/reparent a subtree. All allocations finish before any path changes.
+    pub mutating func rename(path: str, destination: str) -> !:
+        try require_element(path)
+        try require_element(destination)
+        discard(try self.require(path))
+        if path == destination:
+            return
+        if is_descendant(destination, path) or self.contains(destination):
+            error(invalid, "Prism rename would collide or create a hierarchy cycle")
+        # Asset and layer paths may exist without local elements. Do not merge
+        # those records accidentally when moving a populated subtree onto them.
+        for asset in self.assets.span():
+            if is_descendant(asset.path.view(), destination) and not is_descendant(asset.path.view(), path):
+                error(invalid, "Prism rename collides with an asset path")
+        for connection in self.connections.span():
+            if is_descendant(connection.key.view(), destination) and not is_descendant(connection.key.view(), path):
+                error(invalid, "Prism rename collides with a connection target")
+        for order in self.reorders.span():
+            if is_descendant(order.parent.view(), destination) and not is_descendant(order.parent.view(), path):
+                error(invalid, "Prism rename collides with a reorder opinion")
+        for deletion in self.deletions.span():
+            if is_descendant(deletion.view(), destination) and not is_descendant(deletion.view(), path):
+                error(invalid, "Prism rename collides with a deletion opinion")
+        for deletion in self.disconnections.span():
+            if is_descendant(deletion.view(), destination) and not is_descendant(deletion.view(), path):
+                error(invalid, "Prism rename collides with a disconnect opinion")
+        var edits: List[PathEdit]
+        defer close_edits(&edits)
+        for i in 0..<self.elements.count:
+            try plan_path(&edits, &self.elements.items[i].path, path, destination)
+        for i in 0..<self.connections.count:
+            try plan_path(&edits, &self.connections.items[i].key, path, destination)
+            try plan_path(&edits, &self.connections.items[i].value, path, destination)
+        for i in 0..<self.assets.count:
+            try plan_path(&edits, &self.assets.items[i].path, path, destination)
+        for i in 0..<self.globs.count:
+            try plan_path(&edits, &self.globs.items[i].key, path, destination)
+            try plan_path(&edits, &self.globs.items[i].value, path, destination)
+        for i in 0..<self.reorders.count:
+            try plan_path(&edits, &self.reorders.items[i].parent, path, destination)
+            for j in 0..<self.reorders.items[i].children.count:
+                try plan_path(&edits, &self.reorders.items[i].children.items[j], path, destination)
+        for i in 0..<self.deletions.count:
+            try plan_path(&edits, &self.deletions.items[i], path, destination)
+        for i in 0..<self.disconnections.count:
+            try plan_path(&edits, &self.disconnections.items[i], path, destination)
+        var topology = Topology(last_id = self.topology.last_id)
+        defer topology.close()
+        for i in 0..<self.elements.count:
+            let element = &self.elements.items[i]
+            var rewritten: Buffer
+            defer rewritten.close()
+            var name = element.path.view()
+            if is_descendant(name, path):
+                try rewritten.text(destination)
+                try rewritten.put(name.bytes[path.length..])
+                name = rewritten.view()
+            discard(try topology.append(name, element.identifier, i))
+        for i in 0..<edits.count:
+            let edit = &edits.items[i]
+            edit.target.close()
+            *edit.target = edit.replacement
+            edit.replacement = Buffer()
+        self.topology.close()
+        self.topology = topology
+        topology = Topology()
+        sort_pairs(&self.connections)
+        sort_names(&self.deletions)
+        sort_names(&self.disconnections)
+        sort_assets(&self.assets)
+        sort_reorders(&self.reorders)
+        # A moved child is no longer part of the old parent's reorder opinion.
+        for i in 0..<self.reorders.count:
+            let order = &self.reorders.items[i]
+            var j = order.children.count
+            while j > 0:
+                j -= 1
+                if parent_path(order.children.items[j].view()) != order.parent.view():
+                    order.children.items[j].close()
+                    order.children.remove(j)
+
+    ## Remove content, incident wires, assets and affected wildcard/reorder entries.
+    pub mutating func remove(path: str) -> !:
+        try require_element(path)
+        discard(try self.require(path))
+        var owned_path = try text_copy(path)
+        defer owned_path.close()
+        let root = owned_path.view()
+        var topology = Topology(last_id = self.topology.last_id)
+        defer topology.close()
+        var kept: usize = 0
+        for element in self.elements.span():
+            if not is_descendant(element.path.view(), root):
+                discard(try topology.append(element.path.view(), element.identifier, kept))
+                kept += 1
+        kept = 0
+        for index in 0..<self.elements.count:
+            if is_descendant(self.elements.items[index].path.view(), root):
+                self.elements.items[index].close()
+            else:
+                self.elements.items[kept] = self.elements.items[index]
+                kept += 1
+        self.elements.count = kept
+        self.topology.close()
+        self.topology = topology
+        topology = Topology()
+        var i = self.connections.count
+        while i > 0:
+            i -= 1
+            if is_descendant(self.connections.items[i].key.view(), root) or is_descendant(self.connections.items[i].value.view(), root):
+                self.connections.items[i].close()
+                self.connections.remove(i)
+        i = self.assets.count
+        while i > 0:
+            i -= 1
+            if is_descendant(self.assets.items[i].path.view(), root):
+                self.assets.items[i].close()
+                self.assets.remove(i)
+        i = self.globs.count
+        while i > 0:
+            i -= 1
+            if is_descendant(self.globs.items[i].key.view(), root) or is_descendant(self.globs.items[i].value.view(), root):
+                self.globs.items[i].close()
+                self.globs.remove(i)
+        i = self.reorders.count
+        while i > 0:
+            i -= 1
+            let order = &self.reorders.items[i]
+            if is_descendant(order.parent.view(), root):
+                order.close()
+                self.reorders.remove(i)
+            else:
+                var j = order.children.count
+                while j > 0:
+                    j -= 1
+                    if is_descendant(order.children.items[j].view(), root):
+                        order.children.items[j].close()
+                        order.children.remove(j)
+
+    pub func asset_count() -> usize:
+        return self.assets.count
+
+    pub mutating func remove_asset(key: str):
+        if not valid_path(key):
+            return
+        let path = element_path(key)
+        for i in 0..<self.assets.count:
+            if self.assets.items[i].path.view() == path:
+                self.assets.items[i].close()
+                self.assets.remove(i)
+                return
+
+    pub func asset(path: str) -> interop.Reference[Blob]!:
+        for asset in self.assets.span():
+            if asset.path.view() == element_path(path):
+                return try own_blob(try asset.bytes.copy())
+        error(missing, "Prism asset does not exist")
+
+    pub func asset_mime(path: str) -> str!:
+        for asset in self.assets.span():
+            if asset.path.view() == element_path(path):
+                return asset.mime.view()
+        error(missing, "Prism asset does not exist")
+
+    pub mutating func close():
+        for i in 0..<self.elements.count:
+            self.elements.items[i].close()
+        self.elements.close()
+        self.topology.close()
+        for i in 0..<self.connections.count:
+            self.connections.items[i].close()
+        self.connections.close()
+        close_names(&self.deletions)
+        close_names(&self.disconnections)
+        for i in 0..<self.reorders.count:
+            self.reorders.items[i].close()
+        self.reorders.close()
+        for i in 0..<self.globs.count:
+            self.globs.items[i].close()
+        self.globs.close()
+        for i in 0..<self.assets.count:
+            self.assets.items[i].close()
+        self.assets.close()
+
+pub struct PathEdit:
+    pub var target: Buffer*
+    pub var replacement: Buffer
+
+pub func close_edits(edits: List[PathEdit]*):
+    for i in 0..<edits.count:
+        edits.items[i].replacement.close()
+    edits.close()
+
+pub func plan_path(edits: List[PathEdit]*, target: Buffer*, old: str, replacement: str) -> !:
+    if not is_descendant(target.view(), old):
+        return
+    var text: Buffer
+    errdefer text.close()
+    try text.text(replacement)
+    try text.put(target.bytes()[old.length..])
+    if text.used > 4096:
+        error(limit_exceeded, "renamed Prism path exceeds 4096 bytes")
+    try edits.push(PathEdit(target = target, replacement = text))
+
+pub func sort_names(names: List[Buffer]*):
+    for end in 1..<names.count:
+        var i = end
+        while i > 0 and less(names.items[i].view(), names.items[i - 1].view()):
+            let previous = names.items[i - 1]
+            names.items[i - 1] = names.items[i]
+            names.items[i] = previous
+            i -= 1
+
+pub func sort_assets(assets: List[Asset]*):
+    for end in 1..<assets.count:
+        var i = end
+        while i > 0 and less(assets.items[i].path.view(), assets.items[i - 1].path.view()):
+            let previous = assets.items[i - 1]
+            assets.items[i - 1] = assets.items[i]
+            assets.items[i] = previous
+            i -= 1
+
+pub func sort_reorders(orders: List[Reorder]*):
+    for end in 1..<orders.count:
+        var i = end
+        while i > 0 and less(orders.items[i].parent.view(), orders.items[i - 1].parent.view()):
+            let previous = orders.items[i - 1]
+            orders.items[i - 1] = orders.items[i]
+            orders.items[i] = previous
+            i -= 1

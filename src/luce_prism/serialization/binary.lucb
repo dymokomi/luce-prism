@@ -1,0 +1,266 @@
+## Serialization binary.
+from luce_prism.animation import Sample
+from luce_prism.model import DocumentData
+from luce_prism.path import require_element, require_slot
+from luce_prism.serialization.compression import compress_bytes, decompress_bytes
+from luce_prism.storage import Buffer, List, Reader, add_name, set_pair, text_copy
+from luce_prism.types import Interpolation, invalid, limit_exceeded, unsupported
+from luce_prism.value import read_value, write_value
+
+pub func intern(table: List[str]*, text: str) -> usize!:
+    for i in 0..<table.count:
+        if table.items[i] == text:
+            return i
+    try table.push(text)
+    return table.count - 1
+
+pub func string_index(table: const List[str]*, text: str) -> usize:
+    for i in 0..<table.count:
+        if table.items[i] == text:
+            return i
+    trap("Prism writer missed an interned string")
+
+pub func write_index(out: Buffer*, table: const List[str]*, text: str) -> !:
+    try out.uint((u64)string_index(table, text), 4)
+
+pub func read_index(reader: Reader*, table: const List[str]*) -> str!:
+    let index = (usize)try reader.uint(4)
+    if index >= table.count:
+        error(invalid, "invalid Prism string-table index")
+    let text = table.items[index]
+    if text.length > reader.budget:
+        error(limit_exceeded, "Prism expanded string budget exceeded")
+    reader.budget -= text.length
+    return text
+
+pub func intern_names(table: List[str]*, names: const List[Buffer]*) -> !:
+    for name in names.span():
+        discard(try intern(table, name.view()))
+
+pub func write_names(out: Buffer*, table: const List[str]*, names: const List[Buffer]*) -> !:
+    try out.uint((u64)names.count, 4)
+    for name in names.span():
+        try write_index(out, table, name.view())
+
+pub func read_names(reader: Reader*, table: const List[str]*, names: List[Buffer]*) -> !:
+    let count = try reader.count(4)
+    for i in 0..<count:
+        let name = try read_index(reader, table)
+        let before = names.count
+        try add_name(names, name)
+        if names.count == before:
+            error(invalid, "duplicate Prism tombstone")
+
+pub func write_binary(document: const DocumentData*, compressed: bool = false) -> Buffer!:
+    var table: List[str]
+    defer table.close()
+    for element in document.elements.span():
+        discard(try intern(&table, element.path.view()))
+        discard(try intern(&table, element.kind.view()))
+        for prop in element.properties.span():
+            discard(try intern(&table, prop.name.view()))
+        for meta in element.metadata.span():
+            discard(try intern(&table, meta.key.view()))
+            discard(try intern(&table, meta.value.view()))
+        try intern_names(&table, &element.removed_properties)
+        try intern_names(&table, &element.removed_metadata)
+    for connection in document.connections.span():
+        discard(try intern(&table, connection.value.view()))
+        discard(try intern(&table, connection.key.view()))
+    try intern_names(&table, &document.deletions)
+    try intern_names(&table, &document.disconnections)
+    for order in document.reorders.span():
+        discard(try intern(&table, order.parent.view()))
+        try intern_names(&table, &order.children)
+    for glob in document.globs.span():
+        discard(try intern(&table, glob.key.view()))
+        discard(try intern(&table, glob.value.view()))
+    var body: Buffer
+    defer body.close()
+    try body.uint((u64)table.count, 4)
+    for text in table.span():
+        try body.sized(text)
+    try body.uint((u64)document.elements.count, 4)
+    for element in document.elements.span():
+        try write_index(&body, &table, element.path.view())
+        try write_index(&body, &table, element.kind.view())
+        try body.uint((u64)element.properties.count, 4)
+        for prop in element.properties.span():
+            try write_index(&body, &table, prop.name.view())
+            try write_value(&body, &prop.value)
+            try body.byte(1 if prop.samples.count > 0 else 0)
+            if prop.samples.count > 0:
+                try body.uint((u64)prop.samples.count, 4)
+                for sample in prop.samples.span():
+                    try body.real(sample.time)
+                    try write_value(&body, &sample.value)
+                    try body.uint((u64)sample.interpolation, 1)
+                    try body.byte(sample.handle)
+                    try body.uint((u64)(sample.left.count // 2), 4)
+                    for value in sample.left.span():
+                        try body.real(value)
+                    try body.uint((u64)(sample.right.count // 2), 4)
+                    for value in sample.right.span():
+                        try body.real(value)
+            try body.sized(prop.type_name.view())
+        try body.uint((u64)element.metadata.count, 4)
+        for meta in element.metadata.span():
+            try write_index(&body, &table, meta.key.view())
+            try write_index(&body, &table, meta.value.view())
+        try body.byte(1 if element.override else 0)
+        try write_names(&body, &table, &element.removed_properties)
+        try write_names(&body, &table, &element.removed_metadata)
+    try body.uint((u64)document.connections.count, 4)
+    for connection in document.connections.span():
+        try write_index(&body, &table, connection.value.view())
+        try write_index(&body, &table, connection.key.view())
+    try write_names(&body, &table, &document.deletions)
+    try write_names(&body, &table, &document.disconnections)
+    if document.reorders.count > 0:
+        try body.byte(1)
+        try body.uint((u64)document.reorders.count, 4)
+        for order in document.reorders.span():
+            try write_index(&body, &table, order.parent.view())
+            try write_names(&body, &table, &order.children)
+    if document.globs.count > 0:
+        try body.byte(2)
+        try body.uint((u64)document.globs.count, 4)
+        for glob in document.globs.span():
+            try write_index(&body, &table, glob.key.view())
+            try write_index(&body, &table, glob.value.view())
+    var output: Buffer
+    errdefer output.close()
+    try output.text("PRSMC\0")
+    try output.uint(4, 2)
+    try output.uint(1 if compressed else 0, 2)
+    if compressed:
+        var packed = try compress_bytes(body.bytes())
+        defer packed.close()
+        try output.put(packed.bytes())
+    else:
+        try output.put(body.bytes())
+    return output
+
+pub func read_binary(bytes: const u8[], document: DocumentData*) -> !:
+    var header = Reader(data = bytes, pos = 6)
+    if try header.uint(2) != 4:
+        error(unsupported, "only Prism v4 binary crates are supported")
+    let flags = try header.uint(2)
+    if flags > 1:
+        error(unsupported, "unknown Prism crate flags")
+    var inflated: Buffer
+    defer inflated.close()
+    var payload = bytes[header.pos..]
+    if flags == 1:
+        inflated = try decompress_bytes(payload)
+        payload = inflated.bytes()
+    var reader = Reader(data = payload)
+    var table: List[str]
+    defer table.close()
+    let string_count = try reader.count(4)
+    for i in 0..<string_count:
+        try table.push(try reader.text())
+    let element_count = try reader.count(25)
+    for i in 0..<element_count:
+        let path = try read_index(&reader, &table)
+        let kind = try read_index(&reader, &table)
+        try document.insert(path, kind)
+        let property_count = try reader.count(8)
+        for p in 0..<property_count:
+            let name = try read_index(&reader, &table)
+            if document.elements.items[i].property(name) != none:
+                error(invalid, "duplicate Prism property")
+            var value = try read_value(&reader)
+            try document.put_value(path, name, value)
+            let prop_index = document.elements.items[i].property(name) else trap("inserted Prism property missing")
+            let prop = &document.elements.items[i].properties.items[prop_index]
+            let animated = try reader.uint(1)
+            if animated > 1:
+                error(invalid, "invalid Prism animation flag")
+            if animated == 1:
+                let count = try reader.count(21)
+                for s in 0..<count:
+                    var sample = Sample()
+                    errdefer sample.close()
+                    sample.time = try reader.real()
+                    sample.value = try read_value(&reader)
+                    let interpolation = try reader.uint(1)
+                    if interpolation > 2:
+                        error(invalid, "invalid Prism interpolation")
+                    sample.interpolation = Interpolation.held if interpolation == 0 else (Interpolation.linear if interpolation == 1 else Interpolation.bezier)
+                    sample.handle = (u8)try reader.uint(1)
+                    if sample.handle > 3:
+                        error(invalid, "invalid Prism handle type")
+                    let left = try reader.count(16)
+                    for h in 0..<left * 2:
+                        try sample.left.push(try reader.real())
+                    let right = try reader.count(16)
+                    for h in 0..<right * 2:
+                        try sample.right.push(try reader.real())
+                    if s > 0 and sample.time <= prop.samples.items[s - 1].time:
+                        error(invalid, "Prism keyframes must have increasing times")
+                    try prop.samples.push(sample)
+            prop.type_name = try text_copy(try reader.text())
+        let metadata_count = try reader.count(8)
+        for m in 0..<metadata_count:
+            let key = try read_index(&reader, &table)
+            let value = try read_index(&reader, &table)
+            let before = document.elements.items[i].metadata.count
+            try document.set_metadata(path, key, value)
+            if before == document.elements.items[i].metadata.count:
+                error(invalid, "duplicate Prism metadata")
+        let element = &document.elements.items[i]
+        let override = try reader.uint(1)
+        if override > 1:
+            error(invalid, "invalid Prism override flag")
+        element.override = override == 1
+        try read_names(&reader, &table, &element.removed_properties)
+        try read_names(&reader, &table, &element.removed_metadata)
+    let connection_count = try reader.count(8)
+    for i in 0..<connection_count:
+        let source = try read_index(&reader, &table)
+        let target = try read_index(&reader, &table)
+        try require_slot(source)
+        try require_slot(target)
+        # Layers can refer to elements supplied by a base or reference.
+        let before = document.connections.count
+        try set_pair(&document.connections, target, source)
+        if document.connections.count == before:
+            error(invalid, "duplicate Prism connection target")
+    try read_names(&reader, &table, &document.deletions)
+    for path in document.deletions.span():
+        try require_element(path.view())
+    try read_names(&reader, &table, &document.disconnections)
+    for path in document.disconnections.span():
+        try require_slot(path.view())
+    var seen_reorders = false
+    var seen_globs = false
+    while reader.remaining() > 0:
+        let tag = try reader.uint(1)
+        if tag == 1 and not seen_reorders:
+            seen_reorders = true
+            let count = try reader.count(8)
+            for i in 0..<count:
+                let parent = try read_index(&reader, &table)
+                var children: List[str]
+                defer children.close()
+                let size = try reader.count(4)
+                for j in 0..<size:
+                    try children.push(try read_index(&reader, &table))
+                let before = document.reorders.count
+                try document.reorder(parent, children.span())
+                if document.reorders.count == before:
+                    error(invalid, "duplicate Prism reorder parent")
+        elif tag == 2 and not seen_globs:
+            seen_globs = true
+            let count = try reader.count(8)
+            for i in 0..<count:
+                let source = try read_index(&reader, &table)
+                let target = try read_index(&reader, &table)
+                try document.connect_pattern(source, target)
+        else:
+            error(unsupported, "unknown or duplicate Prism crate section")
+
+
+## Legacy LZSS stream: u64 raw length, then LSB-first groups of eight tokens.
+## Match = u16(distance-1), u8(length-4); overlapping references are legal.

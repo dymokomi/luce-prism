@@ -1,0 +1,99 @@
+import prism
+import interop
+import strings
+
+struct Case:
+    var name: str
+    var a: str
+    var b: str
+    var conflicts: usize
+
+func parse(body: str) -> interop.Reference[prism.Document]!:
+    let source = try strings.join(["#prisma 4.0\n", body], "")
+    defer strings.release(source)
+    return try prism.Document.parse(source)
+
+pub func run() -> !:
+    let base = try parse("def object \"a\" { float size = 1 float3 color = (1,0,0) } def object \"b\" { float3 color = (0,1,0) }")
+    defer base.release()
+    let cases = [
+        Case("disjoint_edits_merge_cleanly", "over object \"a\" { float size = 2 }", "over object \"b\" { float3 color = (0,0,1) }", 0),
+        Case("same_slot_different_values_conflicts", "over object \"a\" { float3 color = (1,1,0) }", "over object \"a\" { float3 color = (1,0,1) }", 1),
+        Case("same_slot_same_value_is_not_a_conflict", "over object \"a\" { float3 color = (9,9,9) }", "over object \"a\" { float3 color = (9,9,9) }", 0),
+        Case("delete_vs_edit_conflicts", "delete \"/a\"", "over object \"a\" { float size = 5 }", 1),
+        Case("conflicts_are_order_independent", "over object \"a\" { float3 color = (1,1,0) }", "over object \"a\" { float3 color = (1,0,1) }", 1),
+        Case("metadata_remove_edit", "over object \"a\" { unset string role }", "over object \"a\" { string role = \"hero\" }", 1),
+        Case("property_remove_edit", "over object \"a\" { unset color }", "over object \"a\" { float3 color = (0,0,1) }", 1),
+        Case("connection_disconnect_conflict", "connect </b.in> = </a.out>", "disconnect \"/b.in\"", 1),
+        Case("reorder_conflict", "reorder \"/\" = [\"/a\",\"/b\"]", "reorder \"/\" = [\"/b\",\"/a\"]", 1)
+    ]
+    for item in cases:
+        let a = try parse(item.a)
+        defer a.release()
+        let b = try parse(item.b)
+        defer b.release()
+        let output = try prism.merge(base, a, b)
+        defer output.release()
+        let reverse = try prism.merge(base, b, a)
+        defer reverse.release()
+        assert(output.value().count() == item.conflicts)
+        assert(reverse.value().count() == output.value().count())
+        assert(output.value().ok() == (item.conflicts == 0))
+        if output.value().ok():
+            let combined = try output.value().document()
+            defer combined.release()
+            let first = try base.value().overlay(a)
+            defer first.release()
+            let expected = try first.value().overlay(b)
+            defer expected.release()
+            assert(try combined.value().equals(expected))
+        else:
+            assert((try output.value().path_at(0)).length > 0)
+            assert((try output.value().detail_at(0)).length > 0)
+            let unexpected: interop.Reference[prism.Document]? = output.value().document() catch failure:
+                assert(failure.code == prism.invalid)
+                recover none
+            if let document = unexpected:
+                document.release()
+                assert(false)
+    try compact_preserves_the_head_for_every_keep()
+    print("PASS 5 legacy merge and 3 compaction cases, plus metadata, connection and reorder conflicts")
+
+func compact_preserves_the_head_for_every_keep() -> !:
+    let base = try parse("def group \"doc\" { def node \"x\" { float v = 0 } }")
+    defer base.release()
+    let a = try parse("over group \"doc\" { over node \"x\" { float v = 1 } }")
+    defer a.release()
+    let b = try parse("over group \"doc\" { def node \"y\" { float v = 2 } }")
+    defer b.release()
+    let c = try parse("over group \"doc\" { over node \"x\" { float v = 3 } }")
+    defer c.release()
+    let expected = try parse("def group \"doc\" { def node \"x\" { float v = 3 } def node \"y\" { float v = 2 } }")
+    defer expected.release()
+    for keep in 0..<(usize)5:
+        var stack = try prism.LayerStack(base)
+        defer stack.close()
+        try stack.push(a)
+        try stack.push(b)
+        try stack.push(c)
+        try stack.compact(keep)
+        assert(stack.count() == (keep if keep < 3 else 3))
+        let head = try stack.resolve()
+        defer head.release()
+        assert(try head.value().equals(expected))
+        if keep == 0:
+            try compact_zero_collapses_to_one_base(&stack, expected)
+        if keep >= 3:
+            try compact_keep_all_is_a_noop(&stack, base)
+
+func compact_zero_collapses_to_one_base(stack: prism.LayerStack*, expected: interop.Reference[prism.Document]) -> !:
+    let base = try stack.base()
+    defer base.release()
+    assert(stack.count() == 0)
+    assert(try base.value().equals(expected))
+
+func compact_keep_all_is_a_noop(stack: prism.LayerStack*, expected: interop.Reference[prism.Document]) -> !:
+    let base = try stack.base()
+    defer base.release()
+    assert(stack.count() == 3)
+    assert(try base.value().equals(expected))

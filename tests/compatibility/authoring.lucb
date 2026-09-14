@@ -1,0 +1,205 @@
+import prism
+import interop
+import time
+
+func document() -> interop.Reference[prism.Document]!:
+    return try prism.Document.parse("#prisma 4.0\n")
+
+func nodeid_unique_and_nonzero() -> !:
+    let doc = try document()
+    defer doc.release()
+    try doc.value().add("/a", "x")
+    try doc.value().add("/b", "x")
+    discard(try doc.value().add_child("/a", "row"))
+    let a = doc.value().element_id("/a") else error(prism.invalid, "missing ID")
+    let b = doc.value().element_id("/b") else error(prism.invalid, "missing ID")
+    let c = doc.value().element_id("/a/[0]") else error(prism.invalid, "missing ID")
+    assert(a > 0 and b > 0 and c > 0 and a != b and a != c and b != c)
+    assert(doc.value().path_for_id(b) == "/b")
+
+func nodeid_survives_rename() -> !:
+    let doc = try document()
+    defer doc.release()
+    discard(try doc.value().append("/world/sphere", "object"))
+    let id = doc.value().element_id("/world/sphere") else error(prism.invalid, "missing ID")
+    discard(try doc.value().append("/world/box", "object"))
+    assert(try doc.value().move("/world/sphere", "/world/ball") == "/world/ball")
+    assert(doc.value().element_id("/world/sphere") == none)
+    assert(doc.value().element_id("/world/ball") == id)
+    assert(doc.value().path_for_id(id) == "/world/ball")
+
+func nodeid_dropped_on_remove() -> !:
+    let doc = try document()
+    defer doc.release()
+    try doc.value().add("/a", "x")
+    let id = doc.value().element_id("/a") else error(prism.invalid, "missing ID")
+    try doc.value().remove("/a")
+    assert(doc.value().path_for_id(id) == none)
+    try doc.value().add("/a", "x")
+    assert(doc.value().element_id("/a") != id)
+
+func nodeid_preserved_through_copy_but_not_compared() -> !:
+    let doc = try document()
+    defer doc.release()
+    try doc.value().add("/gone", "x")
+    try doc.value().remove("/gone")
+    try doc.value().add("/a", "x")
+    let copy = try doc.value().copy()
+    defer copy.release()
+    assert(copy.value().element_id("/a") == doc.value().element_id("/a"))
+    assert(try copy.value().equals(doc))
+    let bytes = try doc.value().encode(prism.Encoding.binary)
+    defer bytes.release()
+    let back = try prism.Document.decode(bytes.value().bytes())
+    defer back.release()
+    assert(try back.value().equals(doc))
+    assert(back.value().element_id("/a") != doc.value().element_id("/a"))
+
+func unique_sibling_names() -> !:
+    let doc = try document()
+    defer doc.release()
+    assert(try doc.value().append("/sphere", "group") == "/sphere")
+    assert(try doc.value().append("/sphere", "group") == "/sphere_1")
+    assert(try doc.value().append("/sphere", "group") == "/sphere_2")
+    try doc.value().add("/world", "group")
+    assert(try doc.value().append("/world/sphere", "group") == "/world/sphere")
+    assert(try doc.value().append("/world/sphere", "group") == "/world/sphere_1")
+
+func children_and_roots() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"a\" { def group \"x\" {} def group \"y\" {} } def group \"b\" {}")
+    defer doc.release()
+    assert(doc.value().child_count() == 2 and doc.value().child_count("/a") == 2)
+    assert(doc.value().child_at("/a", 0) == "/a/x" and doc.value().child_at("/a", 1) == "/a/y")
+    assert(doc.value().child_at("/a", 2) == none)
+
+func rename_rewrites_subtree_and_connections() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"a\" { def group \"b\" {} def group \"c\" { connect in = </a/b.out> } }")
+    defer doc.release()
+    assert(try doc.value().move("/a", "/z") == "/z")
+    assert(doc.value().contains("/z") and doc.value().contains("/z/b") and doc.value().contains("/z/c") and not doc.value().contains("/a"))
+    assert(try doc.value().source("/z/c.in") == "/z/b.out")
+    assert(doc.value().child_count("/z") == 2 and doc.value().child_count("/a") == 0)
+
+func reparent_into_another_group_keeps_wire() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"g1\" { def object \"obj\" { connect inMaterial = </mat.out> } } def group \"g2\" {} def material \"mat\" {}")
+    defer doc.release()
+    assert(try doc.value().move("/g1/obj", "/g2/obj") == "/g2/obj")
+    assert(try doc.value().source("/g2/obj.inMaterial") == "/mat.out")
+    assert(doc.value().child_count("/g1") == 0 and doc.value().child_count("/g2") == 1)
+
+func rename_rejects_cycle_and_uniquifies() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"a\" { def group \"b\" {} def group \"c\" {} }")
+    defer doc.release()
+    assert(try doc.value().move("/a", "/a/b/a") == "/a")
+    assert(try doc.value().move("/a/b", "/a/c") == "/a/c_1")
+    assert(doc.value().contains("/a/c_1") and not doc.value().contains("/a/b"))
+
+func remove_deletes_subtree_and_touching_connections() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"a\" { def group \"b\" { connect in = </other.out> def group \"leaf\" {} } } def group \"other\" { connect in = </a/b/leaf.out> }")
+    defer doc.release()
+    try doc.value().remove("/a/b")
+    assert(not doc.value().contains("/a/b") and not doc.value().contains("/a/b/leaf"))
+    assert(doc.value().contains("/a") and doc.value().contains("/other"))
+    assert(doc.value().connection_count() == 0)
+    assert(doc.value().child_count("/a") == 0 and doc.value().child_count() == 2)
+
+func connect_replaces_per_input_and_disconnect() -> !:
+    let doc = try document()
+    defer doc.release()
+    try doc.value().connect("/a.out", "/t.in")
+    try doc.value().connect("/b.out", "/t.in")
+    assert(doc.value().connection_count() == 1)
+    assert(try doc.value().source("/t.in") == "/b.out")
+    doc.value().disconnect("/t.in")
+    assert(doc.value().connection_count() == 0)
+
+func assembly_is_linear_not_quadratic() -> !:
+    let doc = try document()
+    defer doc.release()
+    let start = time.now()
+    for i in 0..<(usize)50000:
+        var scratch: u8[40]
+        try doc.value().add(try format(scratch, f"/e{i}"), "group")
+    let elapsed = time.since(start)
+    assert(doc.value().element_count() == 50000)
+    assert(doc.value().contains("/e0") and doc.value().contains("/e49999"))
+    assert(doc.value().child_count() == 50000)
+    assert(elapsed < 3000000000)
+
+func anonymous_segment_recognition():
+    assert(prism.is_anonymous("[0]") and prism.is_anonymous("[42]"))
+    assert(not prism.is_anonymous("[]") and not prism.is_anonymous("[a]") and not prism.is_anonymous("0") and not prism.is_anonymous("paragraph"))
+    assert(prism.is_anonymous(prism.path_name("/document/[1]")))
+
+func anonymous_paths_parse_and_roundtrip():
+    assert(prism.valid_path("/document/[0]/[2]"))
+    assert(prism.valid_path("/document/[0].text"))
+    assert(prism.element_path("/document/[0].text") == "/document/[0]")
+    assert(not prism.valid_path("/document/[x]"))
+
+func append_child_indexes_positionally() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef document \"doc\" {}")
+    defer doc.release()
+    assert(try doc.value().add_child("/doc", "heading") == "/doc/[0]")
+    assert(try doc.value().add_child("/doc", "paragraph") == "/doc/[1]")
+    assert(try doc.value().add_child("/doc", "paragraph") == "/doc/[2]")
+    assert(doc.value().child_at("/doc", 1) == "/doc/[1]")
+    assert(doc.value().child_at("/doc", 9) == none)
+
+func anonymous_prims_serialize_without_names() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef document \"document\" { def heading { int level = 1 def text { str text = \"Title\" } } def paragraph { def text { str text = \"Hello\" } } }")
+    defer doc.release()
+    let text = try doc.value().encode(prism.Encoding.text)
+    defer text.release()
+    let back = try prism.Document.decode(text.value().bytes())
+    defer back.release()
+    assert(try back.value().equals(doc))
+    let bytes = try back.value().encode(prism.Encoding.text)
+    defer bytes.release()
+    assert((str)text.value().bytes() == (str)bytes.value().bytes())
+
+func anonymous_index_is_positional_after_removal() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef document \"doc\" { def a {} def b {} def c {} }")
+    defer doc.release()
+    try doc.value().remove("/doc/[1]")
+    assert(doc.value().child_count("/doc") == 2)
+    assert(doc.value().child_at("/doc", 1) == "/doc/[2]")
+    let bytes = try doc.value().encode(prism.Encoding.text)
+    defer bytes.release()
+    let back = try prism.Document.decode(bytes.value().bytes())
+    defer back.release()
+    assert(back.value().child_at("/doc", 1) == "/doc/[1]")
+    assert(try back.value().type_at("/doc/[1]") == "c")
+    assert(try doc.value().add_child("/doc", "d") == "/doc/[3]")
+
+func named_and_anonymous_children_mix() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef document \"doc\" { def section \"intro\" {} }")
+    defer doc.release()
+    assert(try doc.value().add_child("/doc", "paragraph") == "/doc/[1]")
+    assert(doc.value().child_at("/doc", 0) == "/doc/intro")
+    let bytes = try doc.value().encode(prism.Encoding.text)
+    defer bytes.release()
+    let back = try prism.Document.decode(bytes.value().bytes())
+    defer back.release()
+    assert(try back.value().equals(doc))
+
+pub func run() -> !:
+    try nodeid_unique_and_nonzero()
+    try nodeid_survives_rename()
+    try nodeid_dropped_on_remove()
+    try nodeid_preserved_through_copy_but_not_compared()
+    try unique_sibling_names()
+    try children_and_roots()
+    try rename_rewrites_subtree_and_connections()
+    try reparent_into_another_group_keeps_wire()
+    try rename_rejects_cycle_and_uniquifies()
+    try remove_deletes_subtree_and_touching_connections()
+    try connect_replaces_per_input_and_disconnect()
+    try assembly_is_linear_not_quadratic()
+    anonymous_segment_recognition()
+    anonymous_paths_parse_and_roundtrip()
+    try append_child_indexes_positionally()
+    try anonymous_prims_serialize_without_names()
+    try anonymous_index_is_positional_after_removal()
+    try named_and_anonymous_children_mix()
+    print("PASS 18 legacy authoring and identity cases, including 50,000-element assembly")

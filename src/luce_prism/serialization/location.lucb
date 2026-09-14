@@ -1,0 +1,18 @@
+## Byte columns match the legacy ParseError convention (one-based).
+pub struct Location:
+    pub var line: usize = 1
+    pub var column: usize = 1
+
+pub func locate(bytes: const u8[], offset: usize, location: Location*):
+    location[0] = Location()
+    let end = offset if offset < bytes.length else bytes.length
+    for byte in bytes[..<end]:
+        if byte == '\n':
+            location.line += 1
+            location.column = 1
+        else:
+            location.column += 1
+
+pub func capture(bytes: const u8[], offset: usize, location: Location*?):
+    if let target = location:
+        locate(bytes, offset, target)

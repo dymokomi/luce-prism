@@ -1,0 +1,78 @@
+## Serialization compression.
+import memory
+from luce_prism.storage import Buffer, Reader
+from luce_prism.types import invalid, limit_exceeded, max_bytes
+
+pub func decompress_bytes(bytes: const u8[]) -> Buffer!:
+    var reader = Reader(data = bytes)
+    let size = try reader.uint(8)
+    if size > (u64)max_bytes:
+        error(limit_exceeded, "Prism decompression exceeds 256 MiB")
+    var output: Buffer
+    errdefer output.close()
+    while output.used < (usize)size:
+        let flags = try reader.uint(1)
+        for bit in 0..<8:
+            if output.used == (usize)size:
+                break
+            if (flags & ((u64)1 << bit)) == 0:
+                try output.byte((u8)try reader.uint(1))
+            else:
+                let distance = (usize)try reader.uint(2) + 1
+                let length = (usize)try reader.uint(1) + 4
+                if distance > output.used or length > (usize)size - output.used:
+                    error(invalid, "invalid Prism compression back-reference")
+                for i in 0..<length:
+                    let byte = output.data[output.used - distance]
+                    try output.byte(byte)
+    if reader.remaining() != 0:
+        error(invalid, "trailing Prism compressed bytes")
+    return output
+
+pub func hash_bytes(bytes: const u8[], index: usize) -> usize:
+    var value: u32 = 0
+    for i in 0..<(usize)4:
+        value |= (u32)bytes[index + i] << (i * 8)
+    return (usize)((value *% 2654435761) >> 16)
+
+pub func compress_bytes(bytes: const u8[]) -> Buffer!:
+    var output: Buffer
+    errdefer output.close()
+    try output.uint((u64)bytes.length, 8)
+    # One most-recent candidate per hash keeps working memory fixed (512 KiB).
+    # The token format is identical to C++; compressed bytes need not be identical.
+    let positions = try alloc usize[65536] in memory.heap
+    defer free(positions) in memory.heap
+    for i in 0..<positions.length:
+        positions[i] = 0
+    var index: usize = 0
+    var bit: usize = 8
+    var flag_position: usize = 0
+    while index < bytes.length:
+        if bit == 8:
+            flag_position = output.used
+            try output.byte(0)
+            bit = 0
+        var length: usize = 0
+        var distance: usize = 0
+        if bytes.length - index >= 4:
+            let previous = positions[hash_bytes(bytes, index)]
+            if previous > 0 and index - (previous - 1) <= 65536:
+                let candidate = previous - 1
+                let maximum = 259 if bytes.length - index > 259 else bytes.length - index
+                while length < maximum and bytes[candidate + length] == bytes[index + length]:
+                    length += 1
+                distance = index - candidate
+        let end = index + (length if length >= 4 else 1)
+        if length >= 4:
+            output.data[flag_position] |= (u8)((u32)1 << bit)
+            try output.uint((u64)(distance - 1), 2)
+            try output.byte((u8)(length - 4))
+        else:
+            try output.byte(bytes[index])
+        while index < end:
+            if bytes.length - index >= 4:
+                positions[hash_bytes(bytes, index)] = index + 1
+            index += 1
+        bit += 1
+    return output

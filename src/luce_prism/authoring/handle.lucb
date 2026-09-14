@@ -1,0 +1,148 @@
+## Path-based editing handles stay valid across storage growth and own their document.
+import interop
+import ownership
+import memory
+from luce_prism.document import Document
+from luce_prism.value import Value
+from luce_prism.query.scalars import numeric
+from luce_prism.geometry.affine import Vec2
+from luce_prism.indexes.spatial import Vec3
+from luce_prism.authoring.names import unique_path
+from luce_prism.path import valid_path, element_path
+from luce_prism.storage import Buffer, text_copy
+from luce_prism.types import DType, Interpolation, invalid
+
+pub struct ElementHandle:
+    var source: interop.Reference[Document]?
+    var location: Buffer
+
+    pub func init(document: interop.Reference[Document], path: str) -> !:
+        if not valid_path(path):
+            error(invalid, "malformed Prism element handle path")
+        self.location = try text_copy(element_path(path))
+        self.source = document.clone()
+
+    pub func valid() -> bool:
+        let doc = self.source else return false
+        if doc.is_closed():
+            return false
+        return doc.value().contains(self.location.view())
+
+    pub func path() -> str:
+        return self.location.view()
+
+    pub func require_value(name: str, time: f64 = 0.0) -> interop.Reference[Value]!:
+        return try (try (self.source else error(invalid, "Prism element handle is closed")).get()).resolve(self.location.view(), name, time)
+
+    func number(name: str, time: f64) -> f64?!:
+        if not self.valid():
+            return none
+        let doc = self.source else return none
+        if not (try doc.get()).has_property(self.location.view(), name):
+            return none
+        let value = try self.require_value(name, time)
+        defer value.release()
+        if let number = numeric((try value.get()).view_data()):
+            return (f64)(f32)number
+        return none
+
+    pub func get_number(name: str, fallback: f64 = 0.0, time: f64 = 0.0) -> f64!:
+        return (try self.number(name, time)) else fallback
+
+    pub func require_number(name: str, time: f64 = 0.0) -> f64!:
+        return (try self.number(name, time)) else error(invalid, "Prism property is missing or is not a numeric scalar")
+
+    pub func get_integer(name: str, fallback: i64 = 0, time: f64 = 0.0) -> i64!:
+        let number = (try self.number(name, time)) else return fallback
+        return (i64)(i32)number
+
+    pub func require_integer(name: str, time: f64 = 0.0) -> i64!:
+        return (i64)(i32)try self.require_number(name, time)
+
+    pub func get_boolean(name: str, fallback: bool = false, time: f64 = 0.0) -> bool!:
+        let number = (try self.number(name, time)) else return fallback
+        return number != 0.0
+
+    pub func require_boolean(name: str, time: f64 = 0.0) -> bool!:
+        let value = try self.require_value(name, time)
+        defer value.release()
+        if (try value.get()).dtype() != DType.boolean or (try value.get()).rank() != 0:
+            error(invalid, "expected a scalar Prism bool")
+        return try (try value.get()).number_at() != 0.0
+
+    func vector(name: str, count: usize, time: f64) -> interop.Reference[Value]?!:
+        if not self.valid():
+            return none
+        let doc = self.source else return none
+        if not (try doc.get()).has_property(self.location.view(), name):
+            return none
+        let value = try self.require_value(name, time)
+        errdefer value.release()
+        if (try value.get()).dtype() == DType.float32 and (try value.get()).rank() == 1 and try (try value.get()).dimension(0) == count:
+            return value
+        value.release()
+        return none
+
+    pub func get_vec2(name: str, fallback: Vec2 = Vec2(), time: f64 = 0.0) -> Vec2!:
+        let value = (try self.vector(name, 2, time)) else return fallback
+        defer value.release()
+        return Vec2(try (try value.get()).number_at(0), try (try value.get()).number_at(1))
+
+    pub func require_vec2(name: str, time: f64 = 0.0) -> Vec2!:
+        let value = (try self.vector(name, 2, time)) else error(invalid, "expected a Prism float2 property")
+        defer value.release()
+        return Vec2(try (try value.get()).number_at(0), try (try value.get()).number_at(1))
+
+    pub func get_vec3(name: str, fallback: Vec3 = Vec3(), time: f64 = 0.0) -> Vec3!:
+        let value = (try self.vector(name, 3, time)) else return fallback
+        defer value.release()
+        return Vec3(try (try value.get()).number_at(0), try (try value.get()).number_at(1), try (try value.get()).number_at(2))
+
+    pub func require_vec3(name: str, time: f64 = 0.0) -> Vec3!:
+        let value = (try self.vector(name, 3, time)) else error(invalid, "expected a Prism float3 property")
+        defer value.release()
+        return Vec3(try (try value.get()).number_at(0), try (try value.get()).number_at(1), try (try value.get()).number_at(2))
+
+    func copy() -> interop.Reference[ElementHandle]!:
+        return try edit(self.source else error(invalid, "Prism element handle is closed"), self.location.view())
+
+    pub func set(name: str, value: interop.Reference[Value], type_name: str = "") -> interop.Reference[ElementHandle]!:
+        let next = try self.copy()
+        errdefer next.release()
+        try (try (self.source else error(invalid, "Prism element handle is closed")).get()).set(self.location.view(), name, value, type_name)
+        return next
+
+    pub func set_metadata(name: str, value: str) -> interop.Reference[ElementHandle]!:
+        let next = try self.copy()
+        errdefer next.release()
+        try (try (self.source else error(invalid, "Prism element handle is closed")).get()).set_metadata(self.location.view(), name, value)
+        return next
+
+    pub func sample(name: str, time: f64, value: interop.Reference[Value], interpolation: Interpolation = Interpolation.linear) -> interop.Reference[ElementHandle]!:
+        let next = try self.copy()
+        errdefer next.release()
+        try (try (self.source else error(invalid, "Prism element handle is closed")).get()).animate(self.location.view(), name, time, value, interpolation)
+        return next
+
+    pub func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
+        if let doc = self.source:
+            doc.trace(visit, context)
+
+    pub mutating func close():
+        if let doc = self.source:
+            doc.release()
+        self.source = none
+        self.location.close()
+
+pub let element_handle_type = interop.Type[ElementHandle]("Prism element handle", ElementHandle.close, ElementHandle.trace, closeable = true)
+
+pub func edit(doc: interop.Reference[Document], path: str) -> interop.Reference[ElementHandle]!:
+    return try interop.Reference[ElementHandle].adopt(try new ElementHandle(doc, path) in memory.heap, element_handle_type, memory.heap)
+
+pub func define(doc: interop.Reference[Document], path: str, kind: str = "") -> interop.Reference[ElementHandle]!:
+    var final_path = try unique_path((try doc.get()).view_data(), path)
+    defer final_path.close()
+    let handle = try edit(doc, final_path.view())
+    errdefer handle.release()
+    discard(try (try doc.get()).append(final_path.view(), kind))
+    return handle

@@ -1,0 +1,63 @@
+## Detect renames between snapshots sharing in-memory node identity.
+import interop
+import memory
+from luce_prism.document import Document
+from luce_prism.storage import List, Buffer, text_copy
+from luce_prism.types import invalid
+
+struct Move:
+    var identifier: usize
+    var origin: Buffer
+    var destination: Buffer
+
+    mutating func close():
+        self.origin.close()
+        self.destination.close()
+
+pub struct Moves:
+    var entries: List[Move]
+
+    pub func init():
+        return
+
+    pub func count() -> usize:
+        return self.entries.count
+
+    func at(index: usize) -> const Move*!:
+        if index >= self.entries.count:
+            error(invalid, "Prism move index is out of bounds")
+        return &self.entries.items[index]
+
+    pub func id_at(index: usize) -> usize!:
+        return (try self.at(index)).identifier
+
+    pub func origin_at(index: usize) -> str!:
+        return (try self.at(index)).origin.view()
+
+    pub func destination_at(index: usize) -> str!:
+        return (try self.at(index)).destination.view()
+
+    pub mutating func close():
+        for i in 0..<self.entries.count:
+            self.entries.items[i].close()
+        self.entries.close()
+
+pub let moves_type = interop.Type[Moves]("Prism moves", Moves.close, closeable = true)
+
+pub func renames(base: interop.Reference[Document], target: interop.Reference[Document]) -> interop.Reference[Moves]!:
+    let source = (try base.get()).view_data()
+    let edited = (try target.get()).view_data()
+    var result = Moves()
+    errdefer result.close()
+    for element in source.elements.span():
+        let path = edited.path_for_id(element.identifier) else continue
+        if path != element.path.view():
+            var move = Move(identifier = element.identifier)
+            errdefer move.close()
+            move.origin = try element.path.copy()
+            move.destination = try text_copy(path)
+            try result.entries.push(move)
+    let native = try new Moves() in memory.heap
+    native[0] = result
+    result = Moves()
+    return try interop.Reference[Moves].adopt(native, moves_type, memory.heap)

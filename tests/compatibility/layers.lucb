@@ -1,0 +1,112 @@
+import prism
+import interop
+import strings
+
+struct Case:
+    var name: str
+    var base: str
+    var layer: str
+    var expected: str
+
+func parse(body: str) -> interop.Reference[prism.Document]!:
+    let source = try strings.join(["#prisma 4.0\n", body], "")
+    defer strings.release(source)
+    return try prism.Document.parse(source)
+
+func verify(item: Case) -> !:
+    let base = try parse(item.base)
+    defer base.release()
+    let layer = try parse(item.layer)
+    defer layer.release()
+    let expected = try parse(item.expected)
+    defer expected.release()
+    let before = try base.value().copy()
+    defer before.release()
+    let output = try base.value().overlay(layer)
+    defer output.release()
+    if not (try output.value().equals(expected)):
+        print(item.name)
+    assert(try output.value().equals(expected))
+    assert(try base.value().equals(before))
+    for encoding in [prism.Encoding.text, prism.Encoding.binary, prism.Encoding.package]:
+        let encoded = try layer.value().encode(encoding)
+        defer encoded.release()
+        let restored = try prism.Document.decode(encoded.value().bytes())
+        defer restored.release()
+        assert(try restored.value().equals(layer))
+        let applied = try base.value().overlay(restored)
+        defer applied.release()
+        assert(try applied.value().equals(expected))
+
+pub func run() -> !:
+    let base = "def object \"bolt\" { float radius = 0.5 float3 albedo = (1,1,1) } def object \"nut\" { float radius = 0.3 }"
+    let changed = "def object \"bolt\" { float radius = 0.9 float3 albedo = (1,1,1) } def object \"nut\" { float radius = 0.3 }"
+    let wired = "def material \"mat\" { float out = 1 } def object \"bolt\" { float in = 0 connect in = </mat.out> }"
+    let cases = [
+        Case("overlay_overrides_a_property_keeps_the_rest", base, "def object \"bolt\" { float radius = 0.9 }", changed),
+        Case("overlay_adds_a_new_element", base, "def object \"washer\" { float radius = 0.25 }", "def object \"bolt\" { float radius = 0.5 float3 albedo = (1,1,1) } def object \"nut\" { float radius = 0.3 } def object \"washer\" { float radius = 0.25 }"),
+        Case("overlay_preserves_a_reference_it_does_not_mention", "def object \"car\" { reference \"car.prisma\" float3 color = (1,0,0) }", "over object \"car\" { float3 color = (0,0,1) }", "def object \"car\" { reference \"car.prisma\" float3 color = (0,0,1) }"),
+        Case("overlay_connection_replaces_into_same_target", "def node \"a\" {} def node \"b\" {} def node \"c\" {} connect </c.in> = </a.out>", "connect </c.in> = </b.out>", "def node \"a\" {} def node \"b\" {} def node \"c\" {} connect </c.in> = </b.out>"),
+        Case("commit_is_overlay_then_keep_base_shape", base, "over object \"bolt\" { float radius = 0.9 }", changed),
+        Case("over_patches_existing_path", base, "over object \"bolt\" { float radius = 0.9 }", changed),
+        Case("over_on_missing_path_is_skipped_not_orphaned", base, "over object \"ghost\" { float radius = 1 }", base),
+        Case("def_on_missing_path_adds", "def object \"bolt\" {}", "def object \"washer\" {}", "def object \"bolt\" {} def object \"washer\" {}"),
+        Case("delete_removes_element_and_its_connections", wired, "delete \"/bolt\"", "def material \"mat\" { float out = 1 }"),
+        Case("delete_removes_a_whole_subtree", "def group \"g\" { def object \"a\" {} def object \"b\" {} }", "delete \"/g\"", ""),
+        Case("delete_of_absent_path_is_a_noop", base, "delete \"/nope\"", base),
+        Case("overlay_file_with_over_and_delete_round_trips", base, "over object \"bolt\" { float radius = 0.9 } delete \"/nut\"", "def object \"bolt\" { float radius = 0.9 float3 albedo = (1,1,1) }"),
+        Case("normal_document_has_no_override_or_deletions", base, "", base),
+        Case("overlay_disconnect_removes_a_wire_keeps_endpoints", wired, "disconnect \"/bolt.in\"", "def material \"mat\" { float out = 1 } def object \"bolt\" { float in = 0 }"),
+        Case("disconnect_tombstone_round_trips", "def node \"a\" {}", "disconnect \"/a.in\"", "def node \"a\" {}"),
+        Case("disconnect_of_an_unconnected_target_is_a_noop", wired, "disconnect \"/mat.out\"", wired),
+        Case("overlay_prunes_a_connection_left_dangling", "def object \"a\" {} def object \"b\" {}", "delete \"/b\" connect </b.in> = </a.out>", "def object \"a\" {}"),
+        Case("connection_equality_is_order_insensitive", "def node \"a\" {} def node \"b\" {} def node \"c\" {} connect </c.in> = </a.out> connect </b.in> = </a.out>", "", "def node \"a\" {} def node \"b\" {} def node \"c\" {} connect </b.in> = </a.out> connect </c.in> = </a.out>")
+    ]
+    for item in cases:
+        try verify(item)
+    try overlay_stacks_later_wins()
+    try delete_then_readd_in_layers()
+    print("PASS 20 legacy overlay cases and layer round trips in all encodings")
+
+func overlay_stacks_later_wins() -> !:
+    let base = try parse("def object \"bolt\" { float radius = 0.5 }")
+    defer base.release()
+    let a = try parse("over object \"bolt\" { float radius = 0.7 }")
+    defer a.release()
+    let b = try parse("over object \"bolt\" { float radius = 0.2 }")
+    defer b.release()
+    let expected = try parse("def object \"bolt\" { float radius = 0.2 }")
+    defer expected.release()
+    var stack = try prism.LayerStack(base)
+    defer stack.close()
+    try stack.push(a)
+    try stack.push(b)
+    let output = try stack.resolve()
+    defer output.release()
+    assert(try output.value().equals(expected))
+    try stack.compact(1)
+    assert(stack.count() == 1)
+    let compacted = try stack.resolve()
+    defer compacted.release()
+    assert(try compacted.value().equals(expected))
+    try stack.compact(0)
+    let collapsed = try stack.base()
+    defer collapsed.release()
+    assert(try collapsed.value().equals(expected))
+
+func delete_then_readd_in_layers() -> !:
+    let base = try parse("def object \"bolt\" { float radius = 0.5 float3 albedo = (1,1,1) }")
+    defer base.release()
+    let a = try parse("delete \"/bolt\"")
+    defer a.release()
+    let b = try parse("def object \"bolt\" { float radius = 1.5 }")
+    defer b.release()
+    let expected = try parse("def object \"bolt\" { float radius = 1.5 }")
+    defer expected.release()
+    var stack = try prism.LayerStack(base)
+    defer stack.close()
+    try stack.push(a)
+    try stack.push(b)
+    let output = try stack.resolve()
+    defer output.release()
+    assert(try output.value().equals(expected))

@@ -1,0 +1,320 @@
+## Serialization text writer.
+import strings
+import math
+import c
+import memory
+from luce_prism.animation import Property
+from luce_prism.model import DocumentData, Element
+from luce_prism.path import anonymous, parent_path, path_name, valid_name, element_path
+from luce_prism.serialization.type_names import dtype_name, type_spec
+from luce_prism.storage import find_pair, Buffer, List, Reader
+from luce_prism.types import DType, Interpolation, invalid, limit_exceeded, max_depth, unsupported
+from luce_prism.value import ValueData, floating, same_shape, value_header
+
+pub func quote(out: Buffer*, text: str, delimiter: u8 = '"') -> !:
+    try out.byte(delimiter)
+    for byte in text.bytes:
+        if byte == delimiter or byte == '\\':
+            try out.byte('\\')
+            try out.byte(byte)
+        elif byte == '\n':
+            try out.text("\\n")
+        elif byte == '\t':
+            try out.text("\\t")
+        else:
+            try out.byte(byte)
+    try out.byte(delimiter)
+
+pub func bare_identifier(text: str) -> bool:
+    return valid_name(text) and not (text.bytes[0] >= '0' and text.bytes[0] <= '9')
+
+pub func write_name(out: Buffer*, text: str) -> !:
+    if bare_identifier(text):
+        try out.text(text)
+    else:
+        try quote(out, text)
+
+pub func indent(out: Buffer*, depth: usize) -> !:
+    for i in 0..<depth * 4:
+        try out.byte(' ')
+
+extern func format_number as "snprintf"(output: u8*, size: usize, spec: c.str, ...) -> i32
+
+pub func write_float(out: Buffer*, value: f64, full_precision: bool = true) -> !:
+    var scratch: u8[64]
+    if not math.is_finite(value):
+        try out.byte('0')
+        return
+    if value == 0.0:
+        var zero = value
+        try out.text("-0" if (memory.read[u64](&zero) >> 63) != 0 else "0")
+        return
+    let bound = 1e15 if full_precision else 1e16
+    if value > -bound and value < bound and (f64)(i64)value == value:
+        try out.text(try strings.format_i64((i64)value, scratch))
+        return
+    let count = format_number(&scratch[0], scratch.length, "%.17g" if full_precision else "%.9g", value)
+    if count < 0 or (usize)count >= scratch.length:
+        error(invalid, "Prism number cannot be formatted")
+    try out.text((str)scratch[..<(usize)count])
+
+pub func write_leaf(out: Buffer*, value: const ValueData*, index: usize, strings_reader: Reader*) -> !:
+    var scratch: u8[80]
+    if value.kind == DType.string:
+        try quote(out, try strings_reader.text())
+    elif value.kind == DType.character:
+        if value.bits(index) > 127:
+            error(unsupported, "use binary for non-ASCII byte characters")
+        let byte: u8[1] = [(u8)value.bits(index)]
+        try quote(out, (str)byte, '\'')
+    elif value.kind == DType.boolean:
+        try out.text("true" if value.bits(index) != 0 else "false")
+    elif floating(value.kind):
+        try write_float(out, try value.number(index), value.kind == DType.float64)
+    elif value.kind == DType.int8 or value.kind == DType.int16 or value.kind == DType.int32 or value.kind == DType.int64:
+        try out.text(try strings.format_i64(value.signed(index), scratch))
+    else:
+        try out.text(try strings.format_u64(value.bits(index), scratch))
+
+pub func write_nested(out: Buffer*, value: const ValueData*, depth: usize, index: usize*, reader: Reader*) -> !:
+    if depth == value.shape.count:
+        try write_leaf(out, value, *index, reader)
+        *index += 1
+        return
+    try out.byte('[')
+    for i in 0..<(usize)value.shape.items[depth]:
+        if i > 0:
+            try out.text(", ")
+        try write_nested(out, value, depth + 1, index, reader)
+    try out.byte(']')
+
+func role(value: const ValueData*) -> str:
+    let rank = value.shape.count
+    if value.kind == DType.int64:
+        return "int" if rank == 0 else ("int[]" if rank == 1 else "")
+    if value.kind != DType.float32:
+        return ""
+    if rank == 0:
+        return "float"
+    if rank == 1:
+        let width = value.shape.items[0]
+        return "float2" if width == 2 else ("float3" if width == 3 else ("spectrum" if width == 32 else "float[]"))
+    if rank == 2:
+        if value.shape.items[0] == 2 and value.shape.items[1] == 3:
+            return "matrix"
+        if value.shape.items[1] == 2:
+            return "float2[]"
+    return ""
+
+func tuple(out: Buffer*, value: const ValueData*, start: usize, count: usize) -> !:
+    try out.byte('(')
+    var reader = Reader(data = value.payload.bytes())
+    for i in 0..<count:
+        if i > 0:
+            try out.text(", ")
+        try write_leaf(out, value, start + i, &reader)
+    try out.byte(')')
+
+pub func write_literal(out: Buffer*, value: const ValueData*, named: bool = false) -> !:
+    let kind = "" if named else role(value)
+    if kind == "float2" or kind == "float3" or kind == "matrix":
+        try tuple(out, value, 0, value.count())
+        return
+    if kind == "float2[]":
+        try out.byte('[')
+        for i in 0..<(usize)value.shape.items[0]:
+            if i > 0:
+                try out.text(", ")
+            try tuple(out, value, i * 2, 2)
+        try out.byte(']')
+        return
+    var reader = Reader(data = value.payload.bytes())
+    var index: usize = 0
+    try write_nested(out, value, 0, &index, &reader)
+
+pub func write_type(out: Buffer*, prop: const Property*) -> !:
+    if prop.type_name.used > 0:
+        var spec = try type_spec(prop.type_name.view())
+        defer spec.close()
+        var declared = try value_header(spec.kind, spec.shape.span())
+        defer declared.close()
+        if spec.label == "" or not same_shape(&declared, &prop.value):
+            error(invalid, "Prism catalog label does not match its value")
+        try out.text(prop.type_name.view())
+        return
+    let legacy = role(&prop.value)
+    if legacy.length > 0:
+        try out.text(legacy)
+        return
+    try out.text(dtype_name(prop.value.kind))
+    if prop.value.shape.count > 0:
+        try out.byte('[')
+        for i in 0..<prop.value.shape.count:
+            if i > 0:
+                try out.byte(',')
+            var scratch: u8[32]
+            try out.text(try strings.format_u64((u64)prop.value.shape.items[i], scratch))
+        try out.byte(']')
+
+pub func write_handles(out: Buffer*, name: str, values: const List[f64]*) -> !:
+    if values.count == 0:
+        return
+    try out.text(name)
+    try out.text(" = [")
+    for i in 0..<values.count:
+        if i > 0:
+            try out.text(", ")
+        try write_float(out, values.items[i])
+    try out.byte(']')
+
+func compatible_sample(prop: const Property*, sample: const ValueData*) -> bool:
+    if same_shape(&prop.value, sample):
+        return true
+    if prop.type_name.used > 0 or prop.value.kind != sample.kind or prop.value.shape.count != sample.shape.count:
+        return false
+    let declared = role(&prop.value)
+    if declared == "float[]" or declared == "int[]":
+        return true
+    return declared == "float2[]" and sample.shape.items[1] == 2
+
+pub func write_element(out: Buffer*, document: const DocumentData*, element: const Element*, depth: usize) -> !:
+    if depth >= max_depth:
+        error(limit_exceeded, "Prism element nesting limit exceeded")
+    try indent(out, depth)
+    try out.text("over" if element.override else "def")
+    if element.kind.used > 0:
+        try out.byte(' ')
+        try write_name(out, element.kind.view())
+    let name = path_name(element.path.view())
+    if not anonymous(name):
+        try out.byte(' ')
+        try quote(out, name)
+    try out.text(" {\n")
+    for prop in element.properties.span():
+        try indent(out, depth + 1)
+        try write_type(out, &prop)
+        try out.byte(' ')
+        try write_name(out, prop.name.view())
+        try out.text(" = ")
+        try write_literal(out, &prop.value, prop.type_name.used > 0)
+        try out.byte('\n')
+        if prop.samples.count > 0:
+            try indent(out, depth + 1)
+            try write_type(out, &prop)
+            try out.byte(' ')
+            try write_name(out, prop.name.view())
+            try out.text(".timeSamples = {\n")
+            for sample in prop.samples.span():
+                if not compatible_sample(&prop, &sample.value):
+                    error(unsupported, "use binary for samples with varying dtype or shape")
+                try indent(out, depth + 2)
+                try write_float(out, sample.time)
+                try out.text(": ")
+                # Use the declared dynamic array syntax even when a sample has
+                # two/three components and would independently classify as a tuple.
+                let declared = role(&prop.value)
+                try write_literal(out, &sample.value, prop.type_name.used > 0 or declared == "float[]" or declared == "int[]")
+                if sample.interpolation != Interpolation.linear or sample.handle != 0 or sample.left.count > 0 or sample.right.count > 0:
+                    try out.text(" (interp = ")
+                    try out.text("held" if sample.interpolation == Interpolation.held else ("linear" if sample.interpolation == Interpolation.linear else "bezier"))
+                    if sample.handle != 0 or sample.left.count > 0 or sample.right.count > 0:
+                        let modes: str[4] = ["auto", "vector", "aligned", "free"]
+                        try out.text(", handle = ")
+                        try out.text(modes[(usize)sample.handle])
+                        try write_handles(out, ", left", &sample.left)
+                        try write_handles(out, ", right", &sample.right)
+                    try out.byte(')')
+                try out.text(",\n")
+            try indent(out, depth + 1)
+            try out.text("}\n")
+    let reference = find_pair(&element.metadata, "reference")
+    if let filename = reference:
+        try indent(out, depth + 1)
+        try out.text("reference ")
+        try quote(out, filename)
+        if let target = find_pair(&element.metadata, "referencePath"):
+            try out.byte(' ')
+            try quote(out, target)
+        try out.byte('\n')
+    for meta in element.metadata.span():
+        if reference != none and (meta.key.view() == "reference" or meta.key.view() == "referencePath"):
+            continue
+        try indent(out, depth + 1)
+        try out.text("string ")
+        try write_name(out, meta.key.view())
+        try out.text(" = ")
+        try quote(out, meta.value.view())
+        try out.byte('\n')
+    for removed in element.removed_properties.span():
+        try indent(out, depth + 1)
+        try out.text("unset ")
+        try write_name(out, removed.view())
+        try out.byte('\n')
+    for removed in element.removed_metadata.span():
+        try indent(out, depth + 1)
+        try out.text("unset string ")
+        try write_name(out, removed.view())
+        try out.byte('\n')
+    for connection in document.connections.span():
+        let target = connection.key.view()
+        if element_path(target) != element.path.view():
+            continue
+        try indent(out, depth + 1)
+        try out.text("connect ")
+        try write_name(out, (str)target.bytes[element.path.used + 1..])
+        try out.text(" = <")
+        try out.text(connection.value.view())
+        try out.text(">\n")
+    for i in 0..<document.child_count(element.path.view()):
+        let path = document.child_at(element.path.view(), i) else error(invalid, "invalid Prism child index")
+        try write_element(out, document, &document.elements.items[try document.require(path)], depth + 1)
+    try indent(out, depth)
+    try out.text("}\n")
+
+pub func write_text(document: const DocumentData*) -> Buffer!:
+    var output: Buffer
+    errdefer output.close()
+    for item in document.elements.span():
+        let parent = parent_path(item.path.view())
+        if parent != "/" and not document.contains(parent):
+            error(unsupported, "text needs explicit ancestors; use binary for sparse documents")
+    try output.text("#prisma 4.0\n")
+    var first = true
+    for element in document.elements.span():
+        if parent_path(element.path.view()) == "/":
+            if not first:
+                try output.byte('\n')
+            first = false
+            try write_element(&output, document, &element, 0)
+    for connection in document.connections.span():
+        if document.contains(element_path(connection.key.view())):
+            continue
+        try output.text("connect <")
+        try output.text(connection.key.view())
+        try output.text("> = <")
+        try output.text(connection.value.view())
+        try output.text(">\n")
+    for path in document.deletions.span():
+        try output.text("delete ")
+        try quote(&output, path.view())
+        try output.byte('\n')
+    for path in document.disconnections.span():
+        try output.text("disconnect ")
+        try quote(&output, path.view())
+        try output.byte('\n')
+    for glob in document.globs.span():
+        try output.text("connect <")
+        try output.text(glob.value.view())
+        try output.text("> = <")
+        try output.text(glob.key.view())
+        try output.text(">\n")
+    for order in document.reorders.span():
+        try output.text("reorder ")
+        try quote(&output, order.parent.view())
+        try output.text(" = [")
+        for i in 0..<order.children.count:
+            if i > 0:
+                try output.text(", ")
+            try quote(&output, order.children.items[i].view())
+        try output.text("]\n")
+    return output

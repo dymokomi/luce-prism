@@ -1,0 +1,16 @@
+import compatibility.codec_api as codec_api
+import compatibility.projection as projection
+import compatibility.event_log as event_log
+import compatibility.highlight as highlight
+import compatibility.settings as settings
+import compatibility.cache as cache
+
+pub func main(arguments: str[]) -> i32!:
+    assert(arguments.length == 2)
+    try settings.run(arguments[1])
+    try highlight.run()
+    try projection.run()
+    try event_log.run()
+    try cache.run()
+    try codec_api.run()
+    return 0

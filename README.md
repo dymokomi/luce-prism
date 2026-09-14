@@ -1,15 +1,19 @@
 # luce-prism
 
-Prism's native data container, written in **Luce Base** and usable from **Luce**.
+Prism's native document library, written in **Luce Base** and usable from **Luce**.
 A document holds path-addressed elements, typed multidimensional values, metadata,
 animation and connections. Documents, images, vectors, scenes and bundles can share
 this substrate without the container depending on their renderers or codecs.
 
-This first port implements the format/storage layer of
-`kinogaki-core`, including v4 `.prism`
-crates, legacy LZSS compression, `.prisma` text and asset packages. The C++ core is
-a compatibility oracle for tests; it is **not a runtime or build dependency**.
-See [the feature map](docs/PORT.md) for the boundary of this initial implementation.
+This package ports the Prism format and its document services from `kinogaki-core`:
+composition and explicit references, overlay/diff/merge, animation, registered
+node evaluation, queries and indexes, schema validation, columnar views, logic,
+surface syntax, foreign codecs, bundles, and editor projections. The C++ core is
+an independent test oracle; it is **not a runtime or build dependency**.
+
+Implementation modules have separate responsibilities under `src/luce_prism`.
+The public `prism` module is a facade. See [architecture](docs/PORT.md),
+[API and ownership](docs/API.md), and [compatibility differences](docs/LEGACY-DIFFERENCES.md).
 
 ```toml
 # Your application's luce.toml
@@ -77,7 +81,7 @@ def image "hero" {
 
 Here the preview is embedded in the ASCII file, and `/image` in `media.prism` can
 hold the full pixels or other binary content. The reference is retained across
-encodings. Current `load`/`parse` read the authored document; callers explicitly
+encodings. `load`/`parse` read the authored document; callers explicitly
 load external files when needed. See [external media](docs/REFERENCES.md) and the
 [tested Luce example](examples/referenced_media.luc) for writing and reading both
 files together.
@@ -96,10 +100,15 @@ and test outputs use temporary directories. Media tests compare payload bytes fo
 a 512×512 RGBA image, an embedded PNG, 16-bit channels and finite floating-point
 arrays in every encoding. See [validation](docs/VALIDATION.md).
 
-This package has no GPU, threading, UI or foreign-format dependencies. Image
-codecs belong in `luce-image`; content schemas and adapters can target Prism's typed
-properties. Composition execution, query engines, registered node evaluation and
-foreign codecs remain future work. Bézier keys and handles round-trip; evaluating
-a Bézier interval currently reports `unsupported`.
+Prism includes JSON, Markdown, HTML, SVG, text, and blob adapters. Image decoding
+remains in `luce-image`; Prism stores its pixels and encoded files without a
+runtime dependency on that package. GPU, threading, and rendering remain the
+responsibility of the Luce infrastructure and consuming applications.
+
+The compatibility inventory maps **373 native legacy behavioral cases** to tests.
+An additional 44 legacy C ABI/global-interner cases are retained in the inventory
+and explicitly outside this native API. This is a behavioral compatibility gate,
+not a claim of measured 100% line or branch coverage. Differential tests compare
+against pinned C++ outputs and optionally a freshly built C++ oracle.
 
 Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE).

@@ -1,0 +1,97 @@
+import prism
+import interop
+
+func state(value: f64) -> interop.Reference[prism.Document]!:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef counter \"c\" { float v = 0 }")
+    errdefer doc.release()
+    let property = try prism.Value.number(value)
+    defer property.release()
+    try doc.value().set("/c", "v", property)
+    return doc
+
+func populate(log: prism.EventLog*) -> !:
+    assert(log.head_offset() == 0)
+    for i in 1..=(usize)3:
+        let next = try state((f64)i)
+        defer next.release()
+        assert(try log.commit(next) == i)
+
+func commit_offsets_and_replay() -> !:
+    let base = try state(0.0)
+    defer base.release()
+    var log = try prism.EventLog(base)
+    defer log.close()
+    try populate(&log)
+    for i in 0..=(usize)3:
+        let doc = try log.at(i)
+        defer doc.release()
+        let expected = try state((f64)i)
+        defer expected.release()
+        assert(try doc.value().equals(expected))
+    let clamped = try log.at(99)
+    defer clamped.release()
+    let head = try log.head()
+    defer head.release()
+    assert(try clamped.value().equals(head))
+
+func since_is_the_catch_up_feed() -> !:
+    let base = try state(0.0)
+    defer base.release()
+    var log = try prism.EventLog(base)
+    defer log.close()
+    try populate(&log)
+    let all = try log.since(0)
+    defer all.release()
+    assert(all.value().count() == 3)
+    let one = try log.since(2)
+    defer one.release()
+    assert(one.value().count() == 1)
+    let feed = try log.since(1)
+    defer feed.release()
+    var consumer = try log.at(1)
+    defer consumer.release()
+    for i in 0..<feed.value().count():
+        let layer = try feed.value().at(i)
+        defer layer.release()
+        let next = try consumer.value().overlay(layer)
+        consumer.release()
+        consumer = next
+    let head = try log.head()
+    defer head.release()
+    assert(try consumer.value().equals(head))
+    let none_left = try log.since(99)
+    defer none_left.release()
+    assert(none_left.value().count() == 0)
+
+func compaction_gcs_old_history_keeping_head() -> !:
+    let base = try state(0.0)
+    defer base.release()
+    var log = try prism.EventLog(base)
+    defer log.close()
+    try populate(&log)
+    try log.compact(1)
+    assert(log.head_offset() == 3 and log.earliest_offset() == 2 and log.layer_count() == 1)
+    for i in 2..=(usize)3:
+        let doc = try log.at(i)
+        defer doc.release()
+        let expected = try state((f64)i)
+        defer expected.release()
+        assert(try doc.value().equals(expected))
+    var failed = false
+    let stale = log.at(1) catch failure:
+        failed = true
+        recover try log.head()
+    defer stale.release()
+    assert(failed)
+    try log.compact(0)
+    assert(log.earliest_offset() == 3 and log.layer_count() == 0)
+    try log.compact(99)
+    let next = try state(4.0)
+    defer next.release()
+    assert(try log.commit(next) == 4)
+
+pub func run() -> !:
+    try commit_offsets_and_replay()
+    try since_is_the_catch_up_feed()
+    try compaction_gcs_old_history_keeping_head()
+    print("PASS 3 legacy event-log cases, replay bounds and commits after compaction")

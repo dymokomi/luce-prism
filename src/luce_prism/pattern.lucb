@@ -1,0 +1,89 @@
+## Legacy path globs: '*' within one segment and '**' across whole segments.
+import strings
+from luce_prism.path import valid_path, element_path, name_byte
+
+pub func valid_pattern(pattern: str) -> bool:
+    if pattern.length == 0 or pattern.length > 4096 or pattern.bytes[0] != '/':
+        return false
+    var previous: u8 = '/'
+    for i in 1..<pattern.length:
+        let byte = pattern.bytes[i]
+        if byte == '/':
+            if previous == '/':
+                return false
+        elif not name_byte(byte) and byte != '*' and byte != '[' and byte != ']':
+            return false
+        previous = byte
+    return true
+
+pub func has_wildcard(pattern: str) -> bool:
+    return strings.find(pattern, "*") != none
+
+pub func prefix(pattern: str) -> str:
+    var start: usize = 1
+    var last: usize = 0
+    while start < pattern.length:
+        var end = start
+        while end < pattern.length and pattern.bytes[end] != '/':
+            if pattern.bytes[end] == '*':
+                return (str)pattern.bytes[..<last] if last > 0 else "/"
+            end += 1
+        last = end
+        start = end + 1
+    return (str)pattern.bytes[..<last] if last > 0 else "/"
+
+func segment(pattern: str, name: str) -> bool:
+    var p: usize = 0
+    var n: usize = 0
+    var star: usize? = none
+    var mark: usize = 0
+    while n < name.length:
+        if p < pattern.length and pattern.bytes[p] == '*':
+            star = p
+            p += 1
+            mark = n
+        elif p < pattern.length and pattern.bytes[p] == name.bytes[n]:
+            p += 1
+            n += 1
+        elif let position = star:
+            p = position + 1
+            mark += 1
+            n = mark
+        else:
+            return false
+    while p < pattern.length and pattern.bytes[p] == '*':
+        p += 1
+    return p == pattern.length
+
+pub func matches(pattern: str, path: str) -> bool:
+    if not valid_pattern(pattern) or not valid_path(path):
+        return false
+    let name = element_path(path)
+    var starts: usize[2049]
+    var ends: usize[2049]
+    var count: usize = 0
+    var start: usize = 1
+    while start < name.length:
+        var end = start
+        while end < name.length and name.bytes[end] != '/':
+            end += 1
+        starts[count] = start
+        ends[count] = end
+        count += 1
+        start = end + 1
+    var previous: bool[2050]
+    var next: bool[2050]
+    previous[0] = true
+    start = 1
+    while start < pattern.length:
+        var end = start
+        while end < pattern.length and pattern.bytes[end] != '/':
+            end += 1
+        let part = (str)pattern.bytes[start..<end]
+        next[0] = previous[0] if part == "**" else false
+        for i in 1..<count + 1:
+            next[i] = (previous[i] or next[i - 1]) if part == "**" else (previous[i - 1] and segment(part, (str)name.bytes[starts[i - 1]..<ends[i - 1]]))
+        for i in 0..<count + 1:
+            previous[i] = next[i]
+        start = end + 1
+    return previous[count]

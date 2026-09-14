@@ -1,0 +1,268 @@
+## Explicit reference resolution. In-memory libraries and filesystem composition
+## share the same grafting, cycle detection and per-call composed-document cache.
+import memory
+import interop
+import files
+import paths
+import strings
+import c
+import luce_prism.pattern as patterns
+from luce_prism.model import DocumentData
+from luce_prism.document import Document, own_document
+from luce_prism.serialization.dispatch import read_document
+from luce_prism.storage import Buffer, List, add_name, close_names, find_pair, has_name, remove_pair, set_pair, text_copy
+from luce_prism.path import element_path, is_descendant, parent_path, valid_path
+from luce_prism.types import invalid, missing, limit_exceeded, max_bytes, max_depth
+
+struct Source:
+    var id: Buffer
+    var document: DocumentData = DocumentData()
+
+    mutating func close():
+        self.id.close()
+        self.document.close()
+
+func close_sources(sources: List[Source]*):
+    for i in 0..<sources.count:
+        sources.items[i].close()
+    sources.close()
+
+func identifier(id: str) -> Buffer!:
+    if id.length == 0 or id.length > 4096 or strings.find(id, "\0") != none:
+        error(invalid, "invalid Prism reference filename")
+    with memory.heap:
+        let normalized = try paths.normalize(id)
+        defer strings.release(normalized)
+        return try text_copy(normalized)
+
+func rebase(path: str, root: str, destination: str) -> Buffer!:
+    var output: Buffer
+    errdefer output.close()
+    if root == "/":
+        if destination != "/":
+            try output.text(destination)
+        try output.text(path)
+    else:
+        try output.text(destination)
+        try output.put(path.bytes[root.length..])
+    if output.used > 4096:
+        error(limit_exceeded, "Prism referenced path exceeds 4096 bytes")
+    return output
+
+func owned_path(owned: const List[Buffer]*, path: str) -> bool:
+    for root in owned.span():
+        if is_descendant(path, root.view()):
+            return true
+    return false
+
+func selected(matches: const List[str]*, path: str) -> bool:
+    for matched_path in matches.span():
+        if is_descendant(path, matched_path) or is_descendant(matched_path, path):
+            return true
+    return false
+
+func graft(output: DocumentData*, source: const DocumentData*, target: str, root: str, pattern: bool) -> !:
+    var owned: List[Buffer]
+    defer close_names(&owned)
+    for element in output.elements.span():
+        let path = element.path.view()
+        if path != target and is_descendant(path, target):
+            try add_name(&owned, path)
+    var matched: List[str]
+    defer matched.close()
+    if pattern:
+        for element in source.elements.span():
+            if patterns.matches(root, element.path.view()):
+                try matched.push(element.path.view())
+    let prefix = patterns.prefix(root) if pattern else root
+    for element in source.elements.span():
+        let path = element.path.view()
+        if pattern:
+            if path == prefix or not is_descendant(path, prefix) or not selected(&matched, path):
+                continue
+        elif not is_descendant(path, root):
+            continue
+        var destination = try rebase(path, prefix, target)
+        defer destination.close()
+        if destination.view() == target and not pattern:
+            let authored = &output.elements.items[try output.require(target)]
+            for prop in element.properties.span():
+                if authored.property(prop.name.view()) == none:
+                    try authored.put_property(&prop)
+            for meta in element.metadata.span():
+                if find_pair(&authored.metadata, meta.key.view()) == none:
+                    try set_pair(&authored.metadata, meta.key.view(), meta.value.view())
+            if authored.kind.used == 0:
+                try output.set_type(target, element.kind.view())
+        elif not owned_path(&owned, destination.view()):
+            var copy = try element.copy()
+            defer copy.close()
+            copy.path.close()
+            copy.path = try destination.copy()
+            try output.insert_copy(&copy)
+    for connection in source.connections.span():
+        let a = element_path(connection.value.view())
+        let b = element_path(connection.key.view())
+        if pattern:
+            if not selected(&matched, a) or not selected(&matched, b):
+                continue
+        elif not is_descendant(a, root) or not is_descendant(b, root):
+            continue
+        var destination = try rebase(connection.key.view(), prefix, target)
+        defer destination.close()
+        if find_pair(&output.connections, destination.view()) == none:
+            var origin = try rebase(connection.value.view(), prefix, target)
+            defer origin.close()
+            try set_pair(&output.connections, destination.view(), origin.view())
+    # The old core keeps assets in a separate store. Here the unified Document
+    # carries them alongside the selected subtree, with authored assets winning.
+    for asset in source.assets.span():
+        if pattern:
+            if not is_descendant(asset.path.view(), prefix) or not selected(&matched, asset.path.view()):
+                continue
+        elif not is_descendant(asset.path.view(), root):
+            continue
+        var destination = try rebase(asset.path.view(), prefix, target)
+        defer destination.close()
+        var present = owned_path(&owned, destination.view())
+        for existing in output.assets.span():
+            if existing.path.view() == destination.view():
+                present = true
+        if not present:
+            try output.set_asset(destination.view(), asset.bytes.bytes(), asset.mime.view())
+
+struct Context:
+    var sources: const Source[]
+    var filesystem: bool
+    var stack: List[Buffer]
+    var cache: List[Source]
+
+    mutating func close():
+        close_names(&self.stack)
+        close_sources(&self.cache)
+
+    func canonical(id: str) -> Buffer!:
+        var normalized = try identifier(id)
+        defer normalized.close()
+        if not self.filesystem:
+            return try normalized.copy()
+        with memory.heap:
+            let name = try strings.copy(normalized.view())
+            defer strings.release(name)
+            let real = try files.canonical((c.str)name)
+            defer strings.release(real)
+            return try text_copy(real)
+
+    func load(id: str) -> DocumentData!:
+        for source in self.sources:
+            if source.id.view() == id:
+                return try source.document.copy()
+        if not self.filesystem:
+            error(missing, "Prism reference is not in the library")
+        with memory.heap:
+            let name = try strings.copy(id)
+            defer strings.release(name)
+            let bytes = try files.read_limit((c.str)name, max_bytes)
+            defer free(bytes) in memory.heap
+            var output = DocumentData()
+            errdefer output.close()
+            try read_document(bytes, &output)
+            return output
+
+    mutating func compose(id: str) -> DocumentData!:
+        if has_name(&self.stack, id):
+            error(invalid, "Prism reference cycle")
+        for cached in self.cache.span():
+            if cached.id.view() == id:
+                return try cached.document.copy()
+        if self.stack.count >= max_depth:
+            error(limit_exceeded, "Prism reference nesting limit exceeded")
+        # Reserve before ownership transfer: no allocation can fail after copy.
+        try self.stack.reserve(self.stack.count + 1)
+        try self.stack.push(try text_copy(id))
+        defer self.pop()
+        var source = try self.load(id)
+        defer source.close()
+        var output = try source.copy()
+        errdefer output.close()
+        for element in source.elements.span():
+            let asset = find_pair(&element.metadata, "reference") else continue
+            if asset.length == 0 or strings.find(asset, "\0") != none:
+                error(invalid, "invalid Prism reference filename")
+            var filename: Buffer
+            defer filename.close()
+            with memory.heap:
+                let joined = try paths.join(paths.directory(id), asset)
+                defer strings.release(joined)
+                filename = try self.canonical(joined)
+            var referenced = try self.compose(filename.view())
+            defer referenced.close()
+            var root: str = ""
+            if let selected_root = find_pair(&element.metadata, "referencePath"):
+                root = selected_root
+            else:
+                for candidate in referenced.elements.span():
+                    if parent_path(candidate.path.view()) == "/":
+                        root = candidate.path.view()
+                        break
+            let wildcard = patterns.has_wildcard(root)
+            if wildcard:
+                if not patterns.valid_pattern(root):
+                    error(invalid, "invalid Prism reference pattern")
+            elif not valid_path(root) or not referenced.contains(root):
+                error(missing, "Prism reference target does not exist")
+            try graft(&output, &referenced, element.path.view(), root, wildcard)
+            try output.remove_metadata(element.path.view(), "reference")
+            try output.remove_metadata(element.path.view(), "referencePath")
+        var cached = Source()
+        errdefer cached.close()
+        cached.id = try text_copy(id)
+        cached.document = try output.copy()
+        try self.cache.push(cached)
+        return output
+
+    mutating func pop():
+        self.stack.items[self.stack.count - 1].close()
+        self.stack.count -= 1
+
+pub struct ReferenceLibrary:
+    var sources: List[Source]
+
+    pub func init():
+        return
+
+    ## Snapshot an authored document under a relative or absolute library name.
+    pub mutating func add(name: str, document: interop.Reference[Document]) -> !:
+        var source = Source()
+        errdefer source.close()
+        source.id = try identifier(name)
+        source.document = try (try document.get()).view_data().copy()
+        for i in 0..<self.sources.count:
+            if self.sources.items[i].id.view() == source.id.view():
+                self.sources.items[i].close()
+                self.sources.items[i] = source
+                return
+        try self.sources.push(source)
+
+    pub func count() -> usize:
+        return self.sources.count
+
+    ## Compose only when explicitly called. The library remains unchanged.
+    pub func compose(name: str) -> interop.Reference[Document]!:
+        var context = Context(sources = self.sources.span())
+        defer context.close()
+        var id = try context.canonical(name)
+        defer id.close()
+        return try own_document(try context.compose(id.view()))
+
+    pub mutating func close():
+        close_sources(&self.sources)
+
+pub let library_type = interop.Type[ReferenceLibrary]("Prism reference library", ReferenceLibrary.close, closeable = true)
+
+pub func compose_file(path: str) -> interop.Reference[Document]!:
+    var context = Context(filesystem = true)
+    defer context.close()
+    var id = try context.canonical(path)
+    defer id.close()
+    return try own_document(try context.compose(id.view()))

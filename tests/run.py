@@ -5,13 +5,17 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from compatibility.oracle import run_codecs, run_surface, run_native
+from compatibility.coverage import audit
 
 ROOT = Path(__file__).resolve().parents[1]
 SUFFIX = '.exe' if os.name == 'nt' else ''
 
 
 def run(command, **kwargs):
-    subprocess.run([str(arg) for arg in command], check=True, cwd=ROOT, timeout=180, **kwargs)
+    # High-level bindings and optimized C compilation are slower on hosted CPUs.
+    timeout = 600 if len(command) > 1 and str(command[1]) == 'build' else 180
+    subprocess.run([str(arg) for arg in command], check=True, cwd=ROOT, timeout=timeout, **kwargs)
 
 
 def main():
@@ -21,6 +25,7 @@ def main():
     parser.add_argument('--opt', type=int, choices=range(4))
     parser.add_argument('--oracle', type=Path, help='Optional C++ oracle built against kinogaki-core')
     args = parser.parse_args()
+    audit(require_complete=True)
     for compiler in (args.base, args.luce):
         if not compiler.is_file():
             parser.error(f'compiler not found: {compiler}; build the pinned sibling or pass its path')
@@ -29,19 +34,34 @@ def main():
     if args.opt is None:
         modes += [["--backend=c"], ["--backend=c", "--release"]]
     env = dict(os.environ, LUCE_BASE=str(args.base.resolve()))
+    consumers = [
+        (args.base, name + '.lucb') for name in (
+            'main', 'format', 'media', 'semantics', 'authoring',
+            'logic', 'editor', 'query', 'foreign',
+        )
+    ] + [
+        (args.luce, name + '.luc') for name in (
+            'consumer', 'advanced_consumer', 'editor_consumer',
+        )
+    ]
     with tempfile.TemporaryDirectory(prefix='luce-prism-test-') as temporary:
         scratch = Path(temporary)
         for index, flags in enumerate(modes):
             print('Testing', ' '.join(flags), flush=True)
-            for compiler, source in [(args.base, 'main.lucb'), (args.base, 'media.lucb'), (args.luce, 'consumer.luc')]:
+            for compiler, source in consumers:
                 binary = scratch / ('consumer' + SUFFIX)
                 run([compiler.resolve(), 'build', ROOT / 'tests' / source, *flags, '-o', binary], env=env)
-                run([binary], env=env)
+                run([binary, scratch] if source in ('semantics.lucb', 'editor.lucb') else [binary], env=env)
             example = scratch / ('referenced-media' + SUFFIX)
             output = scratch / f'referenced media {index}'
             output.mkdir()
             run([args.luce.resolve(), 'build', ROOT / 'examples/referenced_media.luc', *flags, '-o', example], env=env)
             run([example, output], env=env)
+            codec = scratch / ('codec' + SUFFIX)
+            run([args.base.resolve(), 'build', ROOT / 'tests/codec.lucb', *flags, '-o', codec], env=env)
+            run_codecs(codec, args.oracle.resolve() if args.oracle and index == 0 else None, scratch)
+            run_surface(codec, args.oracle.resolve() if args.oracle and index == 0 else None, scratch)
+            run_native(codec, args.oracle.resolve() if args.oracle and index == 0 else None, scratch)
         if args.oracle:
             codec = scratch / ('codec' + SUFFIX)
             run([args.base.resolve(), 'build', ROOT / 'tests/codec.lucb', '--native', '-o', codec], env=env)
@@ -82,7 +102,7 @@ def main():
             run([codec, expected_text, expected, 'binary'])
             assert composed.read_bytes() == expected.read_bytes(), 'C++ reference composition changed the media'
             print('PASS C++ resolves the authored ASCII reference to the external binary payload', flush=True)
-    print('PASS all Prism compiler modes', flush=True)
+    print('PASS requested Prism compiler modes', flush=True)
 
 
 if __name__ == '__main__':

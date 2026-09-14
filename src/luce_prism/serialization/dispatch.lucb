@@ -1,0 +1,20 @@
+## Serialization dispatch.
+from luce_prism.model import DocumentData
+from luce_prism.serialization.binary import read_binary
+from luce_prism.serialization.encoding import detect
+from luce_prism.serialization.package import read_package
+from luce_prism.serialization.text_reader import read_text
+from luce_prism.types import Encoding, invalid, limit_exceeded, max_bytes
+
+pub func read_document(bytes: const u8[], document: DocumentData*) -> !:
+    if bytes.length > max_bytes:
+        error(limit_exceeded, "Prism input exceeds 256 MiB")
+    let encoding = detect(bytes)
+    if encoding == Encoding.binary:
+        try read_binary(bytes, document)
+    elif encoding == Encoding.text:
+        try read_text(bytes, document)
+    elif encoding == Encoding.package:
+        try read_package(bytes, document)
+    else:
+        error(invalid, "unrecognized Prism magic")

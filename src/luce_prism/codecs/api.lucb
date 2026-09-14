@@ -1,0 +1,123 @@
+## Public codec dispatch. Foreign codecs operate on the model without I/O.
+import interop
+import luce_prism.serialization.encoding as encoding
+import luce_prism.codecs.json as json
+import luce_prism.codecs.svg as svg
+import luce_prism.codecs.html_reader as html_reader
+import luce_prism.codecs.html_writer as html_writer
+import luce_prism.codecs.markdown_reader as markdown_reader
+import luce_prism.codecs.markdown_writer as markdown_writer
+import luce_prism.codecs.files as file_codecs
+from luce_prism.codecs.common import lower
+from luce_prism.document import Document, own_document
+from luce_prism.storage import Blob, own_blob
+from luce_prism.path import parent_path
+from luce_prism.types import Encoding, unsupported
+
+pub enum Codec as u8:
+    auto = 0
+    prisma = 1
+    prism = 2
+    json = 3
+    markdown = 4
+    html = 5
+    svg = 6
+    text = 7
+    blob = 8
+
+pub func codec_name(codec: Codec) -> str:
+    let names: str[9] = ["auto", "prisma", "prism", "json", "markdown", "html", "svg", "text", "blob"]
+    return names[(usize)codec]
+
+pub func codec_by_name(name: str) -> Codec?:
+    let codecs: Codec[8] = [Codec.prisma, Codec.prism, Codec.json, Codec.markdown, Codec.html, Codec.svg, Codec.text, Codec.blob]
+    for codec in codecs:
+        if codec_name(codec) == name:
+            return codec
+    if name == "md":
+        return Codec.markdown
+    if name == "htm":
+        return Codec.html
+    if name == "txt":
+        return Codec.text
+    return none
+
+pub func codec_for_path(path: str) -> Codec!:
+    var start = path.length
+    var i = path.length
+    while i > 0:
+        i -= 1
+        if path.bytes[i] == '/' or path.bytes[i] == '\\':
+            break
+        if path.bytes[i] == '.':
+            start = i + 1
+            break
+    var extension = try lower((str)path.bytes[start..])
+    defer extension.close()
+    let ext = extension.view()
+    if ext == "prisma" or ext == "prism" or ext == "json" or ext == "md" or ext == "markdown" or ext == "html" or ext == "htm" or ext == "svg":
+        return codec_by_name(ext) else Codec.blob
+    let texts: str[10] = ["xml", "csv", "tsv", "ini", "cfg", "log", "yaml", "yml", "rst", "txt"]
+    for text in texts:
+        if extension.view() == text:
+            return Codec.text
+    return Codec.blob
+
+pub func decode(bytes: const u8[], codec: Codec = Codec.auto) -> interop.Reference[Document]!:
+    if codec == Codec.prisma or codec == Codec.prism:
+        return try Document.decode(bytes)
+    if codec == Codec.auto:
+        if encoding.detect(bytes) != Encoding.unknown:
+            return try Document.decode(bytes)
+        return try own_document(try file_codecs.decode(bytes, true))
+    if codec == Codec.json:
+        return try own_document(try json.decode(bytes))
+    if codec == Codec.svg:
+        return try own_document(try svg.decode(bytes))
+    if codec == Codec.html:
+        return try own_document(try html_reader.decode(bytes))
+    if codec == Codec.markdown:
+        return try own_document(try markdown_reader.decode(bytes))
+    if codec == Codec.text or codec == Codec.blob:
+        return try own_document(try file_codecs.decode(bytes, codec == Codec.blob))
+    error(unsupported, "codec is unavailable")
+
+pub func encode(document: interop.Reference[Document], codec: Codec = Codec.prisma, compressed: bool = false) -> interop.Reference[Blob]!:
+    let doc = try document.get()
+    if codec == Codec.auto or codec == Codec.prisma or codec == Codec.prism:
+        return try doc.encode(Encoding.binary if codec == Codec.prism else Encoding.text, compressed)
+    if codec == Codec.json:
+        return try own_blob(try json.encode(doc.view_data()))
+    if codec == Codec.svg:
+        return try own_blob(try svg.encode(doc.view_data()))
+    if codec == Codec.html:
+        return try own_blob(try html_writer.encode(doc.view_data()))
+    if codec == Codec.markdown:
+        return try own_blob(try markdown_writer.encode(doc.view_data()))
+    if codec == Codec.text or codec == Codec.blob:
+        return try own_blob(try file_codecs.encode(doc.view_data(), codec == Codec.blob))
+    error(unsupported, "codec is unavailable")
+
+pub func document_lens(document: interop.Reference[Document]) -> Codec!:
+    let doc = try document.get()
+    for element in doc.view_data().elements.span():
+        let path = element.path.view()
+        if parent_path(path) == "/" and doc.has_metadata(path, "lens"):
+            if let codec = codec_by_name(try doc.metadata(path, "lens")):
+                if codec != Codec.prisma and codec != Codec.prism:
+                    return codec
+    return Codec.prisma
+
+pub func set_document_lens(document: interop.Reference[Document], codec: Codec) -> !:
+    let doc = try document.get()
+    let clear = codec == Codec.auto or codec == Codec.prisma or codec == Codec.prism
+    var stamped = false
+    for element in doc.view_data().elements.span():
+        let path = element.path.view()
+        if parent_path(path) != "/":
+            continue
+        if clear or stamped:
+            try doc.remove_metadata(path, "lens")
+        else:
+            try doc.set_metadata(path, "lens", codec_name(codec))
+            stamped = true

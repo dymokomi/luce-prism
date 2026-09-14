@@ -1,0 +1,145 @@
+import prism
+import interop
+import compatibility.logic as logic
+
+func output(doc: interop.Reference[prism.Document], slot: str, expected: f64) -> !:
+    let value = try prism.compute_slot(doc, slot)
+    defer value.release()
+    let actual = try value.value().number_at()
+    assert(actual > expected - 0.01 and actual < expected + 0.01)
+
+func simple() -> interop.Reference[prism.Document]!:
+    return try prism.parse_surface("#prisma 4.0\ndef \"price\" { float v = 30 } def \"qty\" { float v = 50 } math \"revenue\" { price.v * qty.v } math \"withTax\" { revenue.out * 1.1 }")
+
+func nested() -> interop.Reference[prism.Document]!:
+    return try prism.parse_surface("def \"a\" { float v = 2 } def \"b\" { float v = 3 } def \"c\" { float v = 4 } math \"x\" { (a.v + b.v) * c.v }")
+
+func surface_math_compiles_and_computes() -> !:
+    let doc = try simple()
+    defer doc.release()
+    try output(doc, "/revenue.out", 1500.0)
+    try output(doc, "/withTax.out", 1650.0)
+
+func surface_math_nested_expression_makes_stable_intermediates() -> !:
+    let doc = try nested()
+    defer doc.release()
+    assert(doc.value().contains("/x") and doc.value().contains("/x/[0]"))
+    try output(doc, "/x.out", 20.0)
+
+func surface_math_precedence_and_literals() -> !:
+    let doc = try prism.parse_surface("def \"a\" { float v = 2 } math \"y\" { a.v + 3 * 4 }")
+    defer doc.release()
+    try output(doc, "/y.out", 14.0)
+    try doc.value().compile_math("bare", "7")
+    try doc.value().compile_math("ref", "a.v")
+    try doc.value().compile_math("neg", "-(a.v + 3) / 5 - 2")
+    try output(doc, "/bare.out", 7.0)
+    try output(doc, "/ref.out", 2.0)
+    try output(doc, "/neg.out", -3.0)
+
+func surface_logic_fact_and_rule_derive() -> !:
+    let doc = try prism.parse_surface("logic \"f1\" { employee(alice) } logic \"f3\" { document(q3plan) } logic \"p1\" { employee(U), document(D) => can_view(U, D) }")
+    defer doc.release()
+    assert(try logic.view(doc, "alice") == prism.ProofTag.defeasible_proof)
+
+func surface_logic_full_access_policy_blocks_alice() -> !:
+    let authored = try logic.policy()
+    defer authored.release()
+    let text = try prism.serialize_surface(authored)
+    defer text.release()
+    let doc = try prism.parse_surface(try text.value().text())
+    defer doc.release()
+    assert(try logic.view(doc, "alice") == prism.ProofTag.defeasible_refute)
+    let layer = try logic.clearance()
+    defer layer.release()
+    let composed = try doc.value().overlay(layer)
+    defer composed.release()
+    assert(try logic.view(composed, "alice") == prism.ProofTag.defeasible_proof)
+    assert(try logic.view(composed, "bob") == prism.ProofTag.defeasible_refute)
+
+func surface_negation_in_rule_head() -> !:
+    let doc = try prism.parse_surface("logic \"f\" { penguin(tweety) } logic \"r\" { penguin(X) => -flies(X) }")
+    defer doc.release()
+    let args: str[1] = ["tweety"]
+    let positive = try logic.atom("flies", args)
+    defer positive.release()
+    let negative = try logic.atom("flies", args, true)
+    defer negative.release()
+    assert(try prism.conclude(doc, positive) == prism.ProofTag.defeasible_refute)
+    assert(try prism.conclude(doc, negative) == prism.ProofTag.defeasible_proof)
+
+func surface_layering_overrides_a_data_cell() -> !:
+    let doc = try prism.parse_surface("def \"seats\" { float v = 50 } def \"price\" { float v = 30 } math \"revenue\" { seats.v * price.v }")
+    defer doc.release()
+    let layer = try prism.parse_surface("over \"seats\" { float v = 200 }")
+    defer layer.release()
+    let composed = try doc.value().overlay(layer)
+    defer composed.release()
+    try output(composed, "/revenue.out", 6000.0)
+
+func roundtrip(doc: interop.Reference[prism.Document]) -> interop.Reference[prism.Document]!:
+    let first = try prism.serialize_surface(doc)
+    defer first.release()
+    let result = try prism.parse_surface(try first.value().text())
+    errdefer result.release()
+    let second = try prism.serialize_surface(result)
+    defer second.release()
+    assert(try first.value().text() == try second.value().text())
+    return result
+
+func surface_math_round_trips_text_stable_and_result_equal() -> !:
+    let doc = try simple()
+    defer doc.release()
+    let result = try roundtrip(doc)
+    defer result.release()
+    try output(result, "/revenue.out", 1500.0)
+    try output(result, "/withTax.out", 1650.0)
+
+func surface_nested_expression_serializes_with_parens() -> !:
+    let doc = try nested()
+    defer doc.release()
+    let result = try prism.serialize_surface(doc)
+    defer result.release()
+    assert(try result.value().text() == "def \"a\" { float v = 2 }\ndef \"b\" { float v = 3 }\ndef \"c\" { float v = 4 }\nmath \"x\" { (a.v + b.v) * c.v }\n")
+
+func surface_logic_round_trips_and_preserves_conclusions() -> !:
+    let doc = try logic.policy()
+    defer doc.release()
+    let result = try roundtrip(doc)
+    defer result.release()
+    assert(try logic.view(result, "alice") == prism.ProofTag.defeasible_refute)
+
+func rejects_malformed_surface_without_partial_mutation() -> !:
+    let doc = try simple()
+    defer doc.release()
+    let before = try doc.value().copy()
+    defer before.release()
+    let expressions: str[6] = ["", "1 +", "(2 + 3", "2 & 3", "2e4", "f..v"]
+    for expression in expressions:
+        var failed = false
+        doc.value().compile_math("bad", expression) catch failure:
+            failed = true
+        assert(failed)
+        assert(try doc.value().equals(before))
+    let sources: str[5] = ["logic \"a\" { p( }", "math \"a\" { 1", "def \"a\" { int x = q }", "logic a { p }", "logic \"a\" { p > }"]
+    for source in sources:
+        var failed = false
+        let parsed = prism.parse_surface(source) catch failure:
+            failed = true
+            continue
+        parsed.release()
+        assert(failed)
+
+pub func run() -> !:
+    try surface_math_compiles_and_computes()
+    try surface_math_nested_expression_makes_stable_intermediates()
+    try surface_math_precedence_and_literals()
+    try surface_logic_fact_and_rule_derive()
+    try surface_logic_full_access_policy_blocks_alice()
+    try surface_negation_in_rule_head()
+    try surface_layering_overrides_a_data_cell()
+    try surface_math_round_trips_text_stable_and_result_equal()
+    try surface_nested_expression_serializes_with_parens()
+    try surface_logic_round_trips_and_preserves_conclusions()
+    try rejects_malformed_surface_without_partial_mutation()
+    print("PASS 10 legacy surface cases and transactional malformed-input checks")

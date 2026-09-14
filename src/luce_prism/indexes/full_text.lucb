@@ -1,0 +1,125 @@
+## Inverted text index with legacy ASCII tokenization and smoothed tf-idf ranking.
+import interop
+import math
+import luce_prism.indexes.ranked as ranked
+from luce_prism.collections.index import Index
+from luce_prism.query.results import Selection
+from luce_prism.document import Document
+from luce_prism.animation import resolve_property
+from luce_prism.storage import List, Buffer, Reader
+from luce_prism.types import DType
+
+struct Terms:
+    var words: List[Buffer]
+
+    mutating func close():
+        for i in 0..<self.words.count:
+            self.words.items[i].close()
+        self.words.close()
+
+func tokenize(text: str) -> Terms!:
+    var result: Terms
+    errdefer result.close()
+    var current: Buffer
+    defer current.close()
+    for byte in text.bytes:
+        if (byte >= 'a' and byte <= 'z') or (byte >= 'A' and byte <= 'Z') or (byte >= '0' and byte <= '9'):
+            try current.byte(byte + 32 if byte >= 'A' and byte <= 'Z' else byte)
+        elif current.used > 0:
+            try result.words.push(current)
+            current = Buffer()
+    if current.used > 0:
+        try result.words.push(current)
+        current = Buffer()
+    return result
+
+struct Posting:
+    var row: usize
+    var frequency: usize
+
+pub struct TextIndex:
+    var rows: Selection = Selection()
+    var vocabulary: Index
+    var postings: List[Posting]
+
+    pub func init(doc: interop.Reference[Document], field: str) -> !:
+        self.rows = Selection()
+        self.vocabulary = Index()
+        self.postings = List[Posting]()
+        errdefer self.close()
+        try self.build(doc, field)
+
+    mutating func build(doc: interop.Reference[Document], field: str) -> !:
+        for element in (try doc.get()).view_data().elements.span():
+            let position = element.property(field) else continue
+            var value = try resolve_property(&element.properties.items[position], 0.0)
+            defer value.close()
+            if value.kind != DType.string or value.count() == 0:
+                continue
+            var reader = Reader(data = value.payload.bytes())
+            let text = try reader.text()
+            if text.length == 0:
+                continue
+            let row = self.rows.count()
+            try self.rows.append(&element)
+            var words = try tokenize(text)
+            defer words.close()
+            var frequencies: Index
+            defer frequencies.close()
+            for word in words.words.span():
+                discard(try frequencies.add(word.view(), 0))
+            for word in frequencies.buckets.span():
+                discard(try self.vocabulary.add(word.key.view(), self.postings.count))
+                try self.postings.push(Posting(row = row, frequency = word.rows.count))
+
+    pub func terms() -> usize:
+        return self.vocabulary.buckets.count
+
+    pub func documents() -> usize:
+        return self.rows.count()
+
+    func search_terms(query: str, all: bool) -> interop.Reference[Selection]!:
+        var words = try tokenize(query)
+        defer words.close()
+        var candidates: Index
+        defer candidates.close()
+        var scores: List[f64]
+        defer scores.close()
+        let count = words.words.count if all else (1 if words.words.count > 0 else 0)
+        var absent = false
+        for i in 0..<count:
+            let word = words.words.items[i].view()
+            let position = self.vocabulary.find(word)
+            if position == none:
+                absent = true
+                break
+            let bucket = &self.vocabulary.buckets.items[position else 0]
+            let idf = math.log(1.0 + ((f64)self.rows.count() + 1.0) / ((f64)bucket.rows.count + 1.0))
+            for index in bucket.rows.span():
+                let posting = self.postings.items[index]
+                var scratch: u8[32]
+                let candidate = try candidates.add(try format(scratch, f"{posting.row}"), posting.row)
+                if candidate == scores.count:
+                    try scores.push(0.0)
+                scores.items[candidate] += (f64)posting.frequency * idf
+        var hits: List[ranked.Hit]
+        defer hits.close()
+        if not absent:
+            for i in 0..<candidates.buckets.count:
+                let bucket = &candidates.buckets.items[i]
+                if bucket.rows.count == count:
+                    try hits.push(ranked.Hit(row = bucket.rows.items[0], score = scores.items[i]))
+        return try ranked.select(self.rows.view_data(), hits.span(), hits.count)
+
+    pub func search(term: str) -> interop.Reference[Selection]!:
+        return try self.search_terms(term, false)
+
+    pub func search_all(query: str) -> interop.Reference[Selection]!:
+        return try self.search_terms(query, true)
+
+    pub mutating func close():
+        self.rows.close()
+        self.vocabulary.close()
+        self.postings.close()
+
+pub let text_index_type = interop.Type[TextIndex]("Prism text index", TextIndex.close, closeable = true)

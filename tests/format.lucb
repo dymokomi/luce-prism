@@ -1,0 +1,17 @@
+import compatibility.state as state
+import compatibility.hardening as hardening
+import compatibility.values as values
+import compatibility.serialization as serialization
+import compatibility.paths as paths
+import compatibility.compression as compression
+import compatibility.package as package
+
+pub func main(arguments: str[]) -> i32!:
+    try paths.run()
+    try compression.run()
+    try package.run()
+    try serialization.run()
+    try values.run()
+    try hardening.run()
+    try state.run()
+    return 0
