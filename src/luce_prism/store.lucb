@@ -636,6 +636,8 @@ pub struct Session:
 
     pub func contains(path: str) -> bool!:
         try self.ensure_open()
+        if self.remote != none or self.tls_link != none:
+            return try rpc_contains(self.remote, self.tls_link, self.token, path)
         return visible(&self, path)
 
     pub func type_at(path: str) -> str!:
@@ -1047,6 +1049,30 @@ func rpc_snapshot(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, write: bool
     let token = try reader.uint(8)
     return try adopt_remote(client, remote_tls, token, write)
 
+func rpc_contains(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64, path: str) -> bool!:
+    var req: Buffer
+    defer req.close()
+    try ipc.put_u8(&req, ipc.op_contains)
+    try ipc.put_u64(&req, token)
+    try ipc.put_str(&req, path)
+    var reply = try remote_call(client, remote_tls, req.bytes())
+    defer reply.close()
+    var reader = try ipc.expect_tag(reply.bytes(), ipc.tag_bool)
+    let value = try reader.uint(1)
+    if value > 1 or reader.pos != reader.data.length: error(invalid, "invalid contains reply")
+    return value == 1
+
+func rpc_bake(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, wait_ms: i64) -> i64!:
+    if wait_ms < 0: error(invalid, "negative bake wait")
+    var req: Buffer
+    defer req.close()
+    try ipc.put_u8(&req, ipc.op_bake)
+    try ipc.put_u64(&req, (u64)wait_ms)
+    var reply = try remote_call(client, remote_tls, req.bytes())
+    defer reply.close()
+    var reader = try ipc.expect_tag(reply.bytes(), ipc.tag_generation)
+    return (i64)try reader.uint(8)
+
 func rpc_get(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64, path: str, name: str) -> interop.Reference[Value]!:
     var req: Buffer
     defer req.close()
@@ -1194,6 +1220,21 @@ func dispatch(inner: Inner*, handles: List[LiveHandle]*, next: u64*, body: const
         error(invalid, "Prism IPC request is empty")
     var reader = Reader(data = body, pos = 1)
     let op = body[0]
+    if op == ipc.op_contains:
+        let token = try reader.uint(8)
+        let path = try reader.text()
+        if reader.pos != reader.data.length: error(invalid, "trailing contains request")
+        let session = try find_handle(handles, token)
+        let present = try session.contains(path)
+        var result: Buffer
+        errdefer result.close()
+        try ipc.put_u8(&result, ipc.tag_bool)
+        try ipc.put_u8(&result, 1 if present else 0)
+        return result
+    if op == ipc.op_bake:
+        let wait = try reader.uint(8)
+        if wait > 2147483647 or reader.pos != reader.data.length: error(invalid, "invalid bake request")
+        return try ipc.generation_frame(try bake_identity(inner, inner.root.view(), (i64)wait))
     if op == ipc.op_snapshot or op == ipc.op_begin:
         let native = try open_session(inner, inner.root.view(), op == ipc.op_begin)
         let token = next[0]
@@ -2273,6 +2314,8 @@ pub struct Store:
         name = Buffer()
 
     pub func bake(wait_ms: i64 = 0) -> i64!:
+        if self.remote != none or self.tls_on:
+            return try rpc_bake(self.remote, self.tls_heap if self.tls_on else none, wait_ms)
         let inner = try self.require()
         return try bake_identity(inner, inner.root.view(), wait_ms)
 
