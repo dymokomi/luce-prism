@@ -19,6 +19,8 @@ jobs:
         run: |
           echo "base=$(cat luce-prism/bootstrap/BASE)" >> "$GITHUB_OUTPUT"
           echo "luce=$(cat luce-prism/bootstrap/LUCE)" >> "$GITHUB_OUTPUT"
+          echo "crypto=$(cat luce-prism/bootstrap/CRYPTO)" >> "$GITHUB_OUTPUT"
+          echo "tls=$(cat luce-prism/bootstrap/TLS)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7
         with:
           repository: dymokomi/luce-base
@@ -29,15 +31,32 @@ jobs:
           repository: dymokomi/luce
           ref: ${{ steps.pins.outputs.luce }}
           path: luce
+      - uses: actions/checkout@v7
+        with:
+          repository: dymokomi/luce-crypto
+          ref: ${{ steps.pins.outputs.crypto }}
+          path: luce-crypto
+      - uses: actions/checkout@v7
+        with:
+          repository: dymokomi/luce-tls
+          ref: ${{ steps.pins.outputs.tls }}
+          path: luce-tls
       - name: Select Clang
         run: |
           mkdir -p "$RUNNER_TEMP/luce-bin"
           ln -s "$(command -v clang)" "$RUNNER_TEMP/luce-bin/cc"
           echo "$RUNNER_TEMP/luce-bin" >> "$GITHUB_PATH"
       - name: Build native compilers
-        run: |
-          (cd luce-base && ./build.sh)
-          (cd luce && LUCE_BASE_COMPILER=../luce-base/build/luce-base ./build.sh)
+        working-directory: luce-prism
+        run: python3 tools/bootstrap.py
       - name: Prism compatibility and ownership tests
         working-directory: luce-prism
-        run: ./test.sh
+        shell: bash
+        run: |
+          set -o pipefail
+          sh test.sh 2>&1 | tee build/correctness.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: prism-tests-${{ matrix.runner }}
+          path: luce-prism/build/correctness.log

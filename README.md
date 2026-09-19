@@ -89,16 +89,23 @@ load external files when needed. See [external media](docs/REFERENCES.md) and th
 files together.
 
 ```sh
+python3 tools/bootstrap.py
 ./test.sh
 # Or select already-built compilers without changing sibling checkouts:
 ./test.sh --base /path/to/luce-base --luce /path/to/luce
 ```
 
-Build sibling compilers at the commits in `bootstrap/BASE` and `bootstrap/LUCE`.
+Check out sibling compilers, crypto and TLS at the commits in `bootstrap/BASE`,
+`bootstrap/LUCE`, `bootstrap/CRYPTO` and `bootstrap/TLS`. Bootstrap verifies those
+inputs and builds package-local compilers without modifying language sources.
 The gate runs Base and Luce consumers at native optimization levels 0–3 and both
 C comparison modes. It includes checked-in C++ fixtures, compressed and package
 round trips, malformed input, path edits and injected allocation failures. Builds
-and test outputs use temporary directories. Media tests compare payload bytes for
+and test outputs use temporary directories; compiler caches default to
+`build/cache`. Persistent-store cases use separate runner-owned paths, and the
+runner terminates/reaps its IPC owner before removing the fixture directory.
+This IPC process-exit cleanup is not a graceful Store/TLS shutdown test.
+Media tests compare payload bytes for
 a 512×512 RGBA image, an embedded PNG, 16-bit channels and finite floating-point
 arrays in every encoding. See [validation](docs/VALIDATION.md).
 

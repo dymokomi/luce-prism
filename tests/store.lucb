@@ -1,5 +1,6 @@
 import compatibility.store as store_tests
 
 pub func main(arguments: str[]) -> i32!:
-    try store_tests.run()
+    assert(arguments.length == 2)
+    try store_tests.run(arguments[1])
     return 0

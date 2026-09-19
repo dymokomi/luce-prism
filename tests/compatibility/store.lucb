@@ -1,11 +1,21 @@
-## RAM Store plus durable open/reopen through a luce-db journal.
+## RAM Store plus durable open/reopen through Prism's journal.
 import prism
 import persist
 import files
 import memory
 import interop
 
-pub func run() -> !:
+var scratch_root: str
+var persist_path: str
+var database_path: str
+var dump_path: str
+var persist_buffer: u8[2048]
+var database_buffer: u8[2048]
+var dump_buffer: u8[2048]
+var case_number: usize
+
+pub func run(scratch: str) -> !:
+    scratch_root = scratch
     try snapshot_does_not_see_later_commits()
     try snapshot_is_read_only()
     try begin_reads_own_writes()
@@ -303,14 +313,15 @@ func document_facade_sees_unbaked() -> !:
     assert(try query.count() == 1)
 
 func persist_dir() -> str:
-    return "/tmp/luce-prism-persist-test"
+    return persist_path
 
 func persist_db() -> str:
-    return "/tmp/luce-prism-persist-test/root.db"
+    return database_path
 
 func reset_persist() -> !:
-    files.delete_path(persist_dir(), true) catch failure:
-        discard(failure)
+    case_number += 1
+    persist_path = try format(persist_buffer, f"{scratch_root}/persist-{case_number}")
+    database_path = try format(database_buffer, f"{persist_path}/root.db")
     try files.make_directory(persist_dir())
 
 func persist_budget_counts_chunked_keys() -> !:
@@ -375,11 +386,11 @@ func persist_bake_reclaim_survives_reopen() -> !:
     assert(try got.value().number_at() == 3.0)
 
 func dump_dir() -> str:
-    return "/tmp/luce-prism-dump-test"
+    return dump_path
 
 func reset_dump() -> !:
-    files.delete_path(dump_dir(), true) catch failure:
-        discard(failure)
+    case_number += 1
+    dump_path = try format(dump_buffer, f"{scratch_root}/dump-{case_number}")
     try files.make_directory(dump_dir())
 
 func seed_photos(store: prism.Store*) -> !:

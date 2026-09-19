@@ -1,25 +1,15 @@
 ## Owner listen + Store.connect. The client never opens the journal.
 import prism
-import files
-import process
-import os
-import thread
 import interop
-import c
 
-func ipc_dir() -> str:
-    return "/tmp/luce-prism-ipc-test"
+var db_path: str
+var socket_path: str
 
 func ipc_db() -> str:
-    return "/tmp/luce-prism-ipc-test/root.db"
+    return db_path
 
 func ipc_sock() -> str:
-    return "/tmp/luce-prism-ipc-test/root.db.sock"
-
-func reset_ipc() -> !:
-    files.delete_path(ipc_dir(), true) catch failure:
-        discard(failure)
-    try files.make_directory(ipc_dir())
+    return socket_path
 
 func run_owner(dbpath: str) -> !:
     let store = try prism.Store.open(dbpath, token = "secret")
@@ -27,15 +17,6 @@ func run_owner(dbpath: str) -> !:
     try store.value().listen()
     print("READY")
     try store.value().serve()
-
-func wait_socket() -> !:
-    var i: usize = 0
-    while i < 250:
-        if files.exists((c.str)ipc_sock()):
-            return
-        thread.sleep(20)
-        i += 1
-    error(prism.timed_out, "Prism owner socket did not appear")
 
 func run_client() -> !:
     var denied = false
@@ -78,21 +59,14 @@ func run_client() -> !:
         assert(false)
     assert(collided)
 
-func run_harness() -> !:
-    try reset_ipc()
-    let exe = try os.executable()
-    var cmd = try process.Command(exe, ["owner", ipc_db()])
-    defer cmd.close()
-    try wait_socket()
-    try run_client()
-    print("PASS ipc: owner listen, client begin/set/commit/lookup, second open fails flock")
-
 pub func main(arguments: str[]) -> i32!:
-    var i: usize = 0
-    while i + 1 < arguments.length:
-        if arguments[i] == "owner":
-            try run_owner(arguments[i + 1])
-            return 0
-        i += 1
-    try run_harness()
+    assert(arguments.length == 4)
+    db_path = arguments[2]
+    socket_path = arguments[3]
+    if arguments[1] == "owner":
+        try run_owner(db_path)
+    else:
+        assert(arguments[1] == "client")
+        try run_client()
+        print("PASS ipc: owner listen, client begin/set/commit/lookup, second open fails flock")
     return 0

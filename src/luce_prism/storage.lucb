@@ -26,6 +26,9 @@ pub struct List[T]:
         self.count += 1
 
     pub func span() -> T[]:
+        if self.count == 0:
+            var empty: T[]
+            return empty
         return self.items[..<self.count]
 
     pub mutating func remove(index: usize):
@@ -63,6 +66,8 @@ pub struct Buffer:
         self.data = grown
 
     pub mutating func put(data: const u8[]) -> !:
+        if data.length == 0:
+            return
         let count = self.used +? data.length else error(limit_exceeded, "Prism byte size overflow")
         # Internal callers never append an alias of a buffer to itself.
         try self.reserve(count)
@@ -89,6 +94,9 @@ pub struct Buffer:
         try self.text(value)
 
     pub func bytes() -> const u8[]:
+        if self.used == 0:
+            var empty: const u8[]
+            return empty
         return self.data[..<self.used]
 
     pub func view() -> str:

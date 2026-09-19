@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 from compatibility.oracle import run_codecs, run_surface, run_native
 from compatibility.coverage import audit
 
@@ -13,15 +14,41 @@ SUFFIX = '.exe' if os.name == 'nt' else ''
 
 
 def run(command, **kwargs):
+    print('RUN', ' '.join(str(arg) for arg in command), flush=True)
     # High-level bindings and optimized C compilation are slower on hosted CPUs.
     timeout = 600 if len(command) > 1 and str(command[1]) == 'build' else 180
     subprocess.run([str(arg) for arg in command], check=True, cwd=ROOT, timeout=timeout, **kwargs)
 
 
+def run_ipc(binary, env):
+    # Short runner-owned paths also fit Unix socket path limits on macOS.
+    with tempfile.TemporaryDirectory(prefix='prism-ipc-', dir='/tmp') as temporary:
+        db = Path(temporary) / 'root.db'
+        sock = Path(str(db) + '.sock')
+        owner = subprocess.Popen([str(binary), 'owner', str(db), str(sock)], cwd=ROOT, env=env)
+        try:
+            deadline = time.monotonic() + 10
+            while not sock.exists():
+                if owner.poll() is not None:
+                    raise RuntimeError(f'IPC owner exited early: {owner.returncode}')
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('IPC owner socket did not appear')
+                time.sleep(0.02)
+            run([binary, 'client', db, sock], env=env)
+        finally:
+            if owner.poll() is None:
+                owner.terminate()
+            try:
+                owner.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                owner.kill()
+                owner.wait(timeout=5)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--base', type=Path, default=Path(os.environ.get('LUCE_BASE_COMPILER', ROOT.parent / f'luce-base/build/luce-base{SUFFIX}')))
-    parser.add_argument('--luce', type=Path, default=Path(os.environ.get('LUCE_COMPILER', ROOT.parent / f'luce/build/luce{SUFFIX}')))
+    parser.add_argument('--base', type=Path, default=Path(os.environ.get('LUCE_BASE_COMPILER', ROOT / f'build/toolchain/luce-base{SUFFIX}')))
+    parser.add_argument('--luce', type=Path, default=Path(os.environ.get('LUCE_COMPILER', ROOT / f'build/toolchain/luce{SUFFIX}')))
     parser.add_argument('--opt', type=int, choices=range(4))
     parser.add_argument('--oracle', type=Path, help='Optional C++ oracle built against kinogaki-core')
     args = parser.parse_args()
@@ -34,12 +61,14 @@ def main():
     if args.opt is None:
         modes += [["--backend=c"], ["--backend=c", "--release"]]
     env = dict(os.environ, LUCE_BASE=str(args.base.resolve()))
+    env.setdefault('LUCE_STD', str(ROOT.parent / 'luce-base/src/std'))
+    env.setdefault('LUCE_CACHE', str(ROOT / 'build/cache'))
     consumers = [
         (args.base, name + '.lucb') for name in (
             'main', 'format', 'media', 'semantics', 'authoring',
             'logic', 'editor', 'query', 'foreign', 'store', 'store_workers', 'ipc',
         )
-    ] + [
+    ] + [(args.base, '../src/luce_prism/storage_empty_tests.lucb')] + [
         (args.luce, name + '.luc') for name in (
             'consumer', 'advanced_consumer', 'editor_consumer',
         )
@@ -51,7 +80,14 @@ def main():
             for compiler, source in consumers:
                 binary = scratch / ('consumer' + SUFFIX)
                 run([compiler.resolve(), 'build', ROOT / 'tests' / source, *flags, '-o', binary], env=env)
-                run([binary, scratch] if source in ('semantics.lucb', 'editor.lucb') else [binary], env=env)
+                if source == 'ipc.lucb':
+                    run_ipc(binary, env)
+                elif source == 'store.lucb':
+                    store_scratch = scratch / f'store-{index}'
+                    store_scratch.mkdir()
+                    run([binary, store_scratch], env=env)
+                else:
+                    run([binary, scratch] if source in ('semantics.lucb', 'editor.lucb') else [binary], env=env)
             example = scratch / ('referenced-media' + SUFFIX)
             output = scratch / f'referenced media {index}'
             output.mkdir()

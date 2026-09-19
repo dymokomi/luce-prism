@@ -1,0 +1,27 @@
+## Internal regression: empty spans must not require null-pointer arithmetic.
+import luce_prism.storage as storage
+
+pub func main(arguments: str[]) -> i32!:
+    discard(arguments)
+    var items: storage.List[i64]
+    defer items.close()
+    assert(items.span().length == 0)
+    try items.push(42)
+    assert(items.span().length == 1)
+    items.remove(0)
+    assert(items.span().length == 0)
+    items.close()
+    assert(items.span().length == 0)
+    var buffer: storage.Buffer
+    defer buffer.close()
+    assert(buffer.bytes().length == 0)
+    var empty: u8[]
+    try buffer.put(empty)
+    assert(buffer.used == 0 and buffer.data.length == 0)
+    try buffer.byte(42)
+    assert(buffer.bytes()[0] == 42)
+    buffer.close()
+    try buffer.put(empty)
+    assert(buffer.bytes().length == 0)
+    print("PASS empty List and Buffer spans before allocation and after close")
+    return 0
