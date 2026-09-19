@@ -595,7 +595,7 @@ func drop_child(tables: Tables*, parent: str, path: str, cow: bool) -> !:
 func drop_copied_child(tables: Tables*, parent: str, existing: ChildList*, path: str) -> !:
     let kids = try copy_child_list(existing)
     var pending: ChildList*? = kids
-    errdefer drop_pending_children(pending)
+    defer drop_pending_children(pending)
     let slot = child_index(kids, path) else return
     kids.paths.items[slot].close()
     kids.paths.remove(slot)
@@ -695,7 +695,8 @@ func emit_elements(tables: const Tables*, parent: str, output: DocumentData*) ->
         let path = child.view()
         let row = find_element(tables, path) else continue
         var source = model.Element(identifier = row.identifier)
-        errdefer source.close()
+        # insert_copy clones this temporary; it is not an ownership transfer.
+        defer source.close()
         source.path = try row.path.copy()
         source.kind = try row.kind.copy()
         try source.properties.reserve(row.properties.count)
@@ -747,7 +748,7 @@ func apply_one(tables: Tables*, layer: const delta.Layer*, cow: bool) -> !:
                 try set_kind(tables, path, entry.op.type_name.view(), cow)
         elif not entry.op.override:
             var source = model.Element(identifier = entry.op.identifier)
-            errdefer source.close()
+            defer source.close()
             source.path = try text_copy(path)
             source.kind = try entry.op.type_name.copy()
             try put_element(tables, &source, cow)
@@ -777,7 +778,7 @@ func unique_element(tables: Tables*, path: str, cow: bool) -> Element*!:
     if not cow and current.references.load(.relaxed) == 1:
         return current
     var source = model.Element(identifier = current.identifier)
-    errdefer source.close()
+    defer source.close()
     source.path = try current.path.copy()
     source.kind = try current.kind.copy()
     try source.properties.reserve(current.properties.count)

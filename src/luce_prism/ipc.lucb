@@ -51,6 +51,7 @@ let sock_stream: i32 = 1
 let get_fd: i32 = 1
 let set_fd: i32 = 2
 let fd_cloexec: i32 = 1
+let nonblocking_flag: i32 = 4 if platform.macos else 2048
 let sock_level: i32 = 65535 if platform.macos else 1
 let nosigpipe_opt: i32 = 4130
 let send_flags: i32 = 0 if platform.macos else 16384
@@ -125,6 +126,15 @@ func open_unix() -> platform.SocketDescriptor!:
     guard_sigpipe(fd)
     return fd
 
+func set_nonblocking(fd: i32, enabled: bool) -> !:
+    var flags = fcntl(fd, 3)
+    while flags < 0 and c.errno() == c.interrupted: flags = fcntl(fd, 3)
+    if flags < 0: error(closed, "Prism socket flags unavailable")
+    let changed = flags | nonblocking_flag if enabled else flags & ~nonblocking_flag
+    var result = fcntl(fd, 4, changed)
+    while result < 0 and c.errno() == c.interrupted: result = fcntl(fd, 4, changed)
+    if result < 0: error(closed, "Prism socket mode change failed")
+
 pub func bind_unix(path: str) -> i32!:
     with memory.heap:
         let name = try strings.copy(path)
@@ -141,6 +151,9 @@ pub func bind_unix(path: str) -> i32!:
     if listen(fd, 128) != 0:
         discard(posix_close(fd))
         error(busy, "Prism owner could not listen")
+    set_nonblocking(fd, true) catch failure:
+        discard(posix_close(fd))
+        error(failure.code, failure.message)
     return fd
 
 pub func accept_unix(listen_fd: i32) -> i32!:
@@ -150,6 +163,10 @@ pub func accept_unix(listen_fd: i32) -> i32!:
     if fd < 0:
         error(closed, "Prism owner accept failed")
     mark_cloexec(fd) catch failure:
+        discard(posix_close(fd))
+        error(failure.code, failure.message)
+    # BSD may inherit listener flags; session framing uses blocking I/O.
+    set_nonblocking(fd, false) catch failure:
         discard(posix_close(fd))
         error(failure.code, failure.message)
     guard_sigpipe(fd)

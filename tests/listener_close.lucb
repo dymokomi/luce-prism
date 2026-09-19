@@ -1,0 +1,14 @@
+## Closing an idle owner must interrupt accept and release the socket/journal.
+import prism
+import thread
+
+pub func main(arguments: str[]) -> i32!:
+    assert(arguments.length == 2)
+    for iteration in 0..<16:
+        let owner = try prism.Store.open(arguments[1], token = "test-only")
+        try owner.value().listen()
+        # Alternate stopping before accept starts and while it is idle.
+        if iteration % 2 == 0: thread.sleep(20)
+        owner.release()
+    print("PASS idle listener shutdown and repeated journal/socket reopen")
+    return 0

@@ -1,0 +1,28 @@
+## Run under a leak checker: repeated table export must release temporary clones.
+import luce_prism.model as model
+import luce_prism.tables as tables
+import luce_prism.storage as storage
+import luce_prism.animation as animation
+
+pub func main(arguments: str[]) -> i32!:
+    discard(arguments)
+    var source = model.DocumentData()
+    defer source.close()
+    try source.add("/users", "directory")
+    try source.add("/users/alice", "file")
+    var prop = animation.Property()
+    defer prop.close()
+    prop.name = try storage.text_copy("password-hash")
+    prop.type_name = try storage.text_copy("test-property")
+    try source.elements.items[1].put_property(&prop)
+    let frozen = try tables.from_data(&source)
+    defer tables.drop_tables(frozen)
+    for iteration in 0..<64:
+        discard(iteration)
+        var exported = try tables.to_data(frozen)
+        defer exported.close()
+        assert(exported.element_count() == 2)
+        assert(try exported.type_at("/users/alice") == "file")
+        assert(exported.has_property("/users/alice", "password-hash"))
+    print("PASS repeated table export preserves properties and releases temporary elements")
+    return 0

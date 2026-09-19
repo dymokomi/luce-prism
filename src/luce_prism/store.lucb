@@ -710,7 +710,7 @@ pub struct Session:
         if self.remote != none or self.tls_link != none:
             return try rpc_children(self.remote, self.tls_link, self.token, parent)
         var names = try child_paths(&self, parent)
-        errdefer close_names(&names)
+        defer close_names(&names)
         var paths = Paths()
         errdefer paths.close()
         for name in names.span():
@@ -1463,6 +1463,9 @@ func accept_loop(raw: void*?):
             recover -1
         if fd < 0:
             continue
+        if inner.serving.load(.acquire) == 0:
+            ipc.close_fd(fd)
+            break
         let ctx = new ConnCtx() in memory.heap catch failure:
             ipc.close_fd(fd)
             continue
@@ -1481,13 +1484,15 @@ func stop_listen(inner: Inner*):
     if inner.serving.load(.acquire) == 0 and inner.listen_fd < 0:
         return
     inner.serving.store(0, .release)
-    if inner.listen_fd >= 0:
-        ipc.close_fd(inner.listen_fd)
-        inner.listen_fd = -1
+    # The listener is nonblocking; the accept loop observes serving within its
+    # bounded idle sleep. Close only after join, preventing descriptor reuse races.
     if let worker = inner.accept_thread:
         worker.join() catch failure:
             discard(failure)
         inner.accept_thread = none
+    if inner.listen_fd >= 0:
+        ipc.close_fd(inner.listen_fd)
+        inner.listen_fd = -1
     if inner.listen_path.used > 0:
         files.delete_path(inner.listen_path.view()) catch failure:
             discard(failure)

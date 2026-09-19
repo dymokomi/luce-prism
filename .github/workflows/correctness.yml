@@ -49,14 +49,29 @@ jobs:
       - name: Build native compilers
         working-directory: luce-prism
         run: python3 tools/bootstrap.py
+      - name: Listener shutdown in six modes
+        working-directory: luce-prism
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 tests/listener_close.py 2>&1 | tee build/listener-close.log
       - name: Prism compatibility and ownership tests
         working-directory: luce-prism
         shell: bash
         run: |
           set -o pipefail
           sh test.sh 2>&1 | tee build/correctness.log
+      - name: Table export memory ownership
+        working-directory: luce-prism
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 tests/table_export.py 2>&1 | tee build/table-export.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: prism-tests-${{ matrix.runner }}
-          path: luce-prism/build/correctness.log
+          path: |
+            luce-prism/build/correctness.log
+            luce-prism/build/table-export.log
+            luce-prism/build/listener-close.log

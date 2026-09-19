@@ -312,7 +312,7 @@ func put_chunked(tx: wal.Transaction*, prefix: const Buffer*, payload: const u8[
     while remaining > 0:
         let chunk = max_value if remaining > max_value else remaining
         var key: Buffer
-        errdefer key.close()
+        defer key.close()
         try key.put(prefix.bytes())
         try key.byte((u8)'/')
         try put_decimal(&key, (u64)index)
@@ -321,11 +321,11 @@ func put_chunked(tx: wal.Transaction*, prefix: const Buffer*, payload: const u8[
         remaining -= chunk
         index += 1
     var count_key: Buffer
-    errdefer count_key.close()
+    defer count_key.close()
     try count_key.put(prefix.bytes())
     try count_key.text("/#")
     var digits: Buffer
-    errdefer digits.close()
+    defer digits.close()
     try put_decimal(&digits, (u64)index)
     try tx.put(count_key.view(), digits.bytes())
 
@@ -337,7 +337,7 @@ func load_chunked(snap: wal.View*, prefix: str) -> Buffer!:
     if let single = try snap_copy(snap, prefix):
         return single
     var count_key: Buffer
-    errdefer count_key.close()
+    defer count_key.close()
     try count_key.text(prefix)
     try count_key.text("/#")
     var listed = try snap_copy(snap, count_key.view()) else error(invalid, "missing Prism snapshot chunks")
@@ -348,7 +348,7 @@ func load_chunked(snap: wal.View*, prefix: str) -> Buffer!:
     var index: u64 = 0
     while index < count:
         var key: Buffer
-        errdefer key.close()
+        defer key.close()
         try key.text(prefix)
         try key.byte((u8)'/')
         try put_decimal(&key, index)
@@ -430,7 +430,8 @@ func load_unbaked_blob(snap: wal.View*, identity: str, generation: u64) -> Buffe
 
 func decode_crate(bytes: const u8[]) -> tables.Tables*!:
     var data = DocumentData()
-    errdefer data.close()
+    # from_data clones document storage; release the parsed source on success too.
+    defer data.close()
     try read_document(bytes, &data)
     return try tables.from_data(&data)
 
@@ -715,7 +716,7 @@ pub func reclaim(journal: Journal*, identity: str, owned: const tables.Tables*, 
     var through_key = try snap_through_key(identity)
     defer through_key.close()
     var through_text: Buffer
-    errdefer through_text.close()
+    defer through_text.close()
     try put_decimal(&through_text, through)
     var inline_prefix: Buffer
     defer inline_prefix.close()
