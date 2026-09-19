@@ -44,8 +44,9 @@ from a string Value contains length prefixes, not concatenated text.
   `type_at`, `element_count`, `property_count`, `property_name` inspect records.
 - `set_metadata`/`metadata` handle non-animatable strings. Reference arcs use
   reserved `reference` and `referencePath` metadata, also read from text directives.
-  These can point from ASCII documents to binary `.prism` files. Fetching and
-  reading the target is currently explicit; see [external media](REFERENCES.md).
+  `reference` is the Store catalog key. `Session.get` / `children` / `Query` stay
+  inside one identity. Cross-mount reads use `Store.lookup` / `Store.read`;
+  `compose` / `compose_file` remain explicit graft. See [external media](REFERENCES.md).
 - `set_sample` inserts/replaces a finite-time key. `sample_count` inspects the set;
   `resolve(path, name, time=0)` clamps to endpoints and resolves held, linear and
   Bézier keys with automatic or authored handles. `animate` creates a default
@@ -106,7 +107,8 @@ copyable document on success. Explicit native decoding rejects unknown magic;
 | `copy`, `equals`, `extract`, `instantiate`, `rename`, `move`, `renames` | Independent documents, stable element IDs, subtrees, unique destination names and move detection |
 | `children`, `find`, `element_id`, `path_for_id` | Ordered topology, path patterns and identity lookup |
 | `merge(base, a, b)`, `LayerStack` | Three-way conflict reporting, composed layers and compaction |
-| `ReferenceLibrary`, `compose_file` | Explicit reference expansion; see [references](REFERENCES.md) |
+| `ReferenceLibrary`, `compose_file`, `materialize_file` | Explicit graft for export/oracle; see [references](REFERENCES.md) |
+| `Store.lookup`, `Store.read`, `Store.kind`, `Store.entries` | Cross-identity `namei` and std.files-shaped helpers. `kind`/`read`/`entries` follow; `delete`/`remove_all` do not. |
 | `EventLog(base)` | Commit diffs, replay `at(offset)`, read `since(offset)`, compact retained history |
 | `NodeRegistry`, `Evaluator`, `compute`, `compute_slot` | Declared inputs/outputs, owned node callbacks, lazy baking, registered math and materialized output |
 | `world_matrix`, `visible`, `Affine2`, `Scene` | Float32-compatible transform/visibility evaluation and independent scene snapshots |
@@ -127,6 +129,48 @@ mutable document.
 
 The executable [advanced Luce consumer](../tests/advanced_consumer.luc) exercises
 these APIs and callback signatures without manual reference management.
+
+## Store lookup
+
+`Store.mount(identity)` inserts a catalog entry; `identity` is the `reference`
+metadata string (1–200 bytes, ASCII `[A-Za-z0-9._-]`, not `"."` / `".."`).
+`Store.lookup(path, follow=true)` walks `/` components and switches identity at a
+`link` without copying elements. A missing `referencePath` is the mount root
+`"/"`. Terminal `follow=false` returns `LookKind.link`; intermediate links always
+hop. `Store.read` / `Store.kind` / `Store.entries` call `lookup(follow=true)` then
+`Session` on that identity. `Look` is `{identity, path, kind}` with `kind` one of
+`missing`, `directory`, `file`, `link`, `other`. Host names that fail `valid_name`
+(including `.`) match an anonymous `[N]` child via metadata `name`.
+
+`entries` yields `{name, path, kind}` sorted by name; `name` is `path_name` or
+metadata `name`; `kind` is the followed target (no `link` member). `list` is those
+names. `exists` / `is_dir` / `is_file` are kind after follow. `make_directory`
+creates missing parents and is idempotent if the path is already a directory;
+`Session.add` does not create parents. `delete` errors on a directory and unlinks
+a terminal link. `remove_directory` requires an empty directory that is not a
+link. `remove_all` is idempotent on a missing path and **does not follow** links
+(the link node is removed; the target identity is left alone). There is no public
+`kind_nofollow` and no `mode`. `Session.set` refuses a value larger than one
+journal frame (`max_frame - 32`).
+
+`Store.dump(dir)` writes one atomic crate per catalog identity as `dir/{identity}`.
+`Store.load(dir)` installs those basenames (valid identities only) as tables.
+
+`memory_limit` is Store-wide (default 256 MiB). RAM `Store.memory()` refuses when
+resident would exceed it. Durable `Store.open` LRU-evicts unpinned published
+payloads to `{dbpath}.ext` and `get`/`read` fault them back. `children` / `lookup`
+/ `kind` do not fault. `Session.pin(path)` holds a subtree; pin fails rather than
+evicting that working set. Layers stay pinned until bake or the view dies.
+
+`Store.open(path, token="")` is the durable owner: it takes `{basename}.lock` using
+Prism's own WAL. A nonempty `token` is required on `Store.connect`. After open,
+`Store.listen()` binds `{dbpath}.sock` (unlinking a stale socket only after flock
+succeeded). `Store.serve()` waits while the accept loop runs. In-process workers
+still borrow `Store*`. Other processes use `Store.connect(socket)` — they must not
+`engine.open` the journal. IPC is length-prefixed; tokens are owner-side
+`snap_id`/`tx_id`. v1 verbs: snapshot, get, children, lookup, begin, set, add,
+remove, set_metadata, commit, close. Not in v1: Query, bake/checkpoint/dump from
+clients, TCP.
 
 ## Codecs and editor integration
 

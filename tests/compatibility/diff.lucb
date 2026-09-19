@@ -67,7 +67,7 @@ func diff_connection_changes_round_trip() -> !:
     defer base.release()
     let target = try base.value().copy()
     defer target.release()
-    target.value().disconnect("/a.in")
+    try target.value().disconnect("/a.in")
     try target.value().connect("/src.out", "/b.in")
     let layer = try base.value().diff(target)
     defer layer.release()

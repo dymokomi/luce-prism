@@ -1,12 +1,13 @@
 ## Public conflict reports and retained layer histories.
 import interop
 import memory
-from luce_prism.document import Document, own_document
-from luce_prism.model import DocumentData
+from luce_prism.document import Document, own_document, own_view, snapshot_document
+from luce_prism.model import DocumentData, drop_data, own_data
 from luce_prism.storage import List
 from luce_prism.types import invalid
 import luce_prism.composition.conflicts as conflicts
 import luce_prism.composition.layers as layers
+import luce_prism.composition.delta as delta
 
 pub struct MergeResult:
     var items: List[conflicts.Conflict]
@@ -60,45 +61,59 @@ func populate(output: MergeResult*, base: interop.Reference[Document], a: intero
         output.merged = try layers.overlay(before, opinions)
 
 pub struct LayerStack:
-    var foundation: DocumentData = DocumentData()
-    var opinions: List[DocumentData]
+    var foundation: DocumentData*
+    var opinions: List[delta.Layer]
 
     pub func init(base: interop.Reference[Document]) -> !:
-        self.opinions = List[DocumentData]()
-        self.foundation = try (try base.get()).view_data().copy()
+        var first = try snapshot_document(try base.get())
+        errdefer first.close()
+        self.foundation = try own_data(first)
+        first = DocumentData()
+        self.opinions = List[delta.Layer]()
 
     pub mutating func push(layer: interop.Reference[Document]) -> !:
-        var owned = try (try layer.get()).view_data().copy()
+        var snap = try snapshot_document(try layer.get())
+        defer snap.close()
+        var owned = try delta.from_document(&snap)
         errdefer owned.close()
         try self.opinions.push(owned)
+        owned = delta.Layer()
 
     pub func count() -> usize:
         return self.opinions.count
 
     pub func base() -> interop.Reference[Document]!:
-        return try own_document(try self.foundation.copy())
+        return try own_view(self.foundation, delta.Layer())
 
     pub func layer(index: usize) -> interop.Reference[Document]!:
         if index >= self.opinions.count:
             error(invalid, "Prism layer index is out of bounds")
-        return try own_document(try self.opinions.items[index].copy())
+        return try own_document(try delta.to_document(&self.opinions.items[index]))
 
     pub func resolve() -> interop.Reference[Document]!:
-        return try own_document(try layers.overlay(&self.foundation, self.opinions.span()))
+        var extra = try delta.collapse(self.foundation, self.opinions.span())
+        return try own_view(self.foundation, extra)
 
     pub mutating func compact(keep: usize) -> !:
         if keep >= self.opinions.count:
             return
         let fold = self.opinions.count - keep
-        let collapsed = try layers.overlay(&self.foundation, self.opinions.items[..<fold])
-        self.foundation.close()
-        self.foundation = collapsed
+        var baked = try self.foundation.copy()
+        errdefer baked.close()
         for i in 0..<fold:
-            self.opinions.items[0].close()
-            self.opinions.remove(0)
+            try delta.apply(&baked, &self.opinions.items[i])
+        let heap = try own_data(baked)
+        baked = DocumentData()
+        drop_data(self.foundation)
+        self.foundation = heap
+        for i in 0..<fold:
+            self.opinions.items[i].close()
+        for i in 0..<keep:
+            self.opinions.items[i] = self.opinions.items[i + fold]
+        self.opinions.count = keep
 
     pub mutating func close():
-        self.foundation.close()
+        drop_data(self.foundation)
         for i in 0..<self.opinions.count:
             self.opinions.items[i].close()
         self.opinions.close()

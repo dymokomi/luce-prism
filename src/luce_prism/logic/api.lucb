@@ -6,7 +6,7 @@ import luce_prism.logic.solver as solver
 import luce_prism.logic.builders as builders
 import luce_prism.collections.sort as sorting
 from luce_prism.logic.atoms import Atom, ProofTag
-from luce_prism.document import Document, own_document
+from luce_prism.document import Document, own_document, snapshot_document
 from luce_prism.model import DocumentData
 from luce_prism.authoring.paths import Paths, own_paths
 from luce_prism.authoring.names import unique_path
@@ -52,7 +52,9 @@ pub struct Logic:
     var theory: grounding.Theory
 
     pub func init(document: interop.Reference[Document]) -> !:
-        self.theory = try grounding.build((try document.get()).view_data())
+        var snap = try snapshot_document(try document.get())
+        defer snap.close()
+        self.theory = try grounding.build(&snap)
         solver.solve(&self.theory)
 
     pub func conclude(atom: interop.Reference[Atom]) -> ProofTag!:
@@ -109,7 +111,7 @@ pub func why(document: interop.Reference[Document], atom: interop.Reference[Atom
 pub func derive(document: interop.Reference[Document]) -> interop.Reference[Document]!:
     var logic = try Logic(document)
     defer logic.close()
-    var result = try (try document.get()).view_data().copy()
+    var result = try snapshot_document(try document.get())
     errdefer result.close()
     var root = try unique_path(&result, "/derived")
     defer root.close()

@@ -3,6 +3,7 @@ import memory
 import ownership
 import interop
 import files
+import compatibility.tables as table_tests
 
 func rejected(bytes: const u8[]) -> !:
     let result: interop.Reference[prism.Document]? = prism.Document.decode(bytes) catch failure:
@@ -100,7 +101,7 @@ func roundtrips() -> !:
         assert(false)
 
 func mutations() -> !:
-    var document = prism.Document()
+    var document = try prism.Document()
     defer document.close()
     try document.add("/a", "group")
     try document.add("/a/node", "node")
@@ -206,6 +207,7 @@ pub func main(arguments: str[]) -> i32!:
     try roundtrips()
     try mutations()
     try malformed()
+    try table_tests.run()
     ownership.collect()
     var tracker = Tracker(upstream = memory.heap)
     defer restore(tracker.upstream)

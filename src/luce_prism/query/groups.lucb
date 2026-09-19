@@ -4,7 +4,7 @@ import memory
 import luce_prism.query.aggregation as aggregation
 from luce_prism.query.results import Selection, own_selection
 from luce_prism.collections.index import Index
-from luce_prism.model import DocumentData
+from luce_prism.model import DocumentData, Element
 from luce_prism.storage import List, Buffer, less
 from luce_prism.types import invalid, missing
 
@@ -76,7 +76,7 @@ func sift(groups: Group[], start: usize, count: usize):
         groups[child] = previous
         root = child
 
-pub func build(doc: const DocumentData*, rows: const usize[], fields: const str[], value_field: str = "", operation: aggregation.Aggregate? = none) -> interop.Reference[Groups]!:
+pub func build_rows(elements: const Element[], rows: const usize[], fields: const str[], value_field: str = "", operation: aggregation.Aggregate? = none) -> interop.Reference[Groups]!:
     var index: Index
     defer index.close()
     for row in rows:
@@ -85,7 +85,7 @@ pub func build(doc: const DocumentData*, rows: const usize[], fields: const str[
         for i in 0..<fields.length:
             if i > 0:
                 try key.byte(31)
-            var label = try aggregation.label(&doc.elements.items[row], fields[i], operation == none)
+            var label = try aggregation.label(&elements[row], fields[i], operation == none)
             defer label.close()
             try key.text(label.view())
         discard(try index.add(key.view(), row))
@@ -99,7 +99,7 @@ pub func build(doc: const DocumentData*, rows: const usize[], fields: const str[
             if op == aggregation.Aggregate.count:
                 value = (f64)bucket.rows.count
             else:
-                value = try aggregation.numeric(doc, bucket.rows.span(), value_field, op)
+                value = try aggregation.numeric_rows(elements, bucket.rows.span(), value_field, op)
                 if value == none:
                     if op == aggregation.Aggregate.sum:
                         value = 0.0
@@ -109,7 +109,7 @@ pub func build(doc: const DocumentData*, rows: const usize[], fields: const str[
         errdefer group.close()
         group.key = try bucket.key.copy()
         for row in bucket.rows.span():
-            try group.rows.append(&doc.elements.items[row])
+            try group.rows.append(&elements[row])
         try native.groups.push(group)
     var start = native.groups.count // 2
     while start > 0:
@@ -124,6 +124,9 @@ pub func build(doc: const DocumentData*, rows: const usize[], fields: const str[
         sift(native.groups.span(), 0, end)
     unowned = false
     return try interop.Reference[Groups].adopt(native, groups_type, memory.heap)
+
+pub func build(doc: const DocumentData*, rows: const usize[], fields: const str[], value_field: str = "", operation: aggregation.Aggregate? = none) -> interop.Reference[Groups]!:
+    return try build_rows(doc.elements.span(), rows, fields, value_field, operation)
 
 func destroy(native: Groups*, unowned: bool):
     if unowned:

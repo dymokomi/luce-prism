@@ -4,7 +4,7 @@ import memory
 import math
 from luce_prism.query.predicates import Comparison
 from luce_prism.query.aggregation import Aggregate, calculate, sort_numbers
-from luce_prism.document import Document
+from luce_prism.document import Document, assemble_element
 from luce_prism.model import Element
 from luce_prism.value import ValueData, half_number
 from luce_prism.animation import resolve_property
@@ -98,8 +98,7 @@ pub struct ColumnTable:
     var table: Element
 
     pub func init(doc: interop.Reference[Document], path: str) -> !:
-        let data = (try doc.get()).view_data()
-        self.table = try data.elements.items[try data.require(path)].copy()
+        self.table = try assemble_element(try doc.get(), path)
 
     func column(name: str) -> List[f64]!:
         let position = self.table.property(name) else return List[f64]()

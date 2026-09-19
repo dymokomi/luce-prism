@@ -36,12 +36,16 @@ import luce_prism.geometry.transform as transforms
 import luce_prism.geometry.affine as affine
 import luce_prism.scene as scene
 import luce_prism.composition.merge as merging
+import luce_prism.composition.delta as delta
 import luce_prism.composition.moves as moves
 import luce_prism.composition.references as references
 import luce_prism.types as types
 import luce_prism.pattern as pattern_ops
 import luce_prism.value as value
 import luce_prism.document as document
+import luce_prism.store as storing
+import luce_prism.lookup as looking
+import luce_prism.fs as listing
 import luce_prism.storage as storage
 import luce_prism.path as path_ops
 import luce_prism.serialization.encoding as encoding
@@ -206,7 +210,21 @@ pub let invalid: ErrorCode = types.invalid
 pub let limit_exceeded: ErrorCode = types.limit_exceeded
 pub let missing: ErrorCode = types.missing
 pub let unsupported: ErrorCode = types.unsupported
+pub let closed: ErrorCode = types.closed
+pub let conflict: ErrorCode = types.conflict
+pub let busy: ErrorCode = types.busy
+pub let timed_out: ErrorCode = types.timed_out
 pub let format_version: u16 = types.format_version
+pub type Store = storing.Store
+pub type Session = storing.Session
+pub type StoreStatistics = storing.Statistics
+pub type Look = looking.Look
+pub type LookKind = looking.LookKind
+pub type Entries = listing.Entries
+pub let store_type = storing.store_type
+pub let session_type = storing.session_type
+pub let look_type = looking.look_type
+pub let entries_type = listing.entries_type
 
 pub func valid_path(path: str) -> bool:
     return path_ops.valid_path(path)
@@ -238,10 +256,49 @@ pub let library_type = references.library_type
 pub func compose_file(path: str) -> interop.Reference[Document]!:
     return try references.compose_file(path)
 
+pub func materialize_file(path: str) -> interop.Reference[Document]!:
+    return try references.compose_file(path)
+
 pub type MergeResult = merging.MergeResult
 pub type LayerStack = merging.LayerStack
+pub type Layer = delta.Layer
 pub let merge_type = merging.merge_type
 pub let layer_stack_type = merging.layer_stack_type
+pub let layer_type = delta.layer_type
+
+pub func layer_from(source: interop.Reference[Document]) -> interop.Reference[Layer]!:
+    return try delta.own_layer(try delta.from_document((try source.get()).view_data()))
+
+pub func make_layer() -> interop.Reference[Layer]!:
+    return try delta.own_layer(delta.Layer())
+
+pub func layer_put_element(layer: interop.Reference[Layer], path: str, override: bool = false, deleted: bool = false) -> !:
+    try (try layer.get()).put(path, delta.Cell.element, "", delta.Op(deleted = deleted, override = override))
+
+pub func layer_visible(base: interop.Reference[Document], layer: interop.Reference[Layer], path: str) -> bool!:
+    return delta.visible((try base.get()).view_data(), try layer.get(), none, path)
+
+pub func layer_visible2(base: interop.Reference[Document], first: interop.Reference[Layer], second: interop.Reference[Layer], path: str) -> bool!:
+    return delta.visible((try base.get()).view_data(), try first.get(), try second.get(), path)
+
+pub func layer_has_child(base: interop.Reference[Document], layer: interop.Reference[Layer], parent: str, child: str) -> bool!:
+    var kids = try delta.children((try base.get()).view_data(), try layer.get(), none, parent)
+    defer kids.close()
+    for path in kids.span():
+        if path == child:
+            return true
+    return false
+
+pub func layer_has_child2(base: interop.Reference[Document], first: interop.Reference[Layer], second: interop.Reference[Layer], parent: str, child: str) -> bool!:
+    var kids = try delta.children((try base.get()).view_data(), try first.get(), try second.get(), parent)
+    defer kids.close()
+    for path in kids.span():
+        if path == child:
+            return true
+    return false
+
+pub func layer_has_property(base: interop.Reference[Document], layer: interop.Reference[Layer], path: str, name: str) -> bool!:
+    return delta.has_property((try base.get()).view_data(), try layer.get(), none, path, name)
 
 pub func merge(base: interop.Reference[Document], a: interop.Reference[Document], b: interop.Reference[Document]) -> interop.Reference[MergeResult]!:
     return try merging.merge(base, a, b)

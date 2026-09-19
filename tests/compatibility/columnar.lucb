@@ -82,6 +82,18 @@ func all_numeric_dtypes_and_shapes() -> !:
     assert(try data.aggregate("c", prism.Aggregate.sum) == -1.0)
     assert(try data.rows("scalar") == 1 and try data.rows("matrix") == 4)
 
+func columnar_reads_through_overlay() -> !:
+    let base = try prism.Document.parse("#prisma 4.0\ndef table \"sales\" { float[5] amount = [10,20,30,40,50] }")
+    defer base.release()
+    let layer = try prism.Document.parse("#prisma 4.0\nover table \"sales\" { float[5] amount = [1,2,3,4,5] }")
+    defer layer.release()
+    let doc = try base.value().overlay(layer)
+    defer doc.release()
+    var data = try prism.ColumnTable(doc, "/sales")
+    defer data.close()
+    assert(try data.rows("amount") == 5)
+    assert(try data.aggregate("amount", prism.Aggregate.sum) == 15.0)
+
 pub func run() -> !:
     try columnar_where_and_aggregate()
     try columnar_avg_ignores_out_of_range_rows()
@@ -89,4 +101,5 @@ pub func run() -> !:
     try columnar_missing_or_nonnumeric()
     try columnar_int_dtype()
     try all_numeric_dtypes_and_shapes()
+    try columnar_reads_through_overlay()
     print("PASS 5 legacy columnar cases, all numeric dtypes and selector edge cases")

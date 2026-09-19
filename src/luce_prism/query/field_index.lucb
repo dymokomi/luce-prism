@@ -3,28 +3,44 @@ import interop
 import luce_prism.query.scalars as scalars
 from luce_prism.collections.index import Index
 from luce_prism.query.results import Selection, own_selection
-from luce_prism.document import Document
-from luce_prism.model import DocumentData
+from luce_prism.document import Document, assemble_element, walk_document
+from luce_prism.model import Element, close_elements
+from luce_prism.storage import List
 from luce_prism.value import Value
 from luce_prism.animation import resolve_property
 
 pub struct FieldIndex:
-    var doc: DocumentData = DocumentData()
+    var rows: List[Element]
     var index: Index
 
     pub func init(doc: interop.Reference[Document], field: str) -> !:
-        self.doc = try (try doc.get()).view_data().copy()
+        self.rows = List[Element]()
         self.index = Index()
         errdefer self.close()
-        for row in 0..<self.doc.elements.count:
-            let element = &self.doc.elements.items[row]
-            if let position = element.property(field):
-                var value = try resolve_property(&element.properties.items[position], 0.0)
-                defer value.close()
-                if let result = try scalars.key(&value):
-                    var key = result
-                    defer key.close()
-                    discard(try self.index.add(key.view(), row))
+        let view = try doc.get()
+        if view.is_layered():
+            var paths = try walk_document(view)
+            defer paths.close()
+            for path in paths.span():
+                var element = try assemble_element(view, path)
+                defer element.close()
+                try self.index_row(&element, field)
+        else:
+            for element in view.view_data().elements.span():
+                try self.index_row(&element, field)
+
+    mutating func index_row(element: const Element*, field: str) -> !:
+        let position = element.property(field) else return
+        var value = try resolve_property(&element.properties.items[position], 0.0)
+        defer value.close()
+        if let result = try scalars.key(&value):
+            var key = result
+            defer key.close()
+            var owned = try element.copy()
+            errdefer owned.close()
+            discard(try self.index.add(key.view(), self.rows.count))
+            try self.rows.push(owned)
+            owned = Element()
 
     pub func key_count() -> usize:
         return self.index.buckets.count
@@ -37,7 +53,7 @@ pub struct FieldIndex:
             defer key.close()
             if let position = self.index.find(key.view()):
                 for row in self.index.buckets.items[position].rows.span():
-                    try selection.append(&self.doc.elements.items[row])
+                    try selection.append(&self.rows.items[row])
         let owned = selection
         selection = Selection()
         return try own_selection(owned)
@@ -50,7 +66,7 @@ pub struct FieldIndex:
         return false
 
     pub mutating func close():
-        self.doc.close()
+        close_elements(&self.rows)
         self.index.close()
 
 pub let field_index_type = interop.Type[FieldIndex]("Prism field index", FieldIndex.close, closeable = true)

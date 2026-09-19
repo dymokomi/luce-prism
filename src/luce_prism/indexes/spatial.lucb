@@ -4,7 +4,8 @@ import math
 import luce_prism.indexes.ranked as ranked
 from luce_prism.query.results import Selection
 from luce_prism.collections.index import Index
-from luce_prism.document import Document
+from luce_prism.document import Document, assemble_element, walk_document
+from luce_prism.model import Element
 from luce_prism.animation import resolve_property
 from luce_prism.storage import List
 from luce_prism.types import DType, invalid
@@ -52,21 +53,33 @@ pub struct SpatialIndex:
             error(invalid, "spatial coordinate exceeds the supported grid")
         return (i64)coordinate
 
+    mutating func consider(element: const Element*, field: str) -> !:
+        let position = element.property(field) else return
+        var value = try resolve_property(&element.properties.items[position], 0.0)
+        defer value.close()
+        if value.kind != DType.float32 or value.shape.count != 1 or value.shape.items[0] != 3:
+            return
+        let point = Point32((f32)try value.number(0), (f32)try value.number(1), (f32)try value.number(2))
+        let x = try self.coordinate((f64)point.x)
+        let y = try self.coordinate((f64)point.y)
+        let z = try self.coordinate((f64)point.z)
+        var scratch: u8[100]
+        discard(try self.grid.add(try format(scratch, f"{x}:{y}:{z}"), self.points.count))
+        try self.points.push(point)
+        try self.rows.append(element)
+
     mutating func build(doc: interop.Reference[Document], field: str) -> !:
-        for element in (try doc.get()).view_data().elements.span():
-            let position = element.property(field) else continue
-            var value = try resolve_property(&element.properties.items[position], 0.0)
-            defer value.close()
-            if value.kind != DType.float32 or value.shape.count != 1 or value.shape.items[0] != 3:
-                continue
-            let point = Point32((f32)try value.number(0), (f32)try value.number(1), (f32)try value.number(2))
-            let x = try self.coordinate((f64)point.x)
-            let y = try self.coordinate((f64)point.y)
-            let z = try self.coordinate((f64)point.z)
-            var scratch: u8[100]
-            discard(try self.grid.add(try format(scratch, f"{x}:{y}:{z}"), self.points.count))
-            try self.points.push(point)
-            try self.rows.append(&element)
+        let view = try doc.get()
+        if view.is_layered():
+            var paths = try walk_document(view)
+            defer paths.close()
+            for path in paths.span():
+                var element = try assemble_element(view, path)
+                defer element.close()
+                try self.consider(&element, field)
+            return
+        for element in view.view_data().elements.span():
+            try self.consider(&element, field)
 
     pub func size() -> usize:
         return self.points.count

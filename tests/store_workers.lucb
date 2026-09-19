@@ -1,0 +1,75 @@
+## Share the Store façade pointer across Base workers; each thread begin()s locally.
+import prism
+import thread
+import interop
+
+var ready: @u64
+var go: @u64
+var errors: @u64
+var next_id: @u64
+
+struct Context:
+    var store: prism.Store*
+
+func work(raw: void*?):
+    let context = (Context*)(raw else trap("worker context"))
+    discard(ready.add(1, .release))
+    while go.load(.acquire) == 0:
+        thread.sleep(1)
+    for round in 0..<8:
+        let id = next_id.add(1, .relaxed) + 1
+        var scratch: u8[32]
+        let path = format(scratch, f"/w{id}") catch failure:
+            discard(errors.add(1, .relaxed))
+            recover ""
+        if path.length == 0:
+            continue
+        var finished = false
+        for attempt in 0..<128:
+            let tx: interop.Reference[prism.Session]? = context.store.begin() catch failure:
+                if failure.code != prism.busy and failure.code != prism.timed_out:
+                    discard(errors.add(1, .relaxed))
+                thread.sleep(1)
+                recover none
+            let session = tx else continue
+            defer session.release()
+            var added = true
+            session.value().add(path, "file") catch failure:
+                if failure.code != prism.conflict and failure.code != prism.busy:
+                    discard(errors.add(1, .relaxed))
+                added = false
+            if not added:
+                continue
+            var committed = true
+            discard(session.value().commit(wait_ms = 1000) catch failure:
+                if failure.code != prism.conflict and failure.code != prism.busy and failure.code != prism.timed_out:
+                    discard(errors.add(1, .relaxed))
+                committed = false
+                thread.sleep(1)
+                recover -1)
+            if committed:
+                finished = true
+                break
+        if not finished:
+            discard(errors.add(1, .relaxed))
+
+pub func main(arguments: str[]) -> i32!:
+    var store = try prism.Store()
+    defer store.close()
+    var workers: thread.Handle[4]
+    var context = Context(store = &store)
+    for i in 0..<4:
+        workers[i] = try thread.spawn(work, &context, name = "prism-store")
+    while ready.load(.acquire) != 4:
+        thread.sleep(1)
+    go.store(1, .release)
+    for worker in workers:
+        try worker.join()
+    assert(errors.load(.acquire) == 0)
+    let snap = try store.snapshot()
+    defer snap.release()
+    let kids = try snap.value().children("/")
+    defer kids.release()
+    assert(kids.value().count() == 32)
+    print("PASS 4 threads, 32 disjoint Store commits, join before close")
+    return 0

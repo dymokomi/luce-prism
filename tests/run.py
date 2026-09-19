@@ -37,7 +37,7 @@ def main():
     consumers = [
         (args.base, name + '.lucb') for name in (
             'main', 'format', 'media', 'semantics', 'authoring',
-            'logic', 'editor', 'query', 'foreign',
+            'logic', 'editor', 'query', 'foreign', 'store', 'store_workers', 'ipc',
         )
     ] + [
         (args.luce, name + '.luc') for name in (

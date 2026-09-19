@@ -2,13 +2,14 @@
 import interop
 import memory
 import luce_prism.composition.layers as composition
-from luce_prism.model import DocumentData
-from luce_prism.document import Document, own_document
+import luce_prism.composition.delta as delta
+from luce_prism.model import DocumentData, drop_data, own_data
+from luce_prism.document import Document, own_document, own_view, snapshot_document
 from luce_prism.storage import List
 from luce_prism.types import invalid, limit_exceeded
 
 pub struct Changes:
-    var layers: List[DocumentData]
+    var layers: List[delta.Layer]
 
     pub func init():
         return
@@ -19,7 +20,7 @@ pub struct Changes:
     pub func at(index: usize) -> interop.Reference[Document]!:
         if index >= self.layers.count:
             error(invalid, "Prism change index is out of bounds")
-        return try own_document(try self.layers.items[index].copy())
+        return try own_document(try delta.to_document(&self.layers.items[index]))
 
     pub mutating func close():
         for i in 0..<self.layers.count:
@@ -29,59 +30,59 @@ pub struct Changes:
 pub let changes_type = interop.Type[Changes]("Prism changes", Changes.close, closeable = true)
 
 pub struct EventLog:
-    var base: DocumentData
-    var current: DocumentData
-    var history: Changes
+    var base: DocumentData*
+    var history: List[delta.Layer]
     var offset: usize
 
     pub func init(base: interop.Reference[Document]) -> !:
-        var first = try (try base.get()).view_data().copy()
+        var first = try snapshot_document(try base.get())
         errdefer first.close()
-        let second = try first.copy()
-        self.base = first
-        self.current = second
-        self.history = Changes()
+        self.base = try own_data(first)
+        first = DocumentData()
+        self.history = List[delta.Layer]()
         self.offset = 0
 
     pub func head_offset() -> usize:
-        return self.offset + self.history.layers.count
+        return self.offset + self.history.count
 
     pub func earliest_offset() -> usize:
         return self.offset
 
     pub func layer_count() -> usize:
-        return self.history.layers.count
+        return self.history.count
 
     pub func head() -> interop.Reference[Document]!:
-        return try own_document(try self.current.copy())
+        return try self.at(self.head_offset())
 
     pub mutating func commit(next: interop.Reference[Document]) -> usize!:
         let count = self.head_offset() +? 1 else error(limit_exceeded, "Prism event offset overflow")
-        var current = try (try next.get()).view_data().copy()
-        errdefer current.close()
-        var layer = try composition.diff(&self.current, &current)
+        let current = try self.head()
+        defer current.release()
+        let patch = try current.value().diff(next)
+        defer patch.release()
+        var layer = try delta.from_document((try patch.get()).view_data())
         errdefer layer.close()
-        try self.history.layers.push(layer)
-        self.current.close()
-        self.current = current
+        try self.history.push(layer)
+        layer = delta.Layer()
         return count
 
     func retained(offset: usize) -> usize!:
         if offset < self.offset:
             error(invalid, "Prism history was compacted; obtain a new snapshot")
         let count = offset - self.offset
-        return count if count < self.history.layers.count else self.history.layers.count
+        return count if count < self.history.count else self.history.count
 
     pub func at(offset: usize) -> interop.Reference[Document]!:
         let count = try self.retained(offset)
-        return try own_document(try composition.overlay(&self.base, self.history.layers.span()[..<count]))
+        var extra = try delta.collapse(self.base, self.history.span()[..<count])
+        return try own_view(self.base, extra)
 
     pub func since(offset: usize) -> interop.Reference[Changes]!:
         let start = try self.retained(offset)
         var changes = Changes()
         errdefer changes.close()
-        try changes.layers.reserve(self.history.layers.count - start)
-        for layer in self.history.layers.span()[start..]:
+        try changes.layers.reserve(self.history.count - start)
+        for layer in self.history.span()[start..]:
             try changes.layers.push(try layer.copy())
         let owned = try new Changes() in memory.heap
         owned[0] = changes
@@ -89,22 +90,28 @@ pub struct EventLog:
         return try interop.Reference[Changes].adopt(owned, changes_type, memory.heap)
 
     pub mutating func compact(keep: usize) -> !:
-        if keep >= self.history.layers.count:
+        if keep >= self.history.count:
             return
-        let folded = self.history.layers.count - keep
-        var base = try composition.overlay(&self.base, self.history.layers.span()[..<folded])
-        self.base.close()
-        self.base = base
+        let folded = self.history.count - keep
+        var baked = try self.base.copy()
+        errdefer baked.close()
         for i in 0..<folded:
-            self.history.layers.items[i].close()
+            try delta.apply(&baked, &self.history.items[i])
+        let heap = try own_data(baked)
+        baked = DocumentData()
+        drop_data(self.base)
+        self.base = heap
+        for i in 0..<folded:
+            self.history.items[i].close()
         for i in 0..<keep:
-            self.history.layers.items[i] = self.history.layers.items[i + folded]
-        self.history.layers.count = keep
+            self.history.items[i] = self.history.items[i + folded]
+        self.history.count = keep
         self.offset += folded
 
     pub mutating func close():
-        self.base.close()
-        self.current.close()
+        drop_data(self.base)
+        for i in 0..<self.history.count:
+            self.history.items[i].close()
         self.history.close()
 
 pub let event_log_type = interop.Type[EventLog]("Prism event log", EventLog.close, closeable = true)

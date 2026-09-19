@@ -1,0 +1,5 @@
+import compatibility.store as store_tests
+
+pub func main(arguments: str[]) -> i32!:
+    try store_tests.run()
+    return 0

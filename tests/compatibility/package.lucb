@@ -30,7 +30,7 @@ func asset_store_get_set_erase() -> !:
     let asset = try doc.value().asset("/t")
     defer asset.release()
     assert(try asset.value().text() == "abc" and try doc.value().asset_mime("/t") == "image/png")
-    doc.value().remove_asset("/t")
+    try doc.value().remove_asset("/t")
     assert(doc.value().asset_count() == 0)
     assert(try asset.value().text() == "abc")
 
@@ -42,7 +42,7 @@ func asset_store_slot_in_key_is_ignored() -> !:
     defer asset.release()
     assert(try asset.value().text() == "bytes")
     assert(try doc.value().asset_mime("/tex.out") == "application/octet-stream")
-    doc.value().remove_asset("/tex.out")
+    try doc.value().remove_asset("/tex.out")
     assert(doc.value().asset_count() == 0)
 
 func asset_store_reparent_and_remove_subtree() -> !:

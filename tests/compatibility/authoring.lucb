@@ -110,7 +110,7 @@ func connect_replaces_per_input_and_disconnect() -> !:
     try doc.value().connect("/b.out", "/t.in")
     assert(doc.value().connection_count() == 1)
     assert(try doc.value().source("/t.in") == "/b.out")
-    doc.value().disconnect("/t.in")
+    try doc.value().disconnect("/t.in")
     assert(doc.value().connection_count() == 0)
 
 func assembly_is_linear_not_quadratic() -> !:

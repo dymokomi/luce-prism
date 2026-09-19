@@ -1,0 +1,664 @@
+## RAM Store plus durable open/reopen through a luce-db journal.
+import prism
+import persist
+import files
+import memory
+import interop
+
+pub func run() -> !:
+    try snapshot_does_not_see_later_commits()
+    try snapshot_is_read_only()
+    try begin_reads_own_writes()
+    try children_include_unbaked_adds()
+    try delete_then_add_child_misses()
+    try disjoint_commits_succeed()
+    try alice_bob_conflict_after_bake()
+    try bake_leaves_snapshot_unchanged()
+    try memory_limit_refuses_large_set()
+    try set_limit_refuses_below_resident()
+    try view_cap_is_1024()
+    try mount_is_a_separate_identity()
+    try mount_rejects_bad_identity()
+    try document_facade_sees_unbaked()
+    try persist_budget_counts_chunked_keys()
+    try persist_reopen_sees_unbaked_commit()
+    try persist_schema_only_root_then_commit()
+    try persist_bake_reclaim_survives_reopen()
+    try fs_entries_follow_links_and_host_names()
+    try fs_make_directory_creates_parents()
+    try fs_delete_and_remove_directory_split()
+    try fs_remove_all_does_not_follow_links()
+    try fs_write_and_dump_per_identity()
+    try fs_set_refuses_oversized_value()
+    try vm_evicts_baked_payloads_and_faults()
+    try vm_pin_holds_subtree_and_set_refuses()
+    try vm_reopen_pages_under_limit()
+    print("PASS store: isolation, overlap after bake, children, memory limit, view cap, persist, fs helpers, payload VM")
+
+func snapshot_does_not_see_later_commits() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    let snap = try store.snapshot()
+    defer snap.release()
+    let tx = try store.begin()
+    defer tx.release()
+    try tx.value().add("/users", "directory")
+    discard(try tx.value().commit())
+    assert(not try snap.value().contains("/users"))
+    let after = try store.snapshot()
+    defer after.release()
+    assert(try after.value().contains("/users"))
+    assert(try after.value().type_at("/users") == "directory")
+
+func snapshot_is_read_only() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    let snap = try store.snapshot()
+    defer snap.release()
+    var refused = false
+    snap.value().add("/x", "file") catch failure:
+        assert(failure.code == prism.invalid)
+        refused = true
+    assert(refused)
+
+func begin_reads_own_writes() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    let tx = try store.begin()
+    defer tx.release()
+    try tx.value().add("/notes", "file")
+    let text = try prism.Value.text("hello")
+    defer text.release()
+    try tx.value().set("/notes", "text", text)
+    assert(try tx.value().contains("/notes"))
+    let got = try tx.value().get("/notes", "text")
+    defer got.release()
+    assert(try got.value().text_at() == "hello")
+    discard(try tx.value().commit())
+    assert(try tx.value().contains("/notes"))
+
+func children_include_unbaked_adds() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    let tx = try store.begin()
+    defer tx.release()
+    try tx.value().add("/users", "directory")
+    try tx.value().add("/users/alice", "directory")
+    discard(try tx.value().commit())
+    let snap = try store.snapshot()
+    defer snap.release()
+    let kids = try snap.value().children("/users")
+    defer kids.release()
+    assert(kids.value().count() == 1)
+    assert(try kids.value().at(0) == "/users/alice")
+
+func delete_then_add_child_misses() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    let seed = try store.begin()
+    defer seed.release()
+    try seed.value().add("/a", "directory")
+    try seed.value().add("/a/b", "file")
+    discard(try seed.value().commit())
+    let del = try store.begin()
+    defer del.release()
+    try del.value().remove("/a")
+    discard(try del.value().commit())
+    let add = try store.begin()
+    defer add.release()
+    try add.value().add("/a/b", "file")
+    discard(try add.value().commit())
+    let snap = try store.snapshot()
+    defer snap.release()
+    assert(not try snap.value().contains("/a"))
+    assert(not try snap.value().contains("/a/b"))
+    let kids = try snap.value().children("/a")
+    defer kids.release()
+    assert(kids.value().count() == 0)
+
+func disjoint_commits_succeed() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    let alice = try store.begin()
+    defer alice.release()
+    let bob = try store.begin()
+    defer bob.release()
+    try alice.value().add("/a", "file")
+    try bob.value().add("/b", "file")
+    discard(try alice.value().commit())
+    discard(try bob.value().commit())
+    let snap = try store.snapshot()
+    defer snap.release()
+    assert(try snap.value().contains("/a") and try snap.value().contains("/b"))
+
+func alice_bob_conflict_after_bake() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    let alice = try store.begin()
+    defer alice.release()
+    let bob = try store.begin()
+    defer bob.release()
+    try alice.value().add("/a", "file")
+    try bob.value().add("/a", "file")
+    discard(try alice.value().commit())
+    discard(try store.bake())
+    var collided = false
+    discard(bob.value().commit() catch failure:
+        assert(failure.code == prism.conflict)
+        collided = true
+        recover -1)
+    assert(collided)
+    let stats = try store.statistics()
+    assert(stats.conflicted_commits >= 1)
+    let snap = try store.snapshot()
+    defer snap.release()
+    assert(try snap.value().contains("/a"))
+
+func bake_leaves_snapshot_unchanged() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    let tx = try store.begin()
+    defer tx.release()
+    try tx.value().add("/keep", "file")
+    let value = try prism.Value.number(1.0)
+    defer value.release()
+    try tx.value().set("/keep", "x", value)
+    discard(try tx.value().commit())
+    let snap = try store.snapshot()
+    defer snap.release()
+    let later = try store.begin()
+    defer later.release()
+    let nine = try prism.Value.number(9.0)
+    defer nine.release()
+    try later.value().set("/keep", "x", nine)
+    discard(try later.value().commit())
+    discard(try store.bake())
+    let old = try snap.value().get("/keep", "x")
+    defer old.release()
+    assert(try old.value().number_at() == 1.0)
+    let baked = try store.snapshot()
+    defer baked.release()
+    let now = try baked.value().get("/keep", "x")
+    defer now.release()
+    assert(try now.value().number_at() == 9.0)
+
+func memory_limit_refuses_large_set() -> !:
+    var store = try prism.Store(4096)
+    defer store.close()
+    let tx = try store.begin()
+    defer tx.release()
+    try tx.value().add("/blob", "file")
+    var payload: u8[5000]
+    for i in 0..<payload.length:
+        payload[i] = 1
+    let shape: i64[1] = [5000]
+    let value = try prism.Value.array(prism.DType.uint8, shape, payload)
+    defer value.release()
+    var refused = false
+    tx.value().set("/blob", "bytes", value) catch failure:
+        assert(failure.code == prism.limit_exceeded)
+        refused = true
+    assert(refused)
+
+func set_limit_refuses_below_resident() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    let tx = try store.begin()
+    defer tx.release()
+    try tx.value().add("/a", "file")
+    discard(try tx.value().commit())
+    let stats = try store.statistics()
+    assert(stats.resident > 0)
+    var refused = false
+    store.set_limit(1) catch failure:
+        assert(failure.code == prism.limit_exceeded)
+        refused = true
+    assert(refused)
+
+func release_sessions(held: (interop.Reference[prism.Session]?)[], count: usize):
+    var i: usize = 0
+    while i < count:
+        if let session = held[i]:
+            session.release()
+        i += 1
+
+func view_cap_is_1024() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    var held: (interop.Reference[prism.Session]?)[1024]
+    var n: usize = 0
+    defer release_sessions(held[..<n], n)
+    while n < 1024:
+        held[n] = try store.snapshot()
+        n += 1
+    var refused = false
+    let blocked: interop.Reference[prism.Session]? = store.snapshot() catch failure:
+        assert(failure.code == prism.limit_exceeded)
+        refused = true
+        recover none
+    assert(refused and blocked == none)
+    if let first = held[0]:
+        first.release()
+        held[0] = none
+    let extra = try store.snapshot()
+    defer extra.release()
+    release_sessions(held[..<n], n)
+    n = 0
+
+func mount_is_a_separate_identity() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    try store.mount("media.prism")
+    let root = try store.begin()
+    defer root.release()
+    try root.value().add("/users", "directory")
+    discard(try root.value().commit())
+    let media = try store.begin_identity("media.prism")
+    defer media.release()
+    try media.value().add("/photos", "directory")
+    discard(try media.value().commit())
+    let root_snap = try store.snapshot()
+    defer root_snap.release()
+    assert(try root_snap.value().contains("/users"))
+    assert(not try root_snap.value().contains("/photos"))
+    let media_snap = try store.open_document("media.prism")
+    defer media_snap.release()
+    assert(try media_snap.value().contains("/photos"))
+    assert(not try media_snap.value().contains("/users"))
+
+func mount_rejects_bad_identity() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    var dots = false
+    store.mount("..") catch failure:
+        assert(failure.code == prism.invalid)
+        dots = true
+    assert(dots)
+    var slash = false
+    store.mount("media/prism") catch failure:
+        assert(failure.code == prism.invalid)
+        slash = true
+    assert(slash)
+
+func document_facade_sees_unbaked() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    let tx = try store.begin()
+    defer tx.release()
+    try tx.value().add("/row", "object")
+    let value = try prism.Value.integer(2)
+    defer value.release()
+    try tx.value().set("/row", "x", value)
+    discard(try tx.value().commit())
+    let snap = try store.snapshot()
+    defer snap.release()
+    let doc = try snap.value().document()
+    defer doc.release()
+    assert(doc.value().contains("/row"))
+    let got = try doc.value().get("/row", "x")
+    defer got.release()
+    assert(try got.value().integer_at() == 2)
+    var query = try snap.value().query()
+    defer query.close()
+    assert(try query.count() == 1)
+
+func persist_dir() -> str:
+    return "/tmp/luce-prism-persist-test"
+
+func persist_db() -> str:
+    return "/tmp/luce-prism-persist-test/root.db"
+
+func reset_persist() -> !:
+    files.delete_path(persist_dir(), true) catch failure:
+        discard(failure)
+    try files.make_directory(persist_dir())
+
+func persist_budget_counts_chunked_keys() -> !:
+    let small = try persist.journal_bytes_for_layer("root", 1, 16)
+    assert(small == persist.encoded_put(2 + 4 + 1 + 20, 16))
+    let huge = try persist.journal_bytes_for_layer("root", 1, persist.payload_budget)
+    assert(huge > persist.payload_budget)
+
+func persist_reopen_sees_unbaked_commit() -> !:
+    try reset_persist()
+    let first = try prism.Store.open(persist_db())
+    let tx = try first.value().begin()
+    try tx.value().add("/notes", "file")
+    let text = try prism.Value.text("hello")
+    defer text.release()
+    try tx.value().set("/notes", "text", text)
+    discard(try tx.value().commit())
+    tx.release()
+    first.release()
+    let second = try prism.Store.open(persist_db())
+    defer second.release()
+    let snap = try second.value().snapshot()
+    defer snap.release()
+    assert(try snap.value().contains("/notes"))
+    let got = try snap.value().get("/notes", "text")
+    defer got.release()
+    assert(try got.value().text_at() == "hello")
+
+func persist_schema_only_root_then_commit() -> !:
+    try reset_persist()
+    let first = try prism.Store.open(persist_db())
+    first.value().close()
+    first.release()
+    let second = try prism.Store.open(persist_db())
+    defer second.release()
+    let tx = try second.value().begin()
+    defer tx.release()
+    try tx.value().add("/users", "directory")
+    discard(try tx.value().commit())
+    let snap = try second.value().snapshot()
+    defer snap.release()
+    assert(try snap.value().contains("/users"))
+
+func persist_bake_reclaim_survives_reopen() -> !:
+    try reset_persist()
+    let first = try prism.Store.open(persist_db())
+    let tx = try first.value().begin()
+    try tx.value().add("/keep", "file")
+    let value = try prism.Value.number(3.0)
+    defer value.release()
+    try tx.value().set("/keep", "x", value)
+    discard(try tx.value().commit())
+    tx.release()
+    discard(try first.value().bake())
+    first.release()
+    let second = try prism.Store.open(persist_db())
+    defer second.release()
+    let snap = try second.value().snapshot()
+    defer snap.release()
+    let got = try snap.value().get("/keep", "x")
+    defer got.release()
+    assert(try got.value().number_at() == 3.0)
+
+func dump_dir() -> str:
+    return "/tmp/luce-prism-dump-test"
+
+func reset_dump() -> !:
+    files.delete_path(dump_dir(), true) catch failure:
+        discard(failure)
+    try files.make_directory(dump_dir())
+
+func seed_photos(store: prism.Store*) -> !:
+    try store.mount("media.prism")
+    let root = try store.begin()
+    defer root.release()
+    try root.value().add("/users", "directory")
+    try root.value().add("/users/alice", "directory")
+    try root.value().add("/users/alice/photos", "link")
+    try root.value().set_metadata("/users/alice/photos", "reference", "media.prism")
+    try root.value().add("/users/alice/[0]", "file")
+    try root.value().set_metadata("/users/alice/[0]", "name", "notes.txt")
+    let note = try prism.Value.text("hi")
+    defer note.release()
+    try root.value().set("/users/alice/[0]", "text", note)
+    discard(try root.value().commit())
+    let media = try store.begin_identity("media.prism")
+    defer media.release()
+    try media.value().add("/vacation", "file")
+    let payload = try prism.Value.array(prism.DType.uint8, [4], b"JPEG")
+    defer payload.release()
+    try media.value().set("/vacation", "bytes", payload)
+    discard(try media.value().commit())
+
+func find_entry(listing: interop.Reference[prism.Entries], name: str) -> usize!:
+    var i: usize = 0
+    while i < listing.value().count():
+        if try listing.value().name_at(i) == name:
+            return i
+        i += 1
+    error(prism.missing, "missing directory entry")
+
+func fs_entries_follow_links_and_host_names() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    try seed_photos(&store)
+    assert(try store.exists("/users/alice/photos"))
+    assert(try store.is_dir("/users/alice/photos"))
+    assert(try store.is_file("/users/alice/photos/vacation"))
+    assert(not try store.is_file("/users/alice/photos"))
+    let listing = try store.entries("/users/alice")
+    defer listing.release()
+    assert(listing.value().count() == 2)
+    let photos = try find_entry(listing, "photos")
+    assert(try listing.value().path_at(photos) == "/users/alice/photos")
+    assert(try listing.value().kind_at(photos) == prism.LookKind.directory)
+    let notes = try find_entry(listing, "notes.txt")
+    assert(try listing.value().path_at(notes) == "/users/alice/notes.txt")
+    assert(try listing.value().kind_at(notes) == prism.LookKind.file)
+    let names = try store.list("/users/alice")
+    defer names.release()
+    assert(names.value().count() == 2)
+    assert(try names.value().at(0) == "notes.txt")
+    assert(try names.value().at(1) == "photos")
+    let nested = try store.entries("/users/alice/photos")
+    defer nested.release()
+    assert(nested.value().count() == 1)
+    assert(try nested.value().name_at(0) == "vacation")
+    assert(try nested.value().kind_at(0) == prism.LookKind.file)
+
+func fs_make_directory_creates_parents() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    try store.make_directory("/users/bob/docs")
+    assert(try store.is_dir("/users"))
+    assert(try store.is_dir("/users/bob"))
+    assert(try store.is_dir("/users/bob/docs"))
+    try store.make_directory("/users/bob/docs")
+    var refused = false
+    let tx = try store.begin()
+    defer tx.release()
+    try tx.value().add("/tmp", "file")
+    discard(try tx.value().commit())
+    store.make_directory("/tmp") catch failure:
+        assert(failure.code == prism.invalid)
+        refused = true
+    assert(refused)
+
+func fs_delete_and_remove_directory_split() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    try seed_photos(&store)
+    var dir = false
+    store.delete("/users/alice") catch failure:
+        assert(failure.code == prism.invalid)
+        dir = true
+    assert(dir)
+    try store.delete("/users/alice/notes.txt")
+    assert(not try store.exists("/users/alice/notes.txt"))
+    try store.make_directory("/empty")
+    try store.remove_directory("/empty")
+    assert(not try store.exists("/empty"))
+    var full = false
+    store.remove_directory("/users") catch failure:
+        assert(failure.code == prism.invalid)
+        full = true
+    assert(full)
+    var link = false
+    store.remove_directory("/users/alice/photos") catch failure:
+        assert(failure.code == prism.invalid)
+        link = true
+    assert(link)
+    try store.delete("/users/alice/photos")
+    assert(not try store.exists("/users/alice/photos"))
+    let media = try store.open_document("media.prism")
+    defer media.release()
+    assert(try media.value().contains("/vacation"))
+
+func fs_remove_all_does_not_follow_links() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    try seed_photos(&store)
+    try store.remove_all("/users/alice")
+    assert(not try store.exists("/users/alice"))
+    assert(not try store.exists("/users/alice/photos"))
+    let media = try store.open_document("media.prism")
+    defer media.release()
+    assert(try media.value().contains("/vacation"))
+    try store.remove_all("/missing")
+    var other = try prism.Store()
+    defer other.close()
+    try seed_photos(&other)
+    try other.remove_all("/users/alice/photos")
+    assert(not try other.exists("/users/alice/photos"))
+    let again = try other.open_document("media.prism")
+    defer again.release()
+    assert(try again.value().contains("/vacation"))
+
+func fs_write_and_dump_per_identity() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    try seed_photos(&store)
+    try store.make_directory("/users/bob")
+    let hello = try prism.Value.text("hello")
+    defer hello.release()
+    try store.write("/users/bob/readme", hello)
+    let got = try store.read("/users/bob/readme")
+    defer got.release()
+    assert(try got.value().text_at() == "hello")
+    try reset_dump()
+    try store.dump(dump_dir())
+    var restored = try prism.Store()
+    defer restored.close()
+    try restored.load(dump_dir())
+    assert(try restored.is_dir("/users/alice/photos"))
+    let vacation = try restored.read("/users/alice/photos/vacation")
+    defer vacation.release()
+    let expected = try prism.Value.array(prism.DType.uint8, [4], b"JPEG")
+    defer expected.release()
+    assert(try vacation.value().equals(expected))
+    let root = try restored.snapshot()
+    defer root.release()
+    assert(not try root.value().contains("/vacation"))
+    let media = try restored.open_document("media.prism")
+    defer media.release()
+    assert(try media.value().contains("/vacation"))
+
+func fs_set_refuses_oversized_value() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    let tx = try store.begin()
+    defer tx.release()
+    try tx.value().add("/blob", "file")
+    let n = persist.payload_budget + 1
+    let payload = try alloc u8[n] in memory.heap
+    defer free(payload) in memory.heap
+    let shape: i64[1] = [(i64)n]
+    let value = try prism.Value.array(prism.DType.uint8, shape, payload)
+    defer value.release()
+    var refused = false
+    tx.value().set("/blob", "bytes", value) catch failure:
+        assert(failure.code == prism.limit_exceeded)
+        refused = true
+    assert(refused)
+
+func marked_blob(count: usize, mark: u8) -> interop.Reference[prism.Value]!:
+    let payload = try alloc u8[count] in memory.heap
+    defer free(payload) in memory.heap
+    payload[0] = mark
+    payload[count - 1] = mark
+    let shape: i64[1] = [(i64)count]
+    return try prism.Value.array(prism.DType.uint8, shape, payload)
+
+func write_baked_file(store: prism.Store*, path: str, mark: u8, bytes: usize) -> !:
+    let tx = try store.begin()
+    try tx.value().add(path, "file")
+    let value = try marked_blob(bytes, mark)
+    tx.value().set(path, "bytes", value) catch failure:
+        value.release()
+        tx.release()
+        error(failure.code, failure.message)
+    value.release()
+    discard(tx.value().commit() catch failure:
+        tx.release()
+        error(failure.code, failure.message))
+    tx.release()
+    discard(try store.bake())
+
+func vm_evicts_baked_payloads_and_faults() -> !:
+    try reset_persist()
+    let limit: usize = 33554432
+    let chunk: usize = 6291456
+    let store = try prism.Store.open(persist_db(), limit)
+    defer store.release()
+    try write_baked_file(try store.get(), "/a", 11, chunk)
+    try write_baked_file(try store.get(), "/b", 22, chunk)
+    try write_baked_file(try store.get(), "/c", 33, chunk)
+    try write_baked_file(try store.get(), "/d", 44, chunk)
+    try write_baked_file(try store.get(), "/e", 55, chunk)
+    try write_baked_file(try store.get(), "/f", 66, chunk)
+    let after_writes = try store.value().statistics()
+    assert(after_writes.resident <= (i64)limit)
+    assert(after_writes.evictions >= 1)
+    let faults_before = after_writes.faults
+    let snap = try store.value().snapshot()
+    defer snap.release()
+    let kids = try snap.value().children("/")
+    defer kids.release()
+    assert(kids.value().count() == 6)
+    assert(try store.value().kind("/a") == prism.LookKind.file)
+    let after_list = try store.value().statistics()
+    assert(after_list.faults == faults_before)
+    let cold = try store.value().read("/a")
+    defer cold.release()
+    assert(cold.value().bytes()[0] == 11)
+    assert(cold.value().bytes()[chunk - 1] == 11)
+    let stats = try store.value().statistics()
+    assert(stats.evictions >= 1)
+    assert(stats.faults >= faults_before + 1)
+    assert(stats.resident <= (i64)limit)
+
+func vm_pin_holds_subtree_and_set_refuses() -> !:
+    try reset_persist()
+    let limit: usize = 33554432
+    let chunk: usize = 6291456
+    let store = try prism.Store.open(persist_db(), limit)
+    defer store.release()
+    try write_baked_file(try store.get(), "/keep", 9, chunk)
+    try write_baked_file(try store.get(), "/x", 1, chunk)
+    try write_baked_file(try store.get(), "/y", 2, chunk)
+    try write_baked_file(try store.get(), "/z", 3, chunk)
+    try write_baked_file(try store.get(), "/w", 4, chunk)
+    try write_baked_file(try store.get(), "/v", 5, chunk)
+    let snap = try store.value().snapshot()
+    defer snap.release()
+    try snap.value().pin("/keep")
+    try store.value().set_limit(8388608)
+    let kept = try snap.value().get("/keep", "bytes")
+    defer kept.release()
+    assert(kept.value().bytes()[0] == 9)
+    let tx = try store.value().begin()
+    defer tx.release()
+    try tx.value().add("/overflow", "file")
+    let extra = try marked_blob(chunk, 8)
+    defer extra.release()
+    var refused = false
+    tx.value().set("/overflow", "bytes", extra) catch failure:
+        assert(failure.code == prism.limit_exceeded)
+        refused = true
+    assert(refused)
+
+func vm_reopen_pages_under_limit() -> !:
+    try reset_persist()
+    let limit: usize = 33554432
+    let chunk: usize = 6291456
+    let first = try prism.Store.open(persist_db(), limit)
+    try write_baked_file(try first.get(), "/a", 11, chunk)
+    try write_baked_file(try first.get(), "/b", 22, chunk)
+    try write_baked_file(try first.get(), "/c", 33, chunk)
+    try write_baked_file(try first.get(), "/d", 44, chunk)
+    try write_baked_file(try first.get(), "/e", 55, chunk)
+    try write_baked_file(try first.get(), "/f", 66, chunk)
+    first.release()
+    let store = try prism.Store.open(persist_db(), limit)
+    defer store.release()
+    let stats = try store.value().statistics()
+    assert(stats.resident <= (i64)limit)
+    assert(try store.value().kind("/a") == prism.LookKind.file)
+    let cold = try store.value().read("/a")
+    defer cold.release()
+    assert(cold.value().bytes()[0] == 11)
+    assert(cold.value().bytes()[chunk - 1] == 11)

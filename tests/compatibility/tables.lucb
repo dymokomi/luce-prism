@@ -1,0 +1,82 @@
+import prism
+import tables
+
+pub func run() -> !:
+    try hold_drop_and_cow_put()
+    try subtree_remove_keeps_unrelated_paths()
+    try apply_cow_leaves_the_old_root()
+    try document_bake_uses_tables()
+    print("PASS persistent tables: hold/drop, COW put, subtree remove, apply_cow")
+
+func hold_drop_and_cow_put() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef object \"a\" {} def object \"b\" {}")
+    defer doc.release()
+    let live = try tables.from_data(doc.value().view_data())
+    defer tables.drop_tables(live)
+    assert(tables.element_count(live) == 2)
+    assert(tables.valid(live))
+    tables.hold_tables(live)
+    let grown_doc = try prism.Document.parse("#prisma 4.0\ndef object \"a\" {} def object \"b\" {} def object \"c\" {}")
+    defer grown_doc.release()
+    let grown = try tables.from_data(grown_doc.value().view_data())
+    defer tables.drop_tables(grown)
+    assert(tables.element_count(live) == 2)
+    assert(tables.element_count(grown) == 3)
+    assert(tables.find_element(live, "/c") == none)
+    assert(tables.find_element(grown, "/c") != none)
+    tables.drop_tables(live)
+    assert(tables.element_count(live) == 2)
+
+func subtree_remove_keeps_unrelated_paths() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef group \"keep\" { def object \"child\" {} } def group \"gone\" { def object \"a\" { def object \"b\" {} } }")
+    defer doc.release()
+    let live = try tables.from_data(doc.value().view_data())
+    defer tables.drop_tables(live)
+    try tables.remove_path(live, "/gone", false)
+    assert(tables.find_element(live, "/gone") == none)
+    assert(tables.find_element(live, "/gone/a") == none)
+    assert(tables.find_element(live, "/gone/a/b") == none)
+    assert(tables.find_element(live, "/keep") != none)
+    assert(tables.find_element(live, "/keep/child") != none)
+    assert(tables.element_count(live) == 2)
+
+func apply_cow_leaves_the_old_root() -> !:
+    let base = try prism.Document.parse("#prisma 4.0\ndef object \"bolt\" { float radius = 0.5 }")
+    defer base.release()
+    let layer_doc = try prism.Document.parse("#prisma 4.0\nover object \"bolt\" { float radius = 0.9 }")
+    defer layer_doc.release()
+    let layer = try prism.layer_from(layer_doc)
+    defer layer.release()
+    let before = try tables.from_data(base.value().view_data())
+    defer tables.drop_tables(before)
+    let after = try tables.apply_cow(before, try layer.get())
+    defer tables.drop_tables(after)
+    let old_row = tables.find_element(before, "/bolt") else trap("missing old bolt")
+    var found_old = false
+    for prop in old_row.properties.span():
+        if prop.name.view() == "radius":
+            found_old = try prop.value.number(0) == 0.5
+    assert(found_old)
+    let new_row = tables.find_element(after, "/bolt") else trap("missing new bolt")
+    var found_new = false
+    for prop in new_row.properties.span():
+        if prop.name.view() == "radius":
+            found_new = try prop.value.number(0) > 0.8
+    assert(found_new)
+    assert(tables.element_count(before) == 1)
+    assert(tables.valid(before) and tables.valid(after))
+
+func document_bake_uses_tables() -> !:
+    let base = try prism.Document.parse("#prisma 4.0\ndef object \"bolt\" { float radius = 0.5 }")
+    defer base.release()
+    let original = try base.value().copy()
+    defer original.release()
+    let layer = try prism.Document.parse("#prisma 4.0\nover object \"bolt\" { float radius = 1.5 }")
+    defer layer.release()
+    let view = try base.value().overlay(layer)
+    defer view.release()
+    let expected = try view.value().materialize()
+    defer expected.release()
+    try view.value().bake()
+    assert(try view.value().equals(expected))
+    assert(try base.value().equals(original))

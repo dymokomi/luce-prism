@@ -58,6 +58,26 @@ func optional_array_and_cross_type_rules() -> !:
     defer replaced.release()
     assert(replaced.value().count() == 3)
 
+func schema_reads_through_overlay() -> !:
+    let base = try prism.Document.parse("#prisma 4.0\ndef issue \"i1\" { str status = \"open\" int64 id = 1 } def issue \"i2\" { str status = \"done\" int64 id = 1 }")
+    defer base.release()
+    var schema = prism.Schema()
+    defer schema.close()
+    try schema.add_field("issue", "status", prism.DType.string, required = true)
+    try schema.add_field("issue", "id", prism.DType.int64, required = true, unique = true)
+    let before = try schema.validate(base)
+    defer before.release()
+    assert(before.value().count() == 1)
+    let layer = try prism.Document.parse("#prisma 4.0\nover issue \"i2\" { int64 id = 2 } delete \"/i1\" def issue \"i3\" { str status = \"open\" }")
+    defer layer.release()
+    let doc = try base.value().overlay(layer)
+    defer doc.release()
+    let after = try schema.validate(doc)
+    defer after.release()
+    assert(after.value().count() == 1)
+    assert(try after.value().path_at(0) == "/i3")
+    assert(try after.value().message_at(0) == "missing required property 'id'")
+
 pub func run() -> !:
     try valid_document_has_no_violations()
     try missing_required_field_violates()
@@ -65,4 +85,5 @@ pub func run() -> !:
     try duplicate_unique_violates()
     try large_distinct_ids_are_not_false_duplicates()
     try optional_array_and_cross_type_rules()
+    try schema_reads_through_overlay()
     print("PASS 5 legacy schema cases, exact diagnostics and optional array rules")

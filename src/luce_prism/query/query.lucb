@@ -7,8 +7,8 @@ import luce_prism.query.aggregation as aggregation
 import luce_prism.query.groups as grouping
 from luce_prism.query.predicates import Predicate
 from luce_prism.query.results import Selection, own_selection
-from luce_prism.document import Document
-from luce_prism.model import DocumentData, Element
+from luce_prism.document import Document, assemble_element, walk_document
+from luce_prism.model import DocumentData, Element, close_elements
 from luce_prism.storage import List, Buffer, text_copy
 from luce_prism.pattern import valid_pattern, matches
 from luce_prism.types import invalid
@@ -124,25 +124,95 @@ pub struct Query:
                 output.count = maximum
         return output
 
+    func collect_layered() -> List[Element]!:
+        var accepted: List[Element]
+        errdefer close_elements(&accepted)
+        if self.maximum == 0:
+            return accepted
+        let view = try self.document.get()
+        var paths = try walk_document(view)
+        defer paths.close()
+        for path in paths.span():
+            var row = try assemble_element(view, path)
+            errdefer row.close()
+            if try self.accepts(&row):
+                try accepted.push(row)
+                row = Element()
+                if not self.ordered and not self.reversed and self.maximum == accepted.count:
+                    break
+            else:
+                row.close()
+                row = Element()
+        var indices: List[usize]
+        defer indices.close()
+        try indices.reserve(accepted.count)
+        for i in 0..<accepted.count:
+            try indices.push(i)
+        if self.ordered:
+            try sorting.order_rows(accepted.span(), indices.span(), self.order.view())
+        if self.reversed:
+            for i in 0..<indices.count // 2:
+                let previous = indices.items[i]
+                indices.items[i] = indices.items[indices.count - i - 1]
+                indices.items[indices.count - i - 1] = previous
+        if let maximum = self.maximum:
+            if indices.count > maximum:
+                indices.count = maximum
+        var output: List[Element]
+        errdefer close_elements(&output)
+        try output.reserve(indices.count)
+        for index in indices.span():
+            try output.push(accepted.items[index])
+            accepted.items[index] = Element()
+        return output
+
     pub func select() -> interop.Reference[Selection]!:
-        var rows = try self.rows()
-        defer rows.close()
         var selection = Selection()
         errdefer selection.close()
-        let doc = (try self.document.get()).view_data()
-        for index in rows.span():
-            try selection.append(&doc.elements.items[index])
+        if (try self.document.get()).is_layered():
+            var rows = try self.collect_layered()
+            defer close_elements(&rows)
+            for element in rows.span():
+                try selection.append(&element)
+        else:
+            var rows = try self.rows()
+            defer rows.close()
+            let doc = (try self.document.get()).view_data()
+            for index in rows.span():
+                try selection.append(&doc.elements.items[index])
         let owned = selection
         selection = Selection()
         return try own_selection(owned)
 
     pub func count() -> usize!:
+        if (try self.document.get()).is_layered():
+            var rows = try self.collect_layered()
+            defer close_elements(&rows)
+            return rows.count
         var rows = try self.rows()
         defer rows.close()
         return rows.count
 
     pub func first() -> str?!:
-        let doc = (try self.document.get()).view_data()
+        let view = try self.document.get()
+        if view.is_layered():
+            if self.ordered or self.reversed:
+                var rows = try self.collect_layered()
+                defer close_elements(&rows)
+                if rows.count == 0:
+                    return none
+                return view.intern_path(rows.items[0].path.view())
+            if self.maximum == 0:
+                return none
+            var paths = try walk_document(view)
+            defer paths.close()
+            for path in paths.span():
+                var row = try assemble_element(view, path)
+                defer row.close()
+                if try self.accepts(&row):
+                    return view.intern_path(path)
+            return none
+        let doc = view.view_data()
         if self.ordered or self.reversed:
             var rows = try self.rows()
             defer rows.close()
@@ -157,14 +227,37 @@ pub struct Query:
     pub func any() -> bool!:
         if self.maximum == 0:
             return false
-        let doc = (try self.document.get()).view_data()
+        let view = try self.document.get()
+        if view.is_layered():
+            var paths = try walk_document(view)
+            defer paths.close()
+            for path in paths.span():
+                var row = try assemble_element(view, path)
+                defer row.close()
+                if try self.accepts(&row):
+                    return true
+            return false
+        let doc = view.view_data()
         for element in doc.elements.span():
             if try self.accepts(&element):
                 return true
         return false
 
     pub func one() -> str!:
-        let doc = (try self.document.get()).view_data()
+        let view = try self.document.get()
+        if view.is_layered():
+            var result: str? = none
+            var paths = try walk_document(view)
+            defer paths.close()
+            for path in paths.span():
+                var row = try assemble_element(view, path)
+                defer row.close()
+                if try self.accepts(&row):
+                    if result != none:
+                        error(invalid, "Query.one matched more than one row")
+                    result = view.intern_path(path)
+            return result else error(invalid, "Query.one matched no rows")
+        let doc = view.view_data()
         var result: str? = none
         for element in doc.elements.span():
             if try self.accepts(&element):
@@ -174,22 +267,58 @@ pub struct Query:
         return result else error(invalid, "Query.one matched no rows")
 
     pub func aggregate(field: str, operation: aggregation.Aggregate) -> f64?!:
+        if (try self.document.get()).is_layered():
+            var rows = try self.collect_layered()
+            defer close_elements(&rows)
+            var indices: List[usize]
+            defer indices.close()
+            try indices.reserve(rows.count)
+            for i in 0..<rows.count:
+                try indices.push(i)
+            return try aggregation.numeric_rows(rows.span(), indices.span(), field, operation)
         var rows = try self.rows()
         defer rows.close()
         return try aggregation.numeric((try self.document.get()).view_data(), rows.span(), field, operation)
 
     pub func distinct_count(field: str) -> usize!:
+        if (try self.document.get()).is_layered():
+            var rows = try self.collect_layered()
+            defer close_elements(&rows)
+            var indices: List[usize]
+            defer indices.close()
+            try indices.reserve(rows.count)
+            for i in 0..<rows.count:
+                try indices.push(i)
+            return try aggregation.distinct_rows(rows.span(), indices.span(), field)
         var rows = try self.rows()
         defer rows.close()
         return try aggregation.distinct((try self.document.get()).view_data(), rows.span(), field)
 
     pub func group_by(field: str) -> interop.Reference[grouping.Groups]!:
+        let fields = [field]
+        if (try self.document.get()).is_layered():
+            var rows = try self.collect_layered()
+            defer close_elements(&rows)
+            var indices: List[usize]
+            defer indices.close()
+            try indices.reserve(rows.count)
+            for i in 0..<rows.count:
+                try indices.push(i)
+            return try grouping.build_rows(rows.span(), indices.span(), fields)
         var rows = try self.rows()
         defer rows.close()
-        let fields = [field]
         return try grouping.build((try self.document.get()).view_data(), rows.span(), fields)
 
     pub func aggregate_by(fields: const str[], value_field: str, operation: aggregation.Aggregate) -> interop.Reference[grouping.Groups]!:
+        if (try self.document.get()).is_layered():
+            var rows = try self.collect_layered()
+            defer close_elements(&rows)
+            var indices: List[usize]
+            defer indices.close()
+            try indices.reserve(rows.count)
+            for i in 0..<rows.count:
+                try indices.push(i)
+            return try grouping.build_rows(rows.span(), indices.span(), fields, value_field, operation)
         var rows = try self.rows()
         defer rows.close()
         return try grouping.build((try self.document.get()).view_data(), rows.span(), fields, value_field, operation)

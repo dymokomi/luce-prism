@@ -1,5 +1,6 @@
-## Explicit reference resolution. In-memory libraries and filesystem composition
-## share the same grafting, cycle detection and per-call composed-document cache.
+## Explicit materialize (graft) for export/oracle. Live path lookup is Store.lookup
+## and does not copy the target's elements. Missing referencePath here still means
+## the first top-level child; lookup treats a missing referencePath as "/".
 import memory
 import interop
 import files
@@ -255,6 +256,9 @@ pub struct ReferenceLibrary:
         defer id.close()
         return try own_document(try context.compose(id.view()))
 
+    pub func materialize(name: str) -> interop.Reference[Document]!:
+        return try self.compose(name)
+
     pub mutating func close():
         close_sources(&self.sources)
 
@@ -266,3 +270,6 @@ pub func compose_file(path: str) -> interop.Reference[Document]!:
     var id = try context.canonical(path)
     defer id.close()
     return try own_document(try context.compose(id.view()))
+
+pub func materialize_file(path: str) -> interop.Reference[Document]!:
+    return try compose_file(path)

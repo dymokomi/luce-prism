@@ -1,0 +1,121 @@
+## Host-shaped directory listings. Store methods live in store.lucb so this module
+## does not import Store (Store imports fs).
+import memory
+import interop
+from luce_prism.lookup import LookKind, split_components
+from luce_prism.storage import Buffer, List, close_names, less, text_copy
+from luce_prism.types import invalid
+
+pub struct Entry:
+    var name_buf: Buffer
+    var path_buf: Buffer
+    var kind_value: LookKind
+
+    pub func init():
+        self.name_buf = Buffer()
+        self.path_buf = Buffer()
+        self.kind_value = LookKind.other
+
+    pub mutating func close():
+        self.name_buf.close()
+        self.path_buf.close()
+
+pub func close_entries(items: List[Entry]*):
+    for i in 0..<items.count:
+        items.items[i].close()
+    items.close()
+
+pub struct Entries:
+    var items: List[Entry]
+
+    pub func init():
+        self.items = List[Entry]()
+
+    pub func count() -> usize:
+        return self.items.count
+
+    pub func name_at(index: usize) -> str!:
+        if index >= self.items.count:
+            error(invalid, "Prism directory entry index is out of bounds")
+        return self.items.items[index].name_buf.view()
+
+    pub func path_at(index: usize) -> str!:
+        if index >= self.items.count:
+            error(invalid, "Prism directory entry index is out of bounds")
+        return self.items.items[index].path_buf.view()
+
+    pub func kind_at(index: usize) -> LookKind!:
+        if index >= self.items.count:
+            error(invalid, "Prism directory entry index is out of bounds")
+        return self.items.items[index].kind_value
+
+    pub mutating func close():
+        close_entries(&self.items)
+
+pub let entries_type = interop.Type[Entries]("Prism directory entries", Entries.close, closeable = true)
+
+pub func own_entries(items: List[Entry]) -> interop.Reference[Entries]!:
+    var owned = items
+    let native = new Entries() in memory.heap catch failure:
+        close_entries(&owned)
+        error(failure.code, failure.message)
+    native.items = owned
+    return try interop.Reference[Entries].adopt(native, entries_type, memory.heap)
+
+pub func join_host(parent: str, name: str) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    if parent == "/" or parent.length == 0:
+        try out.byte((u8)'/')
+        try out.text(name)
+        return out
+    try out.text(parent)
+    try out.byte((u8)'/')
+    try out.text(name)
+    return out
+
+pub func parent_host(os_path: str) -> Buffer!:
+    var parts = try split_components(os_path)
+    defer close_names(&parts)
+    if parts.count <= 1:
+        return try text_copy("/")
+    var cur = try text_copy("/")
+    for i in 0..<parts.count - 1:
+        var next = try join_host(cur.view(), parts.items[i].view())
+        cur.close()
+        cur = next
+    return cur
+
+pub func last_component(os_path: str) -> Buffer!:
+    var parts = try split_components(os_path)
+    defer close_names(&parts)
+    if parts.count == 0:
+        return try text_copy("")
+    return try parts.items[parts.count - 1].copy()
+
+pub func make_entry(name: str, path: str, kind: LookKind) -> Entry!:
+    var item = Entry()
+    item.kind_value = kind
+    item.name_buf = text_copy(name) catch failure:
+        item.close()
+        error(failure.code, failure.message)
+    item.path_buf = text_copy(path) catch failure:
+        item.close()
+        error(failure.code, failure.message)
+    return item
+
+pub func sort_entries(items: List[Entry]*):
+    var i: usize = 1
+    while i < items.count:
+        var j = i
+        while j > 0 and less(items.items[j].name_buf.view(), items.items[j - 1].name_buf.view()):
+            let tmp = items.items[j]
+            items.items[j] = items.items[j - 1]
+            items.items[j - 1] = tmp
+            j -= 1
+        i += 1
+
+pub func followed_kind(kind: LookKind) -> LookKind?:
+    if kind == LookKind.missing or kind == LookKind.link:
+        return none
+    return kind

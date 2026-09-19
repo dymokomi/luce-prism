@@ -127,6 +127,8 @@ func exercise(kind: usize) -> !:
     if kind == 4:
         let combined = try base.value().overlay(layer)
         defer combined.release()
+        let value = try combined.value().get("/a", "x")
+        defer value.release()
         let patch = try base.value().diff(combined)
         defer patch.release()
         let result = try prism.merge(base, patch, layer)
@@ -264,11 +266,46 @@ func exercise(kind: usize) -> !:
 func restore(allocator: memory.Allocator):
     memory.heap = allocator
 
+func overlay_get(base: interop.Reference[prism.Document], layer: interop.Reference[prism.Document]) -> !:
+    let combined = try base.value().overlay(layer)
+    defer combined.release()
+    let value = try combined.value().get("/n0", "x")
+    defer value.release()
+    assert(try value.value().number_at() == 9.0)
+
+func overlay_get_does_not_copy_base(tracker: Tracker*) -> !:
+    let small_base = try prism.Document.parse("#prisma 4.0\ndef node \"n0\" { float x = 1 } def node \"n1\" { float x = 1 }")
+    defer small_base.release()
+    let large_base = try prism.Document.parse("#prisma 4.0\ndef node \"n0\" { float x = 1 } def node \"n1\" { float x = 1 } def node \"n2\" { float x = 1 } def node \"n3\" { float x = 1 } def node \"n4\" { float x = 1 } def node \"n5\" { float x = 1 } def node \"n6\" { float x = 1 } def node \"n7\" { float x = 1 } def node \"n8\" { float x = 1 } def node \"n9\" { float x = 1 } def node \"n10\" { float x = 1 } def node \"n11\" { float x = 1 } def node \"n12\" { float x = 1 } def node \"n13\" { float x = 1 } def node \"n14\" { float x = 1 } def node \"n15\" { float x = 1 }")
+    defer large_base.release()
+    let overlay_layer = try prism.Document.parse("#prisma 4.0\nover node \"n0\" { float x = 9 }")
+    defer overlay_layer.release()
+    tracker.allocations = 0
+    try overlay_get(small_base, overlay_layer)
+    let small_cost = tracker.allocations
+    tracker.allocations = 0
+    try overlay_get(large_base, overlay_layer)
+    let large_cost = tracker.allocations
+    if large_cost > small_cost + small_cost // 2:
+        print(f"overlay+get scaled with element count: {small_cost} then {large_cost}")
+    assert(large_cost <= small_cost + small_cost // 2)
+
+func warm_cycle_collector() -> !:
+    let doc = try prism.Document.parse("#prisma 4.0\ndef node \"n\" { float x = 1 }")
+    defer doc.release()
+    let query = try plan(doc)
+    defer query.release()
+
 pub func run() -> !:
+    ownership.collect()
+    try warm_cycle_collector()
     ownership.collect()
     var tracker = Tracker(upstream = memory.heap)
     defer restore(tracker.upstream)
     memory.heap = &tracker
+    try overlay_get_does_not_copy_base(&tracker)
+    ownership.collect()
+    assert(tracker.live == 0)
     var checked: usize = 0
     for kind in 0..<(usize)25:
         tracker.allocations = 0

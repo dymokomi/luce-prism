@@ -67,7 +67,7 @@ func media() -> !:
         memory.write[u64](&double_bytes[i * 8], double_bits[i])
     let precise = try prism.Value.array(prism.DType.float64, [2, 4], double_bytes)
     defer precise.release()
-    var document = prism.Document()
+    var document = try prism.Document()
     defer document.close()
     try document.add("/image", "image")
     try document.set("/image", "pixels", rgba)

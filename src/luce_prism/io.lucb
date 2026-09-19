@@ -6,8 +6,8 @@ import c
 import interop
 import luce_prism.codecs.api as codecs
 from luce_prism.document import Document
-from luce_prism.storage import Buffer
-from luce_prism.types import max_bytes
+from luce_prism.storage import Buffer, List, close_names, text_copy
+from luce_prism.types import invalid, max_bytes
 
 pub func read(path: str) -> Buffer!:
     with memory.heap:
@@ -41,3 +41,36 @@ pub func save(doc: interop.Reference[Document], path: str, codec: codecs.Codec =
     let bytes = try codecs.encode(doc, try codecs.codec_for_path(path) if codec == codecs.Codec.auto else codec)
     defer bytes.release()
     try write(path, (try bytes.get()).bytes())
+
+pub func join(dir: str, name: str) -> Buffer!:
+    if name.length == 0 or name == "." or name == "..":
+        error(invalid, "invalid Prism dump basename")
+    for byte in name.bytes:
+        if byte == '/' or byte == 0:
+            error(invalid, "invalid Prism dump basename")
+    var out: Buffer
+    errdefer out.close()
+    try out.text(dir)
+    if dir.length > 0 and dir.bytes[dir.length - 1] != '/':
+        try out.byte((u8)'/')
+    try out.text(name)
+    return out
+
+pub func ensure_directory(path: str) -> !:
+    try files.ensure_directory(path)
+
+pub func list_names(path: str) -> List[Buffer]!:
+    var listing = try files.Entries(path)
+    defer listing.close()
+    var out: List[Buffer]
+    errdefer close_names(&out)
+    var i: i64 = 0
+    while i < listing.count():
+        let owned = try listing.name(i)
+        defer owned.release()
+        var copy = try text_copy(owned.value)
+        out.push(copy) catch failure:
+            copy.close()
+            error(failure.code, failure.message)
+        i += 1
+    return out

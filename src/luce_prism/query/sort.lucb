@@ -1,6 +1,6 @@
 ## Stable merge sort with one resolved key per row, matching the legacy buckets.
 import luce_prism.query.scalars as scalars
-from luce_prism.model import DocumentData
+from luce_prism.model import DocumentData, Element
 from luce_prism.animation import resolve_property
 from luce_prism.storage import Buffer, List, text_copy, less
 
@@ -20,12 +20,12 @@ func before(a: const Key*, b: const Key*) -> bool:
         return false
     return less(a.text.view(), b.text.view()) if a.string else a.number < b.number
 
-pub func order(doc: const DocumentData*, rows: usize[], field: str) -> !:
+pub func order_rows(elements: const Element[], rows: usize[], field: str) -> !:
     var keys: List[Key]
     defer close_keys(&keys)
     try keys.reserve(rows.length)
     for index in rows:
-        let element = &doc.elements.items[index]
+        let element = &elements[index]
         var key = Key()
         errdefer key.close()
         if field == "type":
@@ -78,6 +78,9 @@ pub func order(doc: const DocumentData*, rows: usize[], field: str) -> !:
         scratch.items[i] = rows[indices.items[i]]
     for i in 0..<rows.length:
         rows[i] = scratch.items[i]
+
+pub func order(doc: const DocumentData*, rows: usize[], field: str) -> !:
+    try order_rows(doc.elements.span(), rows, field)
 
 func close_keys(keys: List[Key]*):
     for i in 0..<keys.count:

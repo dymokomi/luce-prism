@@ -23,7 +23,7 @@ func copy_is_isolated_across_every_mutator() -> !:
     try doc.value().set("/s/a", "c", value)
     try doc.value().set_metadata("/s/a", "note", "changed")
     try doc.value().connect("/s/m.out", "/s/b.in")
-    doc.value().disconnect("/s/a.c")
+    try doc.value().disconnect("/s/a.c")
     try doc.value().rename("/s/a", "/s/a2")
     try doc.value().remove("/s/m")
     try doc.value().mark_deleted("/ghost")
@@ -298,7 +298,7 @@ func asset_diffs_do_not_silently_drop_changes() -> !:
         if operation == 0:
             try changed.value().set_asset("/image", b"changed")
         elif operation == 1:
-            changed.value().remove_asset("/image")
+            try changed.value().remove_asset("/image")
         else:
             try changed.value().set_asset("/other", b"added")
         var failed = false

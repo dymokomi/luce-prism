@@ -1,0 +1,131 @@
+## LRU of unpinned published payloads and compositor pins. Evict/fault I/O lives in store.
+from luce_prism.path import is_descendant
+from luce_prism.storage import Buffer, List, close_names, text_copy
+
+pub struct Entry:
+    pub var identity: Buffer
+    pub var path: Buffer
+    pub var name: Buffer
+    pub var size: usize
+    pub var tick: u64
+
+    pub func init():
+        return
+
+    pub mutating func close():
+        self.identity.close()
+        self.path.close()
+        self.name.close()
+
+pub struct Pin:
+    pub var identity: Buffer
+    pub var path: Buffer
+    pub var refs: u64
+
+    pub func init():
+        return
+
+    pub mutating func close():
+        self.identity.close()
+        self.path.close()
+
+pub struct Pool:
+    pub var entries: List[Entry]
+    pub var pins: List[Pin]
+    pub var clock: u64
+    pub var next_extent: u64
+    pub var evictions: u64
+    pub var faults: u64
+
+    pub func init():
+        return
+
+pub func close_pool(pool: Pool*):
+    for i in 0..<pool.entries.count:
+        pool.entries.items[i].close()
+    pool.entries.close()
+    for i in 0..<pool.pins.count:
+        pool.pins.items[i].close()
+    pool.pins.close()
+
+pub func pinned(pool: const Pool*, identity: str, path: str) -> bool:
+    for held in pool.pins.span():
+        if held.identity.view() == identity and (path == held.path.view() or is_descendant(path, held.path.view())):
+            return true
+    return false
+
+pub func pin(pool: Pool*, identity: str, path: str) -> !:
+    for i in 0..<pool.pins.count:
+        if pool.pins.items[i].identity.view() == identity and pool.pins.items[i].path.view() == path:
+            pool.pins.items[i].refs += 1
+            return
+    var item = Pin()
+    item.refs = 1
+    item.identity = try text_copy(identity)
+    item.path = text_copy(path) catch failure:
+        item.close()
+        error(failure.code, failure.message)
+    pool.pins.push(item) catch failure:
+        item.close()
+        error(failure.code, failure.message)
+
+pub func unpin(pool: Pool*, identity: str, path: str):
+    for i in 0..<pool.pins.count:
+        if pool.pins.items[i].identity.view() == identity and pool.pins.items[i].path.view() == path:
+            if pool.pins.items[i].refs > 1:
+                pool.pins.items[i].refs -= 1
+                return
+            pool.pins.items[i].close()
+            pool.pins.remove(i)
+            return
+
+pub func touch(pool: Pool*, identity: str, path: str, name: str, size: usize) -> !:
+    pool.clock += 1
+    for i in 0..<pool.entries.count:
+        let item = &pool.entries.items[i]
+        if item.identity.view() == identity and item.path.view() == path and item.name.view() == name:
+            item.tick = pool.clock
+            item.size = size
+            return
+    var item = Entry()
+    item.size = size
+    item.tick = pool.clock
+    item.identity = try text_copy(identity)
+    item.path = text_copy(path) catch failure:
+        item.close()
+        error(failure.code, failure.message)
+    item.name = text_copy(name) catch failure:
+        item.close()
+        error(failure.code, failure.message)
+    pool.entries.push(item) catch failure:
+        item.close()
+        error(failure.code, failure.message)
+
+pub func drop_entry(pool: Pool*, identity: str, path: str, name: str):
+    for i in 0..<pool.entries.count:
+        let item = &pool.entries.items[i]
+        if item.identity.view() == identity and item.path.view() == path and item.name.view() == name:
+            item.close()
+            pool.entries.remove(i)
+            return
+
+pub func coldest(pool: const Pool*) -> usize?:
+    var best: usize? = none
+    var tick: u64 = 0
+    var found = false
+    for i in 0..<pool.entries.count:
+        let item = &pool.entries.items[i]
+        if pinned(pool, item.identity.view(), item.path.view()):
+            continue
+        if not found or item.tick < tick:
+            found = true
+            tick = item.tick
+            best = i
+    return best
+
+pub func pinned_bytes(pool: const Pool*) -> usize:
+    var total: usize = 0
+    for item in pool.entries.span():
+        if pinned(pool, item.identity.view(), item.path.view()):
+            total += item.size
+    return total

@@ -1,0 +1,709 @@
+## Sparse write-buffer layer. A layer is a map of (path, cell, name) → op, not a document.
+import memory
+import interop
+from luce_prism.animation import Property, Sample
+from luce_prism.collections.index import Index
+import luce_prism.composition.layers as overlay_ops
+from luce_prism.model import DocumentData, Element
+from luce_prism.path import parent_path, element_path
+from luce_prism.storage import Buffer, List, close_names, copied, text_copy, set_pair
+from luce_prism.types import DType, missing
+from luce_prism.value import ValueData, own_value, value_header
+
+pub enum Cell as u8:
+    element = 0
+    property = 1
+    metadata = 2
+    connection = 3
+    disconnect = 4
+    reorder = 5
+    asset = 6
+
+pub struct Key:
+    pub var path: Buffer
+    pub var cell: Cell
+    pub var name: Buffer
+
+    pub mutating func close():
+        self.path.close()
+        self.name.close()
+
+pub struct Op:
+    pub var deleted: bool
+    pub var override: bool
+    pub var identifier: usize
+    pub var type_name: Buffer
+    pub var value: ValueData = ValueData()
+    pub var text: Buffer
+    pub var children: List[Buffer]
+    pub var samples: List[Sample]
+
+    pub mutating func close():
+        self.type_name.close()
+        self.value.close()
+        self.text.close()
+        close_names(&self.children)
+        for i in 0..<self.samples.count:
+            self.samples.items[i].close()
+        self.samples.close()
+
+pub struct Entry:
+    pub var key: Key
+    pub var op: Op
+
+    mutating func close():
+        self.key.close()
+        self.op.close()
+
+func encode_slot(path: str, cell: Cell, name: str) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try out.text(path)
+    try out.byte(0)
+    try out.byte((u8)cell)
+    try out.byte(0)
+    try out.text(name)
+    return out
+
+func copy_names_owned(source: const List[Buffer]*) -> List[Buffer]!:
+    var output: List[Buffer]
+    errdefer close_names(&output)
+    try output.reserve(source.count)
+    for item in source.span():
+        try output.push(try item.copy())
+    return output
+
+func copy_op(source: const Op*) -> Op!:
+    var out = Op(deleted = source.deleted, override = source.override, identifier = source.identifier)
+    errdefer out.close()
+    out.type_name = try source.type_name.copy()
+    out.value = try source.value.copy()
+    out.text = try source.text.copy()
+    out.children = try copy_names_owned(&source.children)
+    try out.samples.reserve(source.samples.count)
+    for sample in source.samples.span():
+        try out.samples.push(try sample.copy())
+    return out
+
+func copy_key(source: const Key*) -> Key!:
+    var out = Key(cell = source.cell)
+    errdefer out.close()
+    out.path = try source.path.copy()
+    out.name = try source.name.copy()
+    return out
+
+pub struct Layer:
+    pub var items: List[Entry]
+    var index: Index
+    var generation_base: u64
+
+    pub func init():
+        self.items = List[Entry]()
+        self.index = Index()
+        self.generation_base = 0
+
+    pub func count() -> usize:
+        return self.items.count
+
+    pub mutating func close():
+        for i in 0..<self.items.count:
+            self.items.items[i].close()
+        self.items.close()
+        self.index.close()
+
+    pub func find(path: str, cell: Cell, name: str = "") -> usize?:
+        var encoded = encode_slot(path, cell, name) catch failure:
+            return none
+        defer encoded.close()
+        let bucket = self.index.find(encoded.view()) else return none
+        if self.index.buckets.items[bucket].rows.count == 0:
+            return none
+        return self.index.buckets.items[bucket].rows.items[0]
+
+    pub func get(path: str, cell: Cell, name: str = "") -> const Op*?:
+        let row = self.find(path, cell, name) else return none
+        return &self.items.items[row].op
+
+    pub mutating func put(path: str, cell: Cell, name: str, op: Op) -> !:
+        var owned = op
+        errdefer owned.close()
+        if let row = self.find(path, cell, name):
+            self.items.items[row].op.close()
+            self.items.items[row].op = owned
+            return
+        var key = Key(cell = cell)
+        errdefer key.close()
+        key.path = try text_copy(path)
+        key.name = try text_copy(name)
+        var encoded = try encode_slot(path, cell, name)
+        defer encoded.close()
+        var entry = Entry(key = key, op = owned)
+        key = Key()
+        owned = Op()
+        errdefer entry.close()
+        try self.items.reserve(self.items.count + 1)
+        discard(try self.index.add(encoded.view(), self.items.count))
+        try self.items.push(entry)
+
+    pub func copy() -> Layer!:
+        var out = Layer()
+        out.generation_base = self.generation_base
+        errdefer out.close()
+        try out.items.reserve(self.items.count)
+        for entry in self.items.span():
+            var key = try copy_key(&entry.key)
+            errdefer key.close()
+            var op = try copy_op(&entry.op)
+            errdefer op.close()
+            var encoded = try encode_slot(key.path.view(), key.cell, key.name.view())
+            defer encoded.close()
+            var copied_entry = Entry(key = key, op = op)
+            key = Key()
+            op = Op()
+            errdefer copied_entry.close()
+            discard(try out.index.add(encoded.view(), out.items.count))
+            try out.items.push(copied_entry)
+        return out
+
+## Overlay-apply of `later` onto `earlier`. Not a per-key union across concurrent sessions.
+pub func merge(earlier: const Layer*, later: const Layer*) -> Layer!:
+    var out = Layer()
+    errdefer out.close()
+    for entry in earlier.items.span():
+        if hidden_by_delete(later, entry.key.path.view()):
+            continue
+        var op = try copy_op(&entry.op)
+        try out.put(entry.key.path.view(), entry.key.cell, entry.key.name.view(), op)
+    for entry in later.items.span():
+        var op = try copy_op(&entry.op)
+        try out.put(entry.key.path.view(), entry.key.cell, entry.key.name.view(), op)
+    return out
+
+func tombstone_replaced(base: const DocumentData*, earlier: const Layer*, later: const Layer*, out: Layer*) -> !:
+    for entry in later.items.span():
+        if entry.key.cell != Cell.element or entry.op.deleted or entry.op.override:
+            continue
+        let path = entry.key.path.view()
+        if visible(base, earlier, none, path):
+            continue
+        let index = base.find(path) else continue
+        let element = &base.elements.items[index]
+        for prop in element.properties.span():
+            let name = prop.name.view()
+            if later.get(path, Cell.property, name) == none:
+                try out.put(path, Cell.property, name, Op(deleted = true))
+        for meta in element.metadata.span():
+            let name = meta.key.view()
+            if later.get(path, Cell.metadata, name) == none:
+                try out.put(path, Cell.metadata, name, Op(deleted = true))
+
+pub func collapse(base: const DocumentData*, layers: const Layer[]) -> Layer!:
+    var out = Layer()
+    errdefer out.close()
+    for layer in layers:
+        var merged = try merge(&out, &layer)
+        errdefer merged.close()
+        try tombstone_replaced(base, &out, &layer, &merged)
+        out.close()
+        out = merged
+    return out
+
+func hidden_by_delete(layer: const Layer*, path: str) -> bool:
+    var current = path
+    while true:
+        if let op = layer.get(current, Cell.element):
+            if op.deleted:
+                return true
+        if current == "/":
+            return false
+        current = parent_path(current)
+
+func deletes_path(layer: const Layer*, path: str) -> bool:
+    let op = layer.get(path, Cell.element) else return false
+    return op.deleted
+
+func apply_element(layer: const Layer*, path: str, exists: bool) -> bool:
+    var present = exists
+    if deletes_path(layer, path):
+        present = false
+    let op = layer.get(path, Cell.element) else return present
+    if op.deleted:
+        return false
+    if not op.override or present:
+        return true
+    return present
+
+pub func visible(base: const DocumentData*, first: const Layer*, second: const Layer*?, path: str) -> bool:
+    if path == "/":
+        return true
+    if not visible(base, first, second, parent_path(path)):
+        return false
+    var exists = base.contains(path)
+    exists = apply_element(first, path, exists)
+    if let extra = second:
+        exists = apply_element(extra, path, exists)
+    return exists
+
+pub func has_metadata(base: const DocumentData*, first: const Layer*, second: const Layer*?, path: str, key: str) -> bool:
+    if not visible(base, first, second, path):
+        return false
+    if let extra = second:
+        if let op = extra.get(path, Cell.metadata, key):
+            return not op.deleted
+    if let op = first.get(path, Cell.metadata, key):
+        return not op.deleted
+    return base.has_metadata(path, key)
+
+pub func read_metadata(base: const DocumentData*, first: const Layer*, second: const Layer*?, path: str, key: str) -> str!:
+    if not visible(base, first, second, path):
+        error(missing, "Prism metadata does not exist")
+    if let extra = second:
+        if let op = extra.get(path, Cell.metadata, key):
+            if op.deleted:
+                error(missing, "Prism metadata does not exist")
+            return op.text.view()
+    if let op = first.get(path, Cell.metadata, key):
+        if op.deleted:
+            error(missing, "Prism metadata does not exist")
+        return op.text.view()
+    return try base.metadata(path, key)
+
+pub func has_property(base: const DocumentData*, first: const Layer*, second: const Layer*?, path: str, name: str) -> bool:
+    if not visible(base, first, second, path):
+        return false
+    if let extra = second:
+        if let op = extra.get(path, Cell.property, name):
+            return not op.deleted
+    if let op = first.get(path, Cell.property, name):
+        return not op.deleted
+    return base.has_property(path, name)
+
+pub func read_property(base: const DocumentData*, first: const Layer*, second: const Layer*?, path: str, name: str) -> ValueData!:
+    if not visible(base, first, second, path):
+        error(missing, "Prism property does not exist")
+    if let extra = second:
+        if let op = extra.get(path, Cell.property, name):
+            if op.deleted:
+                error(missing, "Prism property does not exist")
+            return try op.value.copy()
+    if let op = first.get(path, Cell.property, name):
+        if op.deleted:
+            error(missing, "Prism property does not exist")
+        return try op.value.copy()
+    let element = &base.elements.items[try base.require(path)]
+    let index = element.property(name) else error(missing, "Prism property does not exist")
+    return try element.properties.items[index].value.copy()
+
+func contains_path(paths: const List[str]*, path: str) -> bool:
+    for item in paths.span():
+        if item == path:
+            return true
+    return false
+
+func emit_order_list(listed: const List[Buffer]*, acc: List[str]*) -> List[str]!:
+    var out: List[str]
+    errdefer out.close()
+    var seen: List[str]
+    defer seen.close()
+    for child in listed.span():
+        let path = child.view()
+        if contains_path(acc, path) and not contains_path(&seen, path):
+            try out.push(path)
+            try seen.push(path)
+    for path in acc.span():
+        if not contains_path(&seen, path):
+            try out.push(path)
+            try seen.push(path)
+    return out
+
+pub func children(base: const DocumentData*, first: const Layer*, second: const Layer*?, parent: str) -> List[str]!:
+    if parent != "/" and not visible(base, first, second, parent):
+        return List[str]()
+    var acc = try base.children(parent)
+    errdefer acc.close()
+    try apply_children(&acc, first, parent)
+    if let extra = second:
+        try apply_children(&acc, extra, parent)
+    var out: List[str]
+    errdefer out.close()
+    for path in acc.span():
+        if visible(base, first, second, path):
+            try out.push(path)
+    return out
+
+func apply_children(acc: List[str]*, layer: const Layer*, parent: str) -> !:
+    var kept: List[str]
+    errdefer kept.close()
+    for path in acc.span():
+        if not deletes_path(layer, path) and not deletes_path(layer, parent):
+            try kept.push(path)
+    for entry in layer.items.span():
+        if entry.key.cell != Cell.element:
+            continue
+        if parent_path(entry.key.path.view()) != parent:
+            continue
+        if entry.op.deleted:
+            continue
+        let path = entry.key.path.view()
+        let exists = contains_path(&kept, path)
+        if not entry.op.override or exists:
+            if not exists:
+                try kept.push(path)
+    if let op = layer.get(parent, Cell.reorder):
+        var ordered = try emit_order_list(&op.children, &kept)
+        kept.close()
+        kept = ordered
+    acc.close()
+    *acc = kept
+    kept = List[str]()
+
+func touches(layer: const Layer*, path: str) -> bool:
+    for entry in layer.items.span():
+        if entry.key.path.view() == path:
+            return true
+    return false
+
+func layer_ops(base: const DocumentData*, first: const Layer*, second: const Layer*?, path: str) -> bool:
+    if touches(first, path):
+        return true
+    if let extra = second:
+        return touches(extra, path)
+    return false
+
+func later_element(first: const Layer*, second: const Layer*?, path: str) -> const Op*?:
+    if let extra = second:
+        if let op = extra.get(path, Cell.element):
+            return op
+    return first.get(path, Cell.element)
+
+func later_property(first: const Layer*, second: const Layer*?, path: str, name: str) -> const Op*?:
+    if let extra = second:
+        if let op = extra.get(path, Cell.property, name):
+            return op
+    return first.get(path, Cell.property, name)
+
+pub func read_type(base: const DocumentData*, first: const Layer*, second: const Layer*?, path: str) -> str!:
+    if not visible(base, first, second, path):
+        error(missing, "Prism element does not exist")
+    if let op = later_element(first, second, path):
+        if not op.deleted and op.type_name.used > 0:
+            return op.type_name.view()
+    return try base.type_at(path)
+
+func property_from_op(name: str, op: const Op*) -> Property!:
+    var prop = Property()
+    errdefer prop.close()
+    prop.name = try text_copy(name)
+    prop.type_name = try op.type_name.copy()
+    prop.value = try op.value.copy()
+    try prop.samples.reserve(op.samples.count)
+    for sample in op.samples.span():
+        try prop.samples.push(try sample.copy())
+    return prop
+
+func add_named(names: List[str]*, layer: const Layer*, path: str, cell: Cell) -> !:
+    for entry in layer.items.span():
+        if entry.key.cell != cell or entry.key.path.view() != path or entry.op.deleted:
+            continue
+        let name = entry.key.name.view()
+        if not contains_path(names, name):
+            try names.push(name)
+
+func property_names(base: const DocumentData*, first: const Layer*, second: const Layer*?, path: str) -> List[str]!:
+    var names: List[str]
+    errdefer names.close()
+    if let index = base.find(path):
+        for prop in base.elements.items[index].properties.span():
+            if has_property(base, first, second, path, prop.name.view()):
+                try names.push(prop.name.view())
+    try add_named(&names, first, path, Cell.property)
+    if let extra = second:
+        try add_named(&names, extra, path, Cell.property)
+    return names
+
+func metadata_names(base: const DocumentData*, first: const Layer*, second: const Layer*?, path: str) -> List[str]!:
+    var names: List[str]
+    errdefer names.close()
+    if let index = base.find(path):
+        for item in base.elements.items[index].metadata.span():
+            if has_metadata(base, first, second, path, item.key.view()):
+                try names.push(item.key.view())
+    try add_named(&names, first, path, Cell.metadata)
+    if let extra = second:
+        try add_named(&names, extra, path, Cell.metadata)
+    return names
+
+func assemble_property(base: const DocumentData*, first: const Layer*, second: const Layer*?, path: str, name: str) -> Property!:
+    if let op = later_property(first, second, path, name):
+        if op.deleted:
+            error(missing, "Prism property does not exist")
+        return try property_from_op(name, op)
+    let element = &base.elements.items[try base.require(path)]
+    let index = element.property(name) else error(missing, "Prism property does not exist")
+    return try element.properties.items[index].copy()
+
+pub func assemble(base: const DocumentData*, first: const Layer*, second: const Layer*?, path: str) -> Element!:
+    if not visible(base, first, second, path):
+        error(missing, "Prism element does not exist")
+    if not layer_ops(base, first, second, path):
+        return try base.elements.items[try base.require(path)].copy()
+    var row = Element()
+    errdefer row.close()
+    row.path = try text_copy(path)
+    row.kind = try text_copy(try read_type(base, first, second, path))
+    if let op = later_element(first, second, path):
+        if not op.deleted:
+            row.identifier = op.identifier
+            row.override = op.override
+    if row.identifier == 0:
+        if let index = base.find(path):
+            row.identifier = base.elements.items[index].identifier
+            if later_element(first, second, path) == none:
+                row.override = base.elements.items[index].override
+    var names = try property_names(base, first, second, path)
+    defer names.close()
+    for name in names.span():
+        var prop = try assemble_property(base, first, second, path, name)
+        errdefer prop.close()
+        try row.put_property(&prop)
+        prop.close()
+        prop = Property()
+    var metas = try metadata_names(base, first, second, path)
+    defer metas.close()
+    for key in metas.span():
+        try set_pair(&row.metadata, key, try read_metadata(base, first, second, path, key))
+    return row
+
+func layer_connection(layer: const Layer*, target: str) -> str?:
+    let op = layer.get(target, Cell.connection) else return none
+    return op.text.view()
+
+func layer_disconnects(layer: const Layer*, target: str) -> bool:
+    if layer.get(target, Cell.connection) != none:
+        return false
+    return layer.get(target, Cell.disconnect) != none
+
+func connected_if_visible(base: const DocumentData*, first: const Layer*, second: const Layer*?, target: str, source: str) -> str?:
+    if not visible(base, first, second, element_path(target)):
+        return none
+    if not visible(base, first, second, element_path(source)):
+        return none
+    return source
+
+pub func incoming(base: const DocumentData*, first: const Layer*, second: const Layer*?, target: str) -> str?:
+    if let extra = second:
+        if let source = layer_connection(extra, target):
+            return connected_if_visible(base, first, second, target, source)
+        if layer_disconnects(extra, target):
+            return none
+    if let source = layer_connection(first, target):
+        return connected_if_visible(base, first, second, target, source)
+    if layer_disconnects(first, target):
+        return none
+    let source = base.incoming(target) else return none
+    return connected_if_visible(base, first, second, target, source)
+
+pub func intern_path(base: const DocumentData*, first: const Layer*, second: const Layer*?, path: str) -> str?:
+    if let index = base.find(path):
+        return base.elements.items[index].path.view()
+    if let extra = second:
+        if let row = extra.find(path, Cell.element):
+            return extra.items.items[row].key.path.view()
+    if let row = first.find(path, Cell.element):
+        return first.items.items[row].key.path.view()
+    return none
+
+func give(layer: Layer*, path: str, cell: Cell, name: str, op: Op) -> !:
+    var owned = op
+    try layer.put(path, cell, name, owned)
+
+pub func from_document(data: const DocumentData*) -> Layer!:
+    var layer = Layer()
+    errdefer layer.close()
+    for deletion in data.deletions.span():
+        try give(&layer, deletion.view(), Cell.element, "", Op(deleted = true))
+    for element in data.elements.span():
+        var element_op = Op(deleted = false, override = element.override, identifier = element.identifier)
+        errdefer element_op.close()
+        element_op.type_name = try element.kind.copy()
+        var give_element = element_op
+        element_op = Op()
+        try give(&layer, element.path.view(), Cell.element, "", give_element)
+        for prop in element.properties.span():
+            var op = Op()
+            errdefer op.close()
+            op.type_name = try prop.type_name.copy()
+            op.value = try prop.value.copy()
+            try op.samples.reserve(prop.samples.count)
+            for sample in prop.samples.span():
+                try op.samples.push(try sample.copy())
+            var give_prop = op
+            op = Op()
+            try give(&layer, element.path.view(), Cell.property, prop.name.view(), give_prop)
+        for name in element.removed_properties.span():
+            try give(&layer, element.path.view(), Cell.property, name.view(), Op(deleted = true))
+        for meta in element.metadata.span():
+            var op = Op()
+            errdefer op.close()
+            op.text = try meta.value.copy()
+            var give_meta = op
+            op = Op()
+            try give(&layer, element.path.view(), Cell.metadata, meta.key.view(), give_meta)
+        for name in element.removed_metadata.span():
+            try give(&layer, element.path.view(), Cell.metadata, name.view(), Op(deleted = true))
+    for connection in data.connections.span():
+        var op = Op()
+        errdefer op.close()
+        op.text = try connection.value.copy()
+        var give_conn = op
+        op = Op()
+        try give(&layer, connection.key.view(), Cell.connection, "", give_conn)
+    for disconnected in data.disconnections.span():
+        try give(&layer, disconnected.view(), Cell.disconnect, "", Op(deleted = true))
+    for order in data.reorders.span():
+        var op = Op()
+        errdefer op.close()
+        op.children = try copy_names_owned(&order.children)
+        var give_order = op
+        op = Op()
+        try give(&layer, order.parent.view(), Cell.reorder, "", give_order)
+    for asset in data.assets.span():
+        var op = Op()
+        errdefer op.close()
+        var shape: u32[1] = [(u32)asset.bytes.used]
+        op.value = try value_header(DType.uint8, shape)
+        op.value.payload = try copied(asset.bytes.bytes())
+        op.text = try asset.mime.copy()
+        var give_asset = op
+        op = Op()
+        try give(&layer, asset.path.view(), Cell.asset, "", give_asset)
+    return layer
+
+pub func to_document(layer: const Layer*) -> DocumentData!:
+    var output = DocumentData()
+    errdefer output.close()
+    for entry in layer.items.span():
+        if entry.key.cell == Cell.element and entry.op.deleted:
+            try output.mark_deleted(entry.key.path.view())
+    for entry in layer.items.span():
+        if entry.key.cell != Cell.element or entry.op.deleted:
+            continue
+        try output.insert(entry.key.path.view(), entry.op.type_name.view(), entry.op.override)
+        if entry.op.identifier != 0:
+            output.elements.items[output.elements.count - 1].identifier = entry.op.identifier
+    for entry in layer.items.span():
+        let path = entry.key.path.view()
+        if entry.key.cell == Cell.property:
+            if entry.op.deleted:
+                try output.mark_unset(path, entry.key.name.view())
+                continue
+            var prop = Property()
+            errdefer prop.close()
+            prop.name = try entry.key.name.copy()
+            prop.type_name = try entry.op.type_name.copy()
+            prop.value = try entry.op.value.copy()
+            try prop.samples.reserve(entry.op.samples.count)
+            for sample in entry.op.samples.span():
+                try prop.samples.push(try sample.copy())
+            try output.elements.items[try output.require(path)].put_property(&prop)
+            prop.close()
+            prop = Property()
+        elif entry.key.cell == Cell.metadata:
+            if entry.op.deleted:
+                try output.mark_unset(path, entry.key.name.view(), true)
+            else:
+                try output.set_metadata(path, entry.key.name.view(), entry.op.text.view())
+        elif entry.key.cell == Cell.connection:
+            try output.connect(entry.op.text.view(), path)
+        elif entry.key.cell == Cell.disconnect:
+            try output.mark_disconnected(path)
+        elif entry.key.cell == Cell.reorder:
+            var names: List[str]
+            defer names.close()
+            for child in entry.op.children.span():
+                try names.push(child.view())
+            try output.reorder(path, names.span())
+        elif entry.key.cell == Cell.asset:
+            try output.set_asset(path, entry.op.value.payload.bytes(), entry.op.text.view())
+    return output
+
+## In-place apply of one layer onto unique-owner tables. Same order as overlay().
+pub func apply(base: DocumentData*, layer: const Layer*) -> !:
+    for entry in layer.items.span():
+        if entry.key.cell == Cell.element and entry.op.deleted:
+            let path = entry.key.path.view()
+            if base.contains(path):
+                try base.remove(path)
+    for entry in layer.items.span():
+        if entry.key.cell == Cell.disconnect:
+            base.disconnect(entry.key.path.view())
+    for entry in layer.items.span():
+        if entry.key.cell != Cell.element or entry.op.deleted:
+            continue
+        let path = entry.key.path.view()
+        if base.find(path) != none:
+            if entry.op.type_name.used > 0:
+                try base.set_type(path, entry.op.type_name.view())
+        elif not entry.op.override:
+            try base.insert(path, entry.op.type_name.view(), false)
+            if entry.op.identifier != 0:
+                base.elements.items[base.elements.count - 1].identifier = entry.op.identifier
+    for entry in layer.items.span():
+        let path = entry.key.path.view()
+        if not base.contains(path):
+            continue
+        if entry.key.cell == Cell.property:
+            if entry.op.deleted:
+                if base.has_property(path, entry.key.name.view()):
+                    try base.remove_property(path, entry.key.name.view())
+                continue
+            var prop = Property()
+            errdefer prop.close()
+            prop.name = try entry.key.name.copy()
+            prop.type_name = try entry.op.type_name.copy()
+            prop.value = try entry.op.value.copy()
+            try prop.samples.reserve(entry.op.samples.count)
+            for sample in entry.op.samples.span():
+                try prop.samples.push(try sample.copy())
+            try base.elements.items[try base.require(path)].put_property(&prop)
+            prop.close()
+            prop = Property()
+        elif entry.key.cell == Cell.metadata:
+            if entry.op.deleted:
+                if base.has_metadata(path, entry.key.name.view()):
+                    try base.remove_metadata(path, entry.key.name.view())
+            else:
+                try base.set_metadata(path, entry.key.name.view(), entry.op.text.view())
+        elif entry.key.cell == Cell.asset:
+            try base.set_asset(path, entry.op.value.payload.bytes(), entry.op.text.view())
+    for entry in layer.items.span():
+        if entry.key.cell == Cell.connection:
+            try base.connect(entry.op.text.view(), entry.key.path.view())
+    var reordered = false
+    for entry in layer.items.span():
+        if entry.key.cell != Cell.reorder:
+            continue
+        var names: List[str]
+        defer names.close()
+        for child in entry.op.children.span():
+            try names.push(child.view())
+        try base.reorder(entry.key.path.view(), names.span())
+        reordered = true
+    if reordered:
+        var ordered = try overlay_ops.rebuild_order(base)
+        errdefer ordered.close()
+        base.close()
+        base[0] = ordered
+        base.references.store(1, .relaxed)
+        ordered = DocumentData()
+    overlay_ops.prune_connections(base)
+
+pub let layer_type = interop.Type[Layer]("Prism layer", Layer.close, closeable = true)
+
+pub func own_layer(layer: Layer) -> interop.Reference[Layer]!:
+    var owned = layer
+    errdefer owned.close()
+    let native = try new Layer() in memory.heap
+    native[0] = owned
+    owned = Layer()
+    return try interop.Reference[Layer].adopt(native, layer_type, memory.heap)

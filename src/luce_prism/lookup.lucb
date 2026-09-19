@@ -1,0 +1,76 @@
+## namei types and OS-path helpers. The walk lives in store.lucb so this module
+## does not import Store (Store imports lookup).
+import memory
+import interop
+from luce_prism.path import joined
+from luce_prism.storage import Buffer, List, close_names, text_copy
+from luce_prism.types import invalid
+
+pub enum LookKind as u8:
+    missing = 0
+    directory = 1
+    file = 2
+    link = 3
+    other = 4
+
+pub struct Look:
+    var identity_buf: Buffer
+    var path_buf: Buffer
+    var kind_value: LookKind
+
+    pub func init():
+        self.identity_buf = Buffer()
+        self.path_buf = Buffer()
+        self.kind_value = LookKind.missing
+
+    pub func identity() -> str:
+        return self.identity_buf.view()
+
+    pub func path() -> str:
+        return self.path_buf.view()
+
+    pub func kind() -> LookKind:
+        return self.kind_value
+
+    pub mutating func close():
+        self.identity_buf.close()
+        self.path_buf.close()
+
+pub let look_type = interop.Type[Look]("Prism look", Look.close, closeable = true)
+
+pub func own_look(identity: str, path: str, kind: LookKind) -> interop.Reference[Look]!:
+    var owned = Look()
+    owned.kind_value = kind
+    owned.identity_buf = text_copy(identity) catch failure:
+        owned.close()
+        error(failure.code, failure.message)
+    owned.path_buf = text_copy(path) catch failure:
+        owned.close()
+        error(failure.code, failure.message)
+    let native = new Look() in memory.heap catch failure:
+        owned.close()
+        error(failure.code, failure.message)
+    native[0] = owned
+    return try interop.Reference[Look].adopt(native, look_type, memory.heap)
+
+## Skip empty components; reject NUL. `.` in a component is a host name, not a slot.
+pub func split_components(os_path: str) -> List[Buffer]!:
+    for byte in os_path.bytes:
+        if byte == 0:
+            error(invalid, "Prism lookup path contains NUL")
+    var parts: List[Buffer]
+    errdefer close_names(&parts)
+    var start: usize = 0
+    for i in 0..=os_path.length:
+        if i != os_path.length and os_path.bytes[i] != '/':
+            continue
+        if i > start:
+            var part = try text_copy((str)os_path.bytes[start..<i])
+            parts.push(part) catch failure:
+                part.close()
+                error(failure.code, failure.message)
+        start = i + 1
+    return parts
+
+pub func join_element(parent: str, name: str) -> Buffer!:
+    return try joined(parent, name)

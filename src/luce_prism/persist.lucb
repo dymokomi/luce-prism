@@ -1,0 +1,784 @@
+## Durable layer blobs in a Prism-owned WAL. RAM Store.memory() does not open this.
+import memory
+import files
+import luce_prism.composition.delta as delta
+import luce_prism.io as file_io
+import luce_prism.tables as tables
+import luce_prism.wal.engine as wal
+import luce_prism.wal.tree as wal_tree
+import luce_prism.wal.schema as wal_schema
+from luce_prism.animation import Sample
+from luce_prism.model import DocumentData
+from luce_prism.serialization.binary import write_binary
+from luce_prism.serialization.dispatch import read_document
+from luce_prism.serialization.package import write_package
+from luce_prism.storage import Buffer, List, Reader, close_names, copied, text_copy
+from luce_prism.types import Interpolation, invalid, limit_exceeded, unsupported, busy, closed, conflict, timed_out
+from luce_prism.value import ValueData, is_stub, read_value, write_value
+import luce_prism.wal.bytes as wal_bytes
+
+pub let schema_key: str = "prism/encoding"
+pub let schema_application: str = "luce-prism"
+pub let payload_budget: usize = 16777184
+pub let max_value: usize = 1048576
+let layer_version: u8 = 1
+
+func prism_wal_code(code: ErrorCode) -> ErrorCode:
+    if code == wal_bytes.busy:
+        return busy
+    if code == wal_bytes.limit:
+        return limit_exceeded
+    if code == wal_bytes.closed:
+        return closed
+    if code == wal_bytes.conflict:
+        return conflict
+    if code == wal_bytes.timed_out:
+        return timed_out
+    if code == wal_bytes.uncertain:
+        return closed
+    return invalid
+
+pub struct Journal:
+    var store: wal.Store*?
+    var path: Buffer
+
+    pub func init():
+        return
+
+pub func close_journal(journal: Journal*):
+    if let store = journal.store:
+        wal.drop(store)
+    journal.store = none
+    journal.path.close()
+    free(journal) in memory.heap
+
+pub func open_journal(path: str) -> Journal*!:
+    let store = wal.open(path) catch failure:
+        error(prism_wal_code(failure.code), failure.message)
+    let journal = new Journal() in memory.heap catch failure:
+        wal.drop(store)
+        error(failure.code, failure.message)
+    journal.store = store
+    journal.path = text_copy(path) catch failure:
+        journal.store = none
+        wal.drop(store)
+        free(journal) in memory.heap
+        error(failure.code, failure.message)
+    return journal
+
+func journal_store(journal: Journal*) -> wal.Store*!:
+    return journal.store else error(invalid, "Prism journal is closed")
+
+pub func journal_path(journal: Journal*) -> str:
+    return journal.path.view()
+
+pub func encoded_put(key_length: usize, value_length: usize) -> usize:
+    return 9 + key_length + value_length
+
+func put_decimal(out: Buffer*, value: u64) -> !:
+    if value == 0:
+        try out.byte((u8)48)
+        return
+    var digits: u8[20]
+    var n = value
+    var i: usize = 20
+    while n > 0:
+        i -= 1
+        digits[i] = (u8)(48 + n % 10)
+        n = n // 10
+    try out.put(digits[i..])
+
+func parse_u64(text: str) -> u64?:
+    if text.length == 0:
+        return none
+    var value: u64 = 0
+    for byte in text.bytes:
+        if byte < '0' or byte > '9':
+            return none
+        let next = value *? 10 else return none
+        value = next + (u64)(byte - '0')
+    return value
+
+pub func unbaked_key(identity: str, generation: u64) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try out.text("u/")
+    try out.text(identity)
+    try out.byte((u8)'/')
+    var digits: u8[20]
+    var n = generation
+    var i: usize = 20
+    while i > 0:
+        i -= 1
+        digits[i] = (u8)(48 + n % 10)
+        n = n // 10
+    try out.put(digits)
+    return out
+
+func unbaked_count_key(identity: str, generation: u64) -> Buffer!:
+    var out = try unbaked_key(identity, generation)
+    errdefer out.close()
+    try out.text("/#")
+    return out
+
+func unbaked_chunk_key(identity: str, generation: u64, index: usize) -> Buffer!:
+    var out = try unbaked_key(identity, generation)
+    errdefer out.close()
+    try out.byte((u8)'/')
+    try put_decimal(&out, (u64)index)
+    return out
+
+func snap_through_key(identity: str) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try out.text("s/")
+    try out.text(identity)
+    try out.text("/through")
+    return out
+
+func snap_kind_key(identity: str) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try out.text("s/")
+    try out.text(identity)
+    try out.text("/kind")
+    return out
+
+func snap_file_key(identity: str) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try out.text("s/")
+    try out.text(identity)
+    try out.text("/file")
+    return out
+
+func snap_count_key(identity: str) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try out.text("s/")
+    try out.text(identity)
+    try out.text("/#")
+    return out
+
+func snap_chunk_key(identity: str, index: usize) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try out.text("s/")
+    try out.text(identity)
+    try out.byte((u8)'/')
+    try put_decimal(&out, (u64)index)
+    return out
+
+pub func journal_bytes_for_layer(identity: str, generation: u64, layer_bytes: usize) -> usize!:
+    var key = try unbaked_key(identity, generation)
+    defer key.close()
+    if layer_bytes <= max_value:
+        return encoded_put(key.used, layer_bytes)
+    var count_key = try unbaked_count_key(identity, generation)
+    defer count_key.close()
+    var remaining = layer_bytes
+    var index: usize = 0
+    var total = encoded_put(count_key.used, 1)
+    while remaining > 0:
+        let chunk = max_value if remaining > max_value else remaining
+        var part = try unbaked_chunk_key(identity, generation, index)
+        defer part.close()
+        total += encoded_put(part.used, chunk)
+        remaining -= chunk
+        index += 1
+        if total > payload_budget:
+            return total
+    return total
+
+pub func encode_layer(layer: const delta.Layer*) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try out.put(b"PRLY")
+    try out.byte(layer_version)
+    try out.uint((u64)layer.items.count, 4)
+    for entry in layer.items.span():
+        try out.sized(entry.key.path.view())
+        try out.sized(entry.key.name.view())
+        try out.byte((u8)entry.key.cell)
+        var flags: u8 = 0
+        if entry.op.deleted:
+            flags |= 1
+        if entry.op.override:
+            flags |= 2
+        try out.byte(flags)
+        try out.uint((u64)entry.op.identifier, 8)
+        try out.sized(entry.op.type_name.view())
+        try out.sized(entry.op.text.view())
+        var encoded_value: Buffer
+        try write_value(&encoded_value, &entry.op.value)
+        try out.uint((u64)encoded_value.used, 4)
+        try out.put(encoded_value.bytes())
+        encoded_value.close()
+        try out.uint((u64)entry.op.children.count, 4)
+        for child in entry.op.children.span():
+            try out.sized(child.view())
+        try out.uint((u64)entry.op.samples.count, 4)
+        for sample in entry.op.samples.span():
+            try out.real(sample.time)
+            var encoded_sample: Buffer
+            try write_value(&encoded_sample, &sample.value)
+            try out.uint((u64)encoded_sample.used, 4)
+            try out.put(encoded_sample.bytes())
+            encoded_sample.close()
+            try out.uint((u64)sample.interpolation, 1)
+            try out.byte(sample.handle)
+            try out.uint((u64)sample.left.count, 4)
+            for value in sample.left.span():
+                try out.real(value)
+            try out.uint((u64)sample.right.count, 4)
+            for value in sample.right.span():
+                try out.real(value)
+    return out
+
+func read_sized(reader: Reader*) -> Buffer!:
+    let text = try reader.text()
+    return try text_copy(text)
+
+pub func decode_layer(bytes: const u8[]) -> delta.Layer!:
+    var reader = Reader(data = bytes)
+    let magic = try reader.take(4)
+    if magic.length != 4 or magic[0] != 'P' or magic[1] != 'R' or magic[2] != 'L' or magic[3] != 'Y':
+        error(invalid, "invalid Prism layer blob")
+    if try reader.uint(1) != (u64)layer_version:
+        error(unsupported, "unsupported Prism layer encoding")
+    let count = try reader.count(1)
+    var layer = delta.Layer()
+    errdefer layer.close()
+    for i in 0..<count:
+        var path = try read_sized(&reader)
+        defer path.close()
+        var name = try read_sized(&reader)
+        defer name.close()
+        let cell = (delta.Cell)(u8)try reader.uint(1)
+        let flags = (u8)try reader.uint(1)
+        var op = delta.Op(deleted = (flags & 1) != 0, override = (flags & 2) != 0)
+        errdefer op.close()
+        op.identifier = (usize)try reader.uint(8)
+        op.type_name = try read_sized(&reader)
+        op.text = try read_sized(&reader)
+        let value_size = (usize)try reader.uint(4)
+        let value_bytes = try reader.take(value_size)
+        var value_reader = Reader(data = value_bytes)
+        op.value = read_value(&value_reader) catch failure:
+            recover ValueData()
+        let children = try reader.count(0)
+        try op.children.reserve(children)
+        for c in 0..<children:
+            var child = try read_sized(&reader)
+            errdefer child.close()
+            try op.children.push(child)
+            child = Buffer()
+        let samples = try reader.count(0)
+        try op.samples.reserve(samples)
+        for s in 0..<samples:
+            var sample = Sample()
+            errdefer sample.close()
+            sample.time = try reader.real()
+            let sample_size = (usize)try reader.uint(4)
+            let sample_bytes = try reader.take(sample_size)
+            var sample_reader = Reader(data = sample_bytes)
+            sample.value = read_value(&sample_reader) catch failure:
+                recover ValueData()
+            sample.interpolation = (Interpolation)(u8)try reader.uint(1)
+            sample.handle = (u8)try reader.uint(1)
+            let left = try reader.count(0)
+            try sample.left.reserve(left)
+            for n in 0..<left:
+                try sample.left.push(try reader.real())
+            let right = try reader.count(0)
+            try sample.right.reserve(right)
+            for n in 0..<right:
+                try sample.right.push(try reader.real())
+            try op.samples.push(sample)
+            sample = Sample()
+        try layer.put(path.view(), cell, name.view(), op)
+        op = delta.Op()
+    if reader.pos != bytes.length:
+        error(invalid, "trailing Prism layer blob")
+    return layer
+
+func put_chunked(tx: wal.Transaction*, prefix: const Buffer*, payload: const u8[], allow_single: bool = true) -> !:
+    if allow_single and payload.length <= max_value:
+        try tx.put(prefix.view(), payload)
+        return
+    var remaining = payload.length
+    var index: usize = 0
+    var start: usize = 0
+    while remaining > 0:
+        let chunk = max_value if remaining > max_value else remaining
+        var key: Buffer
+        errdefer key.close()
+        try key.put(prefix.bytes())
+        try key.byte((u8)'/')
+        try put_decimal(&key, (u64)index)
+        try tx.put(key.view(), payload[start..<start + chunk])
+        start += chunk
+        remaining -= chunk
+        index += 1
+    var count_key: Buffer
+    errdefer count_key.close()
+    try count_key.put(prefix.bytes())
+    try count_key.text("/#")
+    var digits: Buffer
+    errdefer digits.close()
+    try put_decimal(&digits, (u64)index)
+    try tx.put(count_key.view(), digits.bytes())
+
+func snap_copy(snap: wal.View*, key: str) -> Buffer?!:
+    let item = (try snap.get(key)) else return none
+    return try copied(item.value.span())
+
+func load_chunked(snap: wal.View*, prefix: str) -> Buffer!:
+    if let single = try snap_copy(snap, prefix):
+        return single
+    var count_key: Buffer
+    errdefer count_key.close()
+    try count_key.text(prefix)
+    try count_key.text("/#")
+    var listed = try snap_copy(snap, count_key.view()) else error(invalid, "missing Prism snapshot chunks")
+    defer listed.close()
+    let count = parse_u64(listed.view()) else error(invalid, "invalid Prism chunk count")
+    var out: Buffer
+    errdefer out.close()
+    var index: u64 = 0
+    while index < count:
+        var key: Buffer
+        errdefer key.close()
+        try key.text(prefix)
+        try key.byte((u8)'/')
+        try put_decimal(&key, index)
+        var chunk = try snap_copy(snap, key.view()) else error(invalid, "missing Prism snapshot chunk")
+        defer chunk.close()
+        try out.put(chunk.bytes())
+        index += 1
+    return out
+
+func identity_from_key(key: str) -> str?:
+    if key.length < 3:
+        return none
+    if (str)key.bytes[..<2] != "s/" and (str)key.bytes[..<2] != "u/":
+        return none
+    var i: usize = 2
+    while i < key.length and key.bytes[i] != '/':
+        i += 1
+    if i == 2:
+        return none
+    return (str)key.bytes[2..<i]
+
+func has_name(names: const List[Buffer]*, name: str) -> bool:
+    for item in names.span():
+        if item.view() == name:
+            return true
+    return false
+
+func collect_identities(snap: wal.View*) -> List[Buffer]!:
+    var names: List[Buffer]
+    errdefer close_names(&names)
+    let records = (i64)wal_tree.count(snap.root)
+    var i: i64 = 0
+    while i < records:
+        if let item = wal_tree.at(snap.root, (usize)i):
+            let key = (str)item.key.span()
+            if let identity = identity_from_key(key):
+                if not has_name(&names, identity):
+                    var copy = try text_copy(identity)
+                    errdefer copy.close()
+                    try names.push(copy)
+        i += 1
+    return names
+
+func parse_unbaked_gen(key: str, identity: str) -> u64?:
+    let prefix_len = 3 + identity.length
+    if key.length < prefix_len + 20:
+        return none
+    if (str)key.bytes[..<2] != "u/":
+        return none
+    if (str)key.bytes[2..<2 + identity.length] != identity:
+        return none
+    if key.bytes[2 + identity.length] != '/':
+        return none
+    let digits = (str)key.bytes[prefix_len..<prefix_len + 20]
+    return parse_u64(digits)
+
+func max_complete_gen(snap: wal.View*, identity: str) -> u64?!:
+    var highest: u64? = none
+    let records = (i64)wal_tree.count(snap.root)
+    var i: i64 = 0
+    while i < records:
+        if let item = wal_tree.at(snap.root, (usize)i):
+            let key = (str)item.key.span()
+            if let gen = parse_unbaked_gen(key, identity):
+                if highest == none or gen > (highest else 0):
+                    var marker = try unbaked_key(identity, gen)
+                    defer marker.close()
+                    var hashed = try unbaked_count_key(identity, gen)
+                    defer hashed.close()
+                    if try snap_copy(snap, marker.view()) != none or try snap_copy(snap, hashed.view()) != none:
+                        highest = gen
+        i += 1
+    return highest
+
+func load_unbaked_blob(snap: wal.View*, identity: str, generation: u64) -> Buffer!:
+    var key = try unbaked_key(identity, generation)
+    defer key.close()
+    return try load_chunked(snap, key.view())
+
+func decode_crate(bytes: const u8[]) -> tables.Tables*!:
+    var data = DocumentData()
+    errdefer data.close()
+    try read_document(bytes, &data)
+    return try tables.from_data(&data)
+
+func hydrate_data(journal: Journal*, data: DocumentData*) -> !:
+    for i in 0..<data.elements.count:
+        let element = &data.elements.items[i]
+        for p in 0..<element.properties.count:
+            let value = &element.properties.items[p].value
+            if is_stub(value):
+                var blob = try read_extent(journal, value.locator.identity.view(), (u64)value.locator.generation, (u64)value.locator.extent)
+                value.payload.close()
+                value.payload = blob
+
+func encode_tables(journal: Journal*, owned: const tables.Tables*) -> Buffer!:
+    var data = try tables.to_data(owned)
+    defer data.close()
+    try hydrate_data(journal, &data)
+    if data.assets.count > 0:
+        return try write_package(&data, false)
+    return try write_binary(&data)
+
+func valid_basename(name: str) -> bool:
+    if name.length == 0 or name == "." or name == "..":
+        return false
+    for byte in name.bytes:
+        if byte == '/' or byte == 0:
+            return false
+    return true
+
+func snap_dir(journal: Journal*) -> Buffer!:
+    var out = try journal.path.copy()
+    errdefer out.close()
+    try out.text(".snap")
+    return out
+
+pub func extents_dir(journal: Journal*) -> Buffer!:
+    var out = try journal.path.copy()
+    errdefer out.close()
+    try out.text(".ext")
+    return out
+
+func extent_basename(identity: str, generation: u64, id: u64) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try out.text(identity)
+    try out.byte((u8)'.')
+    try put_decimal(&out, generation)
+    try out.byte((u8)'.')
+    try put_decimal(&out, id)
+    return out
+
+pub func write_extent(journal: Journal*, identity: str, generation: u64, id: u64, bytes: const u8[]) -> !:
+    var dir = try extents_dir(journal)
+    defer dir.close()
+    files.ensure_directory(dir.view()) catch failure:
+        if not try file_io.exists(dir.view()):
+            error(failure.code, failure.message)
+    var name = try extent_basename(identity, generation, id)
+    defer name.close()
+    if not valid_basename(name.view()):
+        error(invalid, "invalid Prism extent basename")
+    var path = try join_path(dir.view(), name.view())
+    defer path.close()
+    try file_io.write(path.view(), bytes)
+
+pub func read_extent(journal: Journal*, identity: str, generation: u64, id: u64) -> Buffer!:
+    var dir = try extents_dir(journal)
+    defer dir.close()
+    var name = try extent_basename(identity, generation, id)
+    defer name.close()
+    var path = try join_path(dir.view(), name.view())
+    defer path.close()
+    return try file_io.read(path.view())
+
+func join_path(dir: str, name: str) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try out.text(dir)
+    if dir.length > 0 and dir.bytes[dir.length - 1] != '/':
+        try out.byte((u8)'/')
+    try out.text(name)
+    return out
+
+pub struct LoadedLayer:
+    pub var generation: u64
+    pub var layer: delta.Layer
+
+    pub func init():
+        return
+
+pub struct LoadedIdentity:
+    pub var name: Buffer
+    pub var generation: u64
+    pub var last_id: usize
+    pub var tables: tables.Tables*?
+    pub var unbaked: List[LoadedLayer]
+
+    pub func init():
+        return
+
+pub func close_loaded_identity(item: LoadedIdentity*):
+    item.name.close()
+    if let owned = item.tables:
+        tables.drop_tables(owned)
+    item.tables = none
+    for i in 0..<item.unbaked.count:
+        item.unbaked.items[i].layer.close()
+    item.unbaked.close()
+
+pub func close_loaded(items: List[LoadedIdentity]*):
+    for i in 0..<items.count:
+        close_loaded_identity(&items.items[i])
+    items.close()
+
+func max_layer_id(layer: const delta.Layer*) -> usize:
+    var highest: usize = 0
+    for entry in layer.items.span():
+        if entry.op.identifier > highest:
+            highest = entry.op.identifier
+    return highest
+
+func load_one(snap: wal.View*, journal: Journal*, identity: str) -> LoadedIdentity!:
+    var out = LoadedIdentity()
+    errdefer close_loaded_identity(&out)
+    out.name = try text_copy(identity)
+    var through_key = try snap_through_key(identity)
+    defer through_key.close()
+    var through: u64 = 0
+    if let raw_copy = try snap_copy(snap, through_key.view()):
+        var raw = raw_copy
+        defer raw.close()
+        through = parse_u64(raw.view()) else 0
+    var kind_key = try snap_kind_key(identity)
+    defer kind_key.close()
+    if let label_copy = try snap_copy(snap, kind_key.view()):
+        var label = label_copy
+        defer label.close()
+        let text = label.view()
+        if text == "file":
+            var file_key = try snap_file_key(identity)
+            defer file_key.close()
+            var listed = try snap_copy(snap, file_key.view()) else error(invalid, "missing Prism snapshot file")
+            defer listed.close()
+            if not valid_basename(listed.view()):
+                error(invalid, "invalid Prism snapshot basename")
+            var dir = try snap_dir(journal)
+            defer dir.close()
+            var path = try join_path(dir.view(), listed.view())
+            defer path.close()
+            var crate = try file_io.read(path.view())
+            defer crate.close()
+            out.tables = try decode_crate(crate.bytes())
+        elif text == "inline":
+            var prefix: Buffer
+            defer prefix.close()
+            try prefix.text("s/")
+            try prefix.text(identity)
+            var crate = try load_chunked(snap, prefix.view())
+            defer crate.close()
+            out.tables = try decode_crate(crate.bytes())
+        else:
+            out.tables = try tables.empty_tables()
+            through = 0
+    else:
+        out.tables = try tables.empty_tables()
+        through = 0
+    let owned_tables = out.tables else error(invalid, "Prism identity tables missing")
+    var last = tables.max_identifier(owned_tables)
+    var generation = through
+    if let high = try max_complete_gen(snap, identity):
+        var gen = through + 1
+        while gen <= high:
+            var blob = try load_unbaked_blob(snap, identity, gen)
+            defer blob.close()
+            var layer = try decode_layer(blob.bytes())
+            errdefer layer.close()
+            let layer_id = max_layer_id(&layer)
+            if layer_id > last:
+                last = layer_id
+            var item = LoadedLayer()
+            item.generation = gen
+            item.layer = layer
+            layer = delta.Layer()
+            try out.unbaked.push(item)
+            generation = gen
+            gen += 1
+    out.generation = generation
+    out.last_id = last
+    return out
+
+pub func prepare_schema(journal: Journal*) -> !:
+    let store = try journal_store(journal)
+    var snap = wal.snapshot(store) catch failure:
+        error(prism_wal_code(failure.code), failure.message)
+    defer snap.close()
+    if wal_tree.count(snap.root) == 0:
+        wal_schema.initialize(store, schema_key, schema_application) catch failure:
+            error(prism_wal_code(failure.code), failure.message)
+        return
+    let version = wal_schema.current(snap, schema_key, schema_application) catch failure:
+        error(prism_wal_code(failure.code), failure.message)
+    let ver = version else error(invalid, "unversioned journal is not a Prism store")
+    if ver != 0:
+        error(unsupported, "prism/encoding")
+
+pub func load_identities(journal: Journal*) -> List[LoadedIdentity]!:
+    let store = try journal_store(journal)
+    var snap = wal.snapshot(store) catch failure:
+        error(prism_wal_code(failure.code), failure.message)
+    defer snap.close()
+    var names = try collect_identities(&snap)
+    defer close_names(&names)
+    var out: List[LoadedIdentity]
+    errdefer close_loaded(&out)
+    for name in names.span():
+        var loaded = try load_one(&snap, journal, name.view())
+        out.push(loaded) catch failure:
+            close_loaded_identity(&loaded)
+            error(failure.code, failure.message)
+        loaded = LoadedIdentity()
+    return out
+
+pub func append_layer(journal: Journal*, identity: str, generation: u64, layer: const delta.Layer*, wait_ms: i64) -> !:
+    var blob = try encode_layer(layer)
+    defer blob.close()
+    let cost = try journal_bytes_for_layer(identity, generation, blob.used)
+    if layer.items.count > 65536 or cost > payload_budget:
+        error(limit_exceeded, "Prism commit exceeds the journal frame")
+    let store = try journal_store(journal)
+    var tx = wal.transaction(store) catch failure:
+        error(prism_wal_code(failure.code), failure.message)
+    defer tx.close()
+    var prefix = try unbaked_key(identity, generation)
+    defer prefix.close()
+    put_chunked(&tx, &prefix, blob.bytes(), true) catch failure:
+        error(prism_wal_code(failure.code), failure.message)
+    discard(tx.commit(wait_ms) catch failure:
+        error(prism_wal_code(failure.code), failure.message))
+
+func remove_prefix_keys(tx: wal.Transaction*, snap: wal.View*, identity: str, through: u64) -> !:
+    let records = (i64)wal_tree.count(snap.root)
+    var i: i64 = 0
+    while i < records:
+        if let item = wal_tree.at(snap.root, (usize)i):
+            let key = (str)item.key.span()
+            if let gen = parse_unbaked_gen(key, identity):
+                if gen <= through:
+                    try tx.remove(key)
+        i += 1
+
+func remove_snap_chunks(tx: wal.Transaction*, snap: wal.View*, identity: str) -> !:
+    var count_key = try snap_count_key(identity)
+    defer count_key.close()
+    if let listed_copy = try snap_copy(snap, count_key.view()):
+        var listed = listed_copy
+        defer listed.close()
+        try tx.remove(count_key.view())
+        let count = parse_u64(listed.view()) else 0
+        var index: u64 = 0
+        while index < count:
+            var key = try snap_chunk_key(identity, (usize)index)
+            defer key.close()
+            if try snap_copy(snap, key.view()) != none:
+                try tx.remove(key.view())
+            index += 1
+
+pub func reclaim(journal: Journal*, identity: str, owned: const tables.Tables*, through: u64, wait_ms: i64) -> !:
+    var crate = try encode_tables(journal, owned)
+    defer crate.close()
+    let store = try journal_store(journal)
+    var snap = wal.snapshot(store) catch failure:
+        error(prism_wal_code(failure.code), failure.message)
+    defer snap.close()
+    var file_key = try snap_file_key(identity)
+    defer file_key.close()
+    var old_file: Buffer
+    defer old_file.close()
+    if let listed = try snap_copy(&snap, file_key.view()):
+        old_file = listed
+    var kind_key = try snap_kind_key(identity)
+    defer kind_key.close()
+    var through_key = try snap_through_key(identity)
+    defer through_key.close()
+    var through_text: Buffer
+    errdefer through_text.close()
+    try put_decimal(&through_text, through)
+    var inline_prefix: Buffer
+    defer inline_prefix.close()
+    try inline_prefix.text("s/")
+    try inline_prefix.text(identity)
+    let inline_cost = encoded_put(inline_prefix.used + 2, crate.used) + encoded_put(inline_prefix.used, 8)
+    var tx = wal.transaction(store) catch failure:
+        error(prism_wal_code(failure.code), failure.message)
+    defer tx.close()
+    var new_name: Buffer
+    defer new_name.close()
+    if inline_cost <= payload_budget:
+        tx.put(kind_key.view(), b"inline") catch failure:
+            error(prism_wal_code(failure.code), failure.message)
+        put_chunked(&tx, &inline_prefix, crate.bytes(), false) catch failure:
+            error(prism_wal_code(failure.code), failure.message)
+        if old_file.used > 0:
+            tx.remove(file_key.view()) catch failure:
+                error(prism_wal_code(failure.code), failure.message)
+    else:
+        var dir = try snap_dir(journal)
+        defer dir.close()
+        if not try file_io.exists(dir.view()):
+            try files.make_directory(dir.view())
+        try new_name.text(identity)
+        try new_name.byte((u8)'.')
+        try put_decimal(&new_name, through)
+        if not valid_basename(new_name.view()):
+            error(invalid, "invalid Prism snapshot basename")
+        var path = try join_path(dir.view(), new_name.view())
+        defer path.close()
+        try file_io.write(path.view(), crate.bytes())
+        tx.put(kind_key.view(), b"file") catch failure:
+            error(prism_wal_code(failure.code), failure.message)
+        tx.put(file_key.view(), new_name.bytes()) catch failure:
+            error(prism_wal_code(failure.code), failure.message)
+        remove_snap_chunks(&tx, &snap, identity) catch failure:
+            error(prism_wal_code(failure.code), failure.message)
+        var hashed = try snap_count_key(identity)
+        defer hashed.close()
+        if try snap_copy(&snap, hashed.view()) != none:
+            tx.remove(hashed.view()) catch failure:
+                error(prism_wal_code(failure.code), failure.message)
+    tx.put(through_key.view(), through_text.bytes()) catch failure:
+        error(prism_wal_code(failure.code), failure.message)
+    remove_prefix_keys(&tx, &snap, identity, through) catch failure:
+        error(prism_wal_code(failure.code), failure.message)
+    discard(tx.commit(wait_ms) catch failure:
+        error(prism_wal_code(failure.code), failure.message))
+    wal.checkpoint(store, wait_ms) catch failure:
+        error(prism_wal_code(failure.code), failure.message)
+    if old_file.used > 0 and (new_name.used == 0 or old_file.view() != new_name.view()):
+        var dir = try snap_dir(journal)
+        defer dir.close()
+        var path = try join_path(dir.view(), old_file.view())
+        defer path.close()
+        files.delete_path(path.view()) catch failure:
+            discard(failure)
+
+pub func snap_basename(identity: str, through: u64) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try out.text(identity)
+    try out.byte((u8)'.')
+    try put_decimal(&out, through)
+    return out

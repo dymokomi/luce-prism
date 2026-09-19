@@ -5,7 +5,7 @@ import luce_prism.query.scalars as scalars
 from luce_prism.collections.index import Index
 from luce_prism.query.results import Selection, Row, copy_row
 from luce_prism.query.query import Query
-from luce_prism.document import Document
+from luce_prism.document import Document, assemble_element
 from luce_prism.model import Element
 from luce_prism.animation import resolve_property
 from luce_prism.storage import List, Buffer, find_pair
@@ -117,7 +117,7 @@ pub func join_on(left: interop.Reference[Query], left_field: str, right: interop
 pub func join_by_connection(doc: interop.Reference[Document], left: interop.Reference[Query], slot: str) -> interop.Reference[JoinResult]!:
     let selected = try (try left.get()).select()
     defer selected.release()
-    let data = (try doc.get()).view_data()
+    let view = try doc.get()
     var result = JoinResult()
     errdefer result.close()
     for element in (try selected.get()).view_data().span():
@@ -126,11 +126,14 @@ pub func join_by_connection(doc: interop.Reference[Document], left: interop.Refe
         try target.text(element.path.view())
         try target.byte('.')
         try target.text(slot)
-        if let source = data.incoming(target.view()):
-            if let position = data.find(element_path(source)):
+        if let source = view.incoming_at(target.view()):
+            let path = element_path(source)
+            if view.contains(path):
+                var right = try assemble_element(view, path)
+                defer right.close()
                 let index = result.pairs.count
                 try result.left_rows.append(&element)
-                try result.right_rows.append(&data.elements.items[position])
+                try result.right_rows.append(&right)
                 try result.pairs.push(Pair(left = index, right = index))
     let owned = result
     result = JoinResult()

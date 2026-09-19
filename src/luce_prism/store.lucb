@@ -1,0 +1,2393 @@
+## Native Prism store: per-identity tables, unbaked layers, FIFO writers, RAM ceiling.
+import memory
+import interop
+import sync
+import thread
+import files
+import c
+import luce_prism.admit as admit
+import luce_prism.ipc as ipc
+import luce_prism.tls_pipe as tls_pipe
+import net
+import luce_prism.composition.delta as delta
+from luce_prism.document import Document, own_document, own_view
+from luce_prism.model import DocumentData, own_data
+import luce_prism.query.query as querying
+import luce_prism.persist as persist
+import luce_prism.tables as tables
+import luce_prism.pool as pool
+import luce_prism.io as file_io
+import luce_prism.fs as fs
+from luce_prism.authoring.paths import Paths, own_paths
+from luce_prism.lookup import Look, LookKind, join_element, own_look, split_components
+from luce_prism.path import is_descendant, parent_path, path_name, require_element, valid_name, valid_path
+from luce_prism.storage import Buffer, List, Reader, close_names, copied, has_name, text_copy
+from luce_prism.types import DType, closed, conflict, invalid, limit_exceeded, max_bytes, max_depth, max_items, missing, unsupported
+from luce_prism.value import Value, ValueData, own_value, read_value, is_stub
+
+pub let max_ops: usize = 65536
+pub let max_views: usize = 1024
+pub let max_identity: usize = 200
+
+pub struct FrozenLayer:
+    var references: @u64
+    pub var layer: delta.Layer
+
+    pub func init():
+        return
+
+func hold_frozen(layer: FrozenLayer*):
+    discard(layer.references.add(1, .relaxed))
+
+func drop_frozen(layer: FrozenLayer*):
+    if layer.references.sub(1, .acq_rel) == 1:
+        layer.layer.close()
+        free(layer) in memory.heap
+
+func freeze_layer(source: delta.Layer) -> FrozenLayer*!:
+    var owned = source
+    errdefer owned.close()
+    let out = try new FrozenLayer() in memory.heap
+    out.layer.close()
+    out.layer = owned
+    owned = delta.Layer()
+    out.references.store(1, .relaxed)
+    return out
+
+pub struct PublishedLayer:
+    pub var generation: u64
+    pub var frozen: FrozenLayer*
+    pub var bytes: usize
+
+func close_published(items: List[PublishedLayer]*):
+    for i in 0..<items.count:
+        drop_frozen(items.items[i].frozen)
+    items.close()
+
+pub struct DocumentState:
+    var tables: tables.Tables*
+    var unbaked: List[PublishedLayer]
+    var retired: List[PublishedLayer]
+    var generation: u64
+    var last_id: usize
+    var head_lock: sync.Mutex
+    var writer: admit.Queue
+    var views: List[u64]
+
+    pub func init() -> !:
+        self.tables = try tables.empty_tables()
+        self.unbaked = List[PublishedLayer]()
+        self.retired = List[PublishedLayer]()
+        self.generation = 0
+        self.last_id = 0
+        self.head_lock = sync.Mutex()
+        self.writer = admit.Queue()
+        self.views = List[u64]()
+
+func drop_state(state: DocumentState*):
+    tables.drop_tables(state.tables)
+    close_published(&state.unbaked)
+    close_published(&state.retired)
+    state.views.close()
+    free(state) in memory.heap
+
+func empty_state() -> DocumentState*!:
+    return try new DocumentState() in memory.heap
+
+struct CatalogEntry:
+    var name: Buffer
+    var state: DocumentState*
+
+pub struct Inner:
+    var references: @u64
+    var catalog_lock: sync.Mutex
+    var catalog: List[CatalogEntry]
+    var root: Buffer
+    var memory_limit: usize
+    var resident: @u64
+    var conflicted: @u64
+    var persist: persist.Journal*?
+    var listen_fd: i32
+    var listen_path: Buffer
+    var serving: @u64
+    var accept_thread: thread.Handle?
+    var pool: pool.Pool
+    var table_charge: usize
+    var token: Buffer
+    var tls_d: u8[32]
+    var tls_qx: u8[32]
+    var tls_qy: u8[32]
+    var tls_cert: Buffer
+    var tls_host: Buffer
+    var tls_serve: @u64
+
+    pub func init():
+        return
+
+func hold_inner(inner: Inner*):
+    discard(inner.references.add(1, .relaxed))
+
+func drop_inner(inner: Inner*):
+    if inner.references.sub(1, .acq_rel) == 1:
+        for i in 0..<inner.catalog.count:
+            inner.catalog.items[i].name.close()
+            drop_state(inner.catalog.items[i].state)
+        inner.catalog.close()
+        inner.root.close()
+        inner.listen_path.close()
+        inner.token.close()
+        inner.tls_cert.close()
+        inner.tls_host.close()
+        pool.close_pool(&inner.pool)
+        if let journal = inner.persist:
+            persist.close_journal(journal)
+        inner.persist = none
+        free(inner) in memory.heap
+
+pub func valid_identity(name: str) -> bool:
+    if name.length == 0 or name.length > max_identity:
+        return false
+    if name == "." or name == "..":
+        return false
+    for byte in name.bytes:
+        let letter = (byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z')
+        let digit = byte >= '0' and byte <= '9'
+        if not letter and not digit and byte != '.' and byte != '_' and byte != '-':
+            return false
+    return true
+
+func find_state_opt(inner: Inner*, identity: str) -> DocumentState*?:
+    inner.catalog_lock.lock()
+    defer inner.catalog_lock.unlock()
+    for i in 0..<inner.catalog.count:
+        if inner.catalog.items[i].name.view() == identity:
+            return inner.catalog.items[i].state
+    return none
+
+func find_state(inner: Inner*, identity: str) -> DocumentState*!:
+    return find_state_opt(inner, identity) else error(missing, "unmounted identity")
+
+func drop_owned_tables(owned: tables.Tables*?):
+    if let extra = owned:
+        tables.drop_tables(extra)
+
+func charge(inner: Inner*, delta_bytes: usize) -> !:
+    if delta_bytes == 0:
+        return
+    let add = (u64)delta_bytes
+    var current = inner.resident.load(.acquire)
+    while true:
+        let total = current +? add else error(limit_exceeded, "Prism store memory limit exceeded")
+        if total > (u64)inner.memory_limit:
+            let freed = evict_one(inner)
+            if freed == 0:
+                error(limit_exceeded, "Prism store memory limit exceeded")
+            current = inner.resident.load(.acquire)
+            continue
+        let (ok, seen) = inner.resident.cas(current, total, .acq_rel, .acquire)
+        if ok:
+            return
+        current = seen
+
+func uncharge(inner: Inner*, delta_bytes: usize):
+    if delta_bytes == 0:
+        return
+    let sub = (u64)delta_bytes
+    var current = inner.resident.load(.acquire)
+    while true:
+        let next = (u64)0 if current < sub else current - sub
+        let (ok, seen) = inner.resident.cas(current, next, .acq_rel, .acquire)
+        if ok:
+            return
+        current = seen
+
+func estimate(path: str, name: str, payload: usize) -> usize:
+    return 64 + path.length + name.length + payload
+
+func register_tables(inner: Inner*, identity: str, owned: tables.Tables*):
+    var i: usize = 0
+    let n = tables.node_count(owned.by_path)
+    while i < n:
+        if let node = tables.at(owned.by_path, i):
+            if let element = node.element:
+                for prop in element.properties.span():
+                    if not is_stub(&prop.value) and prop.value.payload.used > 0:
+                        pool.touch(&inner.pool, identity, element.path.view(), prop.name.view(), prop.value.payload.used) catch failure:
+                            discard(failure)
+        i += 1
+    owned.bytes = tables.payload_bytes(owned)
+
+func find_property(element: tables.Element*, name: str) -> ValueData*?:
+    for i in 0..<element.properties.count:
+        if element.properties.items[i].name.view() == name:
+            return &element.properties.items[i].value
+    return none
+
+func evict_discard(inner: Inner*, identity: str, path: str, name: str):
+    pool.drop_entry(&inner.pool, identity, path, name)
+
+func page_out(inner: Inner*, journal: persist.Journal*, owned: tables.Tables*, identity: str, path: str, name: str, value: ValueData*, generation: u64) -> usize:
+    if is_stub(value) or value.payload.used == 0:
+        return 0
+    let size = value.payload.used
+    if value.locator.size == 0 or value.locator.identity.used == 0:
+        var loc_id = text_copy(identity) catch failure:
+            return 0
+        var blob = value.payload.copy() catch failure:
+            loc_id.close()
+            return 0
+        let extent = inner.pool.next_extent
+        persist.write_extent(journal, identity, generation, extent, blob.bytes()) catch failure:
+            blob.close()
+            loc_id.close()
+            return 0
+        blob.close()
+        value.locator.close()
+        value.locator.identity = loc_id
+        loc_id = Buffer()
+        value.locator.generation = (usize)generation
+        value.locator.extent = (usize)extent
+        value.locator.size = size
+        inner.pool.next_extent += 1
+    value.payload.close()
+    value.payload = Buffer()
+    inner.pool.evictions += 1
+    if inner.table_charge >= size:
+        inner.table_charge -= size
+    if owned.bytes >= size:
+        owned.bytes -= size
+    uncharge(inner, size)
+    evict_discard(inner, identity, path, name)
+    return size
+
+func evict_from_state(inner: Inner*, journal: persist.Journal*, identity: str, state: DocumentState*) -> usize:
+    var j: usize = 0
+    let n = tables.node_count(state.tables.by_path)
+    while j < n:
+        if let node = tables.at(state.tables.by_path, j):
+            if let element = node.element:
+                if not pool.pinned(&inner.pool, identity, element.path.view()):
+                    var p: usize = 0
+                    while p < element.properties.count:
+                        let value = &element.properties.items[p].value
+                        if not is_stub(value) and value.payload.used > 0:
+                            let size = page_out(inner, journal, state.tables, identity, element.path.view(), element.properties.items[p].name.view(), value, state.generation)
+                            if size > 0:
+                                return size
+                        p += 1
+        j += 1
+    return 0
+
+func evict_one(inner: Inner*) -> usize:
+    let journal = inner.persist else return 0
+    while true:
+        let index = pool.coldest(&inner.pool) else break
+        var identity = inner.pool.entries.items[index].identity.copy() catch failure:
+            return 0
+        var path = inner.pool.entries.items[index].path.copy() catch failure:
+            identity.close()
+            return 0
+        var name = inner.pool.entries.items[index].name.copy() catch failure:
+            path.close()
+            identity.close()
+            return 0
+        let found = find_state_opt(inner, identity.view())
+        if found == none:
+            evict_discard(inner, identity.view(), path.view(), name.view())
+            name.close()
+            path.close()
+            identity.close()
+            continue
+        let state = found else trap("evict state")
+        state.head_lock.lock()
+        var freed: usize = 0
+        if not pool.pinned(&inner.pool, identity.view(), path.view()):
+            if let element = tables.find_element(state.tables, path.view()):
+                if let value = find_property(element, name.view()):
+                    freed = page_out(inner, journal, state.tables, identity.view(), path.view(), name.view(), value, state.generation)
+        state.head_lock.unlock()
+        if freed == 0:
+            evict_discard(inner, identity.view(), path.view(), name.view())
+        name.close()
+        path.close()
+        identity.close()
+        if freed > 0:
+            return freed
+    inner.catalog_lock.lock()
+    defer inner.catalog_lock.unlock()
+    for i in 0..<inner.catalog.count:
+        let identity = inner.catalog.items[i].name.view()
+        let state = inner.catalog.items[i].state
+        state.head_lock.lock()
+        let freed = evict_from_state(inner, journal, identity, state)
+        state.head_lock.unlock()
+        if freed > 0:
+            return freed
+    return 0
+
+func evict_to_limit(inner: Inner*) -> !:
+    while inner.resident.load(.acquire) > (u64)inner.memory_limit:
+        let freed = evict_one(inner)
+        if freed == 0:
+            error(limit_exceeded, "Prism store memory limit exceeded")
+
+func fault_property(inner: Inner*, identity: str, path: str, name: str, value: ValueData*) -> !:
+    if not is_stub(value):
+        if value.payload.used > 0:
+            pool.touch(&inner.pool, identity, path, name, value.payload.used) catch failure:
+                discard(failure)
+        return
+    let journal = inner.persist else error(missing, "Prism payload is not resident")
+    let size = value.locator.size
+    try charge(inner, size)
+    errdefer uncharge(inner, size)
+    var blob = try persist.read_extent(journal, value.locator.identity.view(), (u64)value.locator.generation, (u64)value.locator.extent)
+    value.payload.close()
+    value.payload = blob
+    inner.table_charge += size
+    inner.pool.faults += 1
+    pool.touch(&inner.pool, identity, path, name, size) catch failure:
+        discard(failure)
+
+func adjust_table_charge(inner: Inner*, new_bytes: usize) -> !:
+    if new_bytes > inner.table_charge:
+        let added = new_bytes - inner.table_charge
+        discard(inner.resident.add((u64)added, .acq_rel))
+        inner.table_charge = new_bytes
+        return
+    if inner.table_charge > new_bytes:
+        uncharge(inner, inner.table_charge - new_bytes)
+        inner.table_charge = new_bytes
+
+func logical_bytes(inner: Inner*) -> usize:
+    var total: usize = 0
+    inner.catalog_lock.lock()
+    defer inner.catalog_lock.unlock()
+    for i in 0..<inner.catalog.count:
+        total += tables.logical_payload_bytes(inner.catalog.items[i].state.tables)
+    return total
+
+func deletes_path(layer: const delta.Layer*, path: str) -> bool:
+    let op = layer.get(path, delta.Cell.element) else return false
+    return op.deleted
+
+func live_tables(session: const Session*) -> tables.Tables*:
+    return session.tables else trap("Prism session tables")
+
+func layer_count(session: const Session*) -> usize:
+    var n = session.unbaked.count
+    if session.write:
+        n += 1
+    return n
+
+func layer_at(session: const Session*, index: usize) -> const delta.Layer*:
+    if index < session.unbaked.count:
+        return &session.unbaked.items[index].frozen.layer
+    return &session.private
+
+func visible(session: const Session*, path: str) -> bool:
+    if path == "/":
+        return true
+    if not visible(session, parent_path(path)):
+        return false
+    var exists = tables.find_element(live_tables(session), path) != none
+    for i in 0..<layer_count(session):
+        let layer = layer_at(session, i)
+        var ancestor = path
+        while true:
+            if deletes_path(layer, ancestor):
+                exists = false
+                break
+            if ancestor == "/":
+                break
+            ancestor = parent_path(ancestor)
+        if let op = layer.get(path, delta.Cell.element):
+            if op.deleted:
+                exists = false
+            elif not op.override or exists:
+                exists = true
+    return exists
+
+func table_property(inner: Inner*, identity: str, element: tables.Element*, name: str) -> ValueData!:
+    if let value = find_property(element, name):
+        try fault_property(inner, identity, element.path.view(), name, value)
+        return try value.copy()
+    error(missing, "Prism property does not exist")
+
+func table_metadata(element: const tables.Element*, key: str) -> str!:
+    for item in element.metadata.span():
+        if item.key.view() == key:
+            return item.value.view()
+    error(missing, "Prism metadata does not exist")
+
+func table_kind(element: const tables.Element*) -> str:
+    return element.kind.view()
+
+func copy_child_names(children: const tables.ChildList*) -> List[Buffer]!:
+    var out: List[Buffer]
+    errdefer close_names(&out)
+    try out.reserve(children.paths.count)
+    for path in children.paths.span():
+        var copy = try path.copy()
+        errdefer copy.close()
+        try out.push(copy)
+    return out
+
+func emit_order(listed: const List[Buffer]*, acc: List[Buffer]*) -> List[Buffer]!:
+    var out: List[Buffer]
+    errdefer close_names(&out)
+    var seen: List[Buffer]
+    defer close_names(&seen)
+    for child in listed.span():
+        let path = child.view()
+        if has_name(acc, path) and not has_name(&seen, path):
+            var copy = try text_copy(path)
+            errdefer copy.close()
+            try out.push(copy)
+            var mark = try text_copy(path)
+            errdefer mark.close()
+            try seen.push(mark)
+    for child in acc.span():
+        if not has_name(&seen, child.view()):
+            var copy = try child.copy()
+            errdefer copy.close()
+            try out.push(copy)
+    return out
+
+func apply_children(acc: List[Buffer]*, layer: const delta.Layer*, parent: str) -> !:
+    var kept: List[Buffer]
+    errdefer close_names(&kept)
+    for path in acc.span():
+        if not deletes_path(layer, path.view()) and not deletes_path(layer, parent):
+            var copy = try path.copy()
+            errdefer copy.close()
+            try kept.push(copy)
+    for entry in layer.items.span():
+        if entry.key.cell != delta.Cell.element or entry.op.deleted:
+            continue
+        let path = entry.key.path.view()
+        if parent_path(path) != parent:
+            continue
+        if not entry.op.override or has_name(&kept, path):
+            if not has_name(&kept, path):
+                var copy = try text_copy(path)
+                errdefer copy.close()
+                try kept.push(copy)
+    if let op = layer.get(parent, delta.Cell.reorder):
+        var ordered = try emit_order(&op.children, &kept)
+        close_names(&kept)
+        kept = ordered
+    close_names(acc)
+    acc[0] = kept
+    kept = List[Buffer]()
+
+func child_paths(session: const Session*, parent: str) -> List[Buffer]!:
+    var acc: List[Buffer]
+    defer close_names(&acc)
+    if parent != "/" and not visible(session, parent):
+        return List[Buffer]()
+    if let kids = tables.children_of(live_tables(session), parent):
+        acc = try copy_child_names(kids)
+    for i in 0..<layer_count(session):
+        try apply_children(&acc, layer_at(session, i), parent)
+    var out: List[Buffer]
+    errdefer close_names(&out)
+    for path in acc.span():
+        if visible(session, path.view()):
+            var copy = try path.copy()
+            errdefer copy.close()
+            try out.push(copy)
+    return out
+
+func min_view_base(state: const DocumentState*) -> u64:
+    if state.views.count == 0:
+        return state.generation
+    var lowest = state.views.items[0]
+    for i in 1..<state.views.count:
+        if state.views.items[i] < lowest:
+            lowest = state.views.items[i]
+    return lowest
+
+func sweep_retired(inner: Inner*, state: DocumentState*):
+    while state.retired.count > 0 and state.retired.items[0].generation <= min_view_base(state):
+        uncharge(inner, state.retired.items[0].bytes)
+        drop_frozen(state.retired.items[0].frozen)
+        state.retired.remove(0)
+
+func unregister_view(inner: Inner*, state: DocumentState*, generation_base: u64):
+    for i in 0..<state.views.count:
+        if state.views.items[i] == generation_base:
+            state.views.remove(i)
+            break
+    sweep_retired(inner, state)
+
+func keys_overlap(private: const delta.Layer*, layer: const delta.Layer*) -> bool:
+    for entry in private.items.span():
+        if layer.find(entry.key.path.view(), entry.key.cell, entry.key.name.view()) != none:
+            return true
+    return false
+
+func committed_overlap(state: const DocumentState*, private: const delta.Layer*, generation_base: u64) -> bool:
+    for i in 0..<state.unbaked.count:
+        if state.unbaked.items[i].generation > generation_base:
+            if keys_overlap(private, &state.unbaked.items[i].frozen.layer):
+                return true
+    for i in 0..<state.retired.count:
+        if state.retired.items[i].generation > generation_base:
+            if keys_overlap(private, &state.retired.items[i].frozen.layer):
+                return true
+    return false
+
+func id_of(state: const DocumentState*, path: str) -> usize?:
+    var found: usize? = none
+    if let row = tables.find_element(state.tables, path):
+        if row.identifier != 0:
+            found = row.identifier
+    for i in 0..<state.unbaked.count:
+        if let op = state.unbaked.items[i].frozen.layer.get(path, delta.Cell.element):
+            if op.deleted:
+                found = none
+            elif op.identifier != 0:
+                found = op.identifier
+    return found
+
+func max_unbaked_id(state: const DocumentState*) -> usize:
+    var highest: usize = 0
+    for i in 0..<state.unbaked.count:
+        for entry in state.unbaked.items[i].frozen.layer.items.span():
+            if entry.op.identifier > highest:
+                highest = entry.op.identifier
+    return highest
+
+func assign_ids(state: DocumentState*, private: delta.Layer*):
+    var next_id = state.last_id
+    let unbaked_max = max_unbaked_id(state)
+    if unbaked_max > next_id:
+        next_id = unbaked_max
+    for i in 0..<private.items.count:
+        let entry = &private.items.items[i]
+        if entry.key.cell != delta.Cell.element or entry.op.deleted or entry.op.identifier != 0:
+            continue
+        if let existing = id_of(state, entry.key.path.view()):
+            entry.op.identifier = existing
+            continue
+        next_id += 1
+        entry.op.identifier = next_id
+    state.last_id = next_id
+
+pub struct Statistics:
+    pub let generation: i64
+    pub let elements: i64
+    pub let resident: i64
+    pub let memory_limit: i64
+    pub let active_views: i64
+    pub let waiting_writers: i64
+    pub let peak_waiting_writers: i64
+    pub let queued_attempts: i64
+    pub let busy_returns: i64
+    pub let timed_out_attempts: i64
+    pub let conflicted_commits: i64
+    pub let logical_bytes: i64
+    pub let pinned_bytes: i64
+    pub let faults: i64
+    pub let evictions: i64
+
+pub struct Session:
+    var inner: Inner*?
+    var identity: Buffer
+    var generation_base: u64
+    var view_generation: u64
+    var tables: tables.Tables*?
+    var unbaked: List[PublishedLayer]
+    var private: delta.Layer
+    var write: bool
+    var charged: usize
+    var open: bool
+    var remote: ipc.Client*?
+    var tls_link: tls_pipe.Link*?
+    var token: u64
+    var pins: List[Buffer]
+
+    pub func init():
+        return
+
+    func require_inner() -> Inner*!:
+        return self.inner else error(closed, "Prism session is closed")
+
+    func require_tables() -> tables.Tables*!:
+        return self.tables else error(closed, "Prism session is closed")
+
+    pub func ensure_open() -> !:
+        if not self.open:
+            error(closed, "Prism session is closed")
+
+    func ensure_write() -> !:
+        try self.ensure_open()
+        if not self.write:
+            error(invalid, "Prism snapshot is read-only")
+
+    pub func revision() -> i64!:
+        try self.ensure_open()
+        return (i64)self.generation_base
+
+    pub func identity_name() -> str!:
+        try self.ensure_open()
+        return self.identity.view()
+
+    pub func contains(path: str) -> bool!:
+        try self.ensure_open()
+        return visible(&self, path)
+
+    pub func type_at(path: str) -> str!:
+        try self.ensure_open()
+        if not visible(&self, path):
+            error(missing, "Prism element does not exist")
+        var i = layer_count(&self)
+        while i > 0:
+            i -= 1
+            if let op = layer_at(&self, i).get(path, delta.Cell.element):
+                if op.deleted:
+                    error(missing, "Prism element does not exist")
+                if op.type_name.used > 0:
+                    return op.type_name.view()
+        let row = tables.find_element(try self.require_tables(), path) else error(missing, "Prism element does not exist")
+        return table_kind(row)
+
+    pub func get(path: str, name: str) -> interop.Reference[Value]!:
+        try self.ensure_open()
+        if self.remote != none or self.tls_link != none:
+            return try rpc_get(self.remote, self.tls_link, self.token, path, name)
+        if not visible(&self, path):
+            error(missing, "Prism property does not exist")
+        var i = layer_count(&self)
+        while i > 0:
+            i -= 1
+            let layer = layer_at(&self, i)
+            if let op = layer.get(path, delta.Cell.property, name):
+                if op.deleted:
+                    error(missing, "Prism property does not exist")
+                return try own_value(try op.value.copy())
+            if let op = layer.get(path, delta.Cell.element):
+                if op.deleted:
+                    error(missing, "Prism property does not exist")
+        let row = tables.find_element(try self.require_tables(), path) else error(missing, "Prism property does not exist")
+        return try own_value(try table_property(try self.require_inner(), self.identity.view(), row, name))
+
+    pub func metadata(path: str, key: str) -> str!:
+        try self.ensure_open()
+        if not visible(&self, path):
+            error(missing, "Prism metadata does not exist")
+        var i = layer_count(&self)
+        while i > 0:
+            i -= 1
+            let layer = layer_at(&self, i)
+            if let op = layer.get(path, delta.Cell.metadata, key):
+                if op.deleted:
+                    error(missing, "Prism metadata does not exist")
+                return op.text.view()
+            if let op = layer.get(path, delta.Cell.element):
+                if op.deleted:
+                    error(missing, "Prism metadata does not exist")
+        let row = tables.find_element(try self.require_tables(), path) else error(missing, "Prism metadata does not exist")
+        return try table_metadata(row, key)
+
+    pub func incoming_at(target: str) -> str?!:
+        try self.ensure_open()
+        var i = layer_count(&self)
+        while i > 0:
+            i -= 1
+            let layer = layer_at(&self, i)
+            if let op = layer.get(target, delta.Cell.connection):
+                return op.text.view()
+            if layer.get(target, delta.Cell.disconnect) != none:
+                return none
+        return tables.incoming_at(try self.require_tables(), target)
+
+    pub func children(parent: str = "/") -> interop.Reference[Paths]!:
+        try self.ensure_open()
+        if self.remote != none or self.tls_link != none:
+            return try rpc_children(self.remote, self.tls_link, self.token, parent)
+        var names = try child_paths(&self, parent)
+        errdefer close_names(&names)
+        var paths = Paths()
+        errdefer paths.close()
+        for name in names.span():
+            try paths.append(name.view())
+        let owned = paths
+        paths = Paths()
+        return try own_paths(owned)
+
+    pub mutating func add(path: str, type_name: str, override: bool = false) -> !:
+        try self.ensure_write()
+        if self.remote != none or self.tls_link != none:
+            try rpc_add(self.remote, self.tls_link, self.token, path, type_name, override)
+            return
+        try require_element(path)
+        if self.private.count() >= max_ops:
+            error(limit_exceeded, "Prism layer operation limit exceeded")
+        let bytes = estimate(path, "", type_name.length)
+        let inner = try self.require_inner()
+        try charge(inner, bytes)
+        errdefer uncharge(inner, bytes)
+        var op = delta.Op(override = override)
+        errdefer op.close()
+        op.type_name = try text_copy(type_name)
+        try self.private.put(path, delta.Cell.element, "", op)
+        self.charged += bytes
+
+    pub mutating func set(path: str, name: str, value: interop.Reference[Value], type_name: str = "") -> !:
+        try self.ensure_write()
+        if self.remote != none or self.tls_link != none:
+            try rpc_set(self.remote, self.tls_link, self.token, path, name, value)
+            return
+        if not valid_path(path) or path == "/":
+            error(invalid, "invalid Prism path")
+        if self.private.count() >= max_ops:
+            error(limit_exceeded, "Prism layer operation limit exceeded")
+        let data = (try value.get()).view_data()
+        if data.payload.used > persist.payload_budget:
+            error(limit_exceeded, "Prism value exceeds the journal frame")
+        let bytes = estimate(path, name, data.payload.used)
+        let inner = try self.require_inner()
+        try charge(inner, bytes)
+        errdefer uncharge(inner, bytes)
+        var op = delta.Op()
+        errdefer op.close()
+        op.value = try data.copy()
+        if type_name.length > 0:
+            op.type_name = try text_copy(type_name)
+        try self.private.put(path, delta.Cell.property, name, op)
+        self.charged += bytes
+
+    pub mutating func set_metadata(path: str, key: str, value: str) -> !:
+        try self.ensure_write()
+        if self.remote != none or self.tls_link != none:
+            try rpc_set_meta(self.remote, self.tls_link, self.token, path, key, value)
+            return
+        if self.private.count() >= max_ops:
+            error(limit_exceeded, "Prism layer operation limit exceeded")
+        let bytes = estimate(path, key, value.length)
+        let inner = try self.require_inner()
+        try charge(inner, bytes)
+        errdefer uncharge(inner, bytes)
+        var op = delta.Op()
+        errdefer op.close()
+        op.text = try text_copy(value)
+        try self.private.put(path, delta.Cell.metadata, key, op)
+        self.charged += bytes
+
+    pub mutating func remove(path: str) -> !:
+        try self.ensure_write()
+        if self.remote != none or self.tls_link != none:
+            try rpc_remove(self.remote, self.tls_link, self.token, path)
+            return
+        try require_element(path)
+        if self.private.count() >= max_ops:
+            error(limit_exceeded, "Prism layer operation limit exceeded")
+        let bytes = estimate(path, "", 0)
+        let inner = try self.require_inner()
+        try charge(inner, bytes)
+        errdefer uncharge(inner, bytes)
+        try self.private.put(path, delta.Cell.element, "", delta.Op(deleted = true))
+        self.charged += bytes
+
+    pub mutating func connect(source: str, target: str) -> !:
+        try self.ensure_write()
+        if self.private.count() >= max_ops:
+            error(limit_exceeded, "Prism layer operation limit exceeded")
+        let bytes = estimate(target, "", source.length)
+        let inner = try self.require_inner()
+        try charge(inner, bytes)
+        errdefer uncharge(inner, bytes)
+        var op = delta.Op()
+        errdefer op.close()
+        op.text = try text_copy(source)
+        try self.private.put(target, delta.Cell.connection, "", op)
+        self.charged += bytes
+
+    pub mutating func disconnect(target: str) -> !:
+        try self.ensure_write()
+        if self.private.count() >= max_ops:
+            error(limit_exceeded, "Prism layer operation limit exceeded")
+        let bytes = estimate(target, "", 0)
+        let inner = try self.require_inner()
+        try charge(inner, bytes)
+        errdefer uncharge(inner, bytes)
+        try self.private.put(target, delta.Cell.disconnect, "", delta.Op())
+        self.charged += bytes
+
+    pub mutating func commit(wait_ms: i64 = 0) -> i64!:
+        try self.ensure_write()
+        if self.remote != none or self.tls_link != none:
+            return try rpc_commit(self.remote, self.tls_link, self.token, wait_ms)
+        if self.private.count() == 0:
+            return (i64)self.generation_base
+        let inner = try self.require_inner()
+        let state = try find_state(inner, self.identity.view())
+        try state.writer.enter(wait_ms)
+        defer state.writer.leave()
+        if self.generation_base != state.generation:
+            if committed_overlap(state, &self.private, self.generation_base):
+                discard(inner.conflicted.add(1, .relaxed))
+                error(conflict, "Prism commit conflicts with a later write")
+        assign_ids(state, &self.private)
+        if let journal = inner.persist:
+            try persist.append_layer(journal, self.identity.view(), state.generation + 1, &self.private, wait_ms)
+        var moved = self.private
+        self.private = delta.Layer()
+        let frozen = freeze_layer(moved) catch failure:
+            self.private = moved
+            error(failure.code, failure.message)
+        let charged = self.charged
+        self.charged = 0
+        state.head_lock.lock()
+        state.generation += 1
+        let generation = state.generation
+        let published = PublishedLayer(generation = generation, frozen = frozen, bytes = charged)
+        state.unbaked.push(published) catch failure:
+            state.generation -= 1
+            self.charged = charged
+            state.head_lock.unlock()
+            drop_frozen(frozen)
+            error(failure.code, failure.message)
+        state.head_lock.unlock()
+        hold_frozen(frozen)
+        let echoed = PublishedLayer(generation = generation, frozen = frozen, bytes = 0)
+        self.unbaked.push(echoed) catch failure:
+            drop_frozen(frozen)
+            self.generation_base = generation
+            return (i64)generation
+        self.generation_base = generation
+        return (i64)generation
+
+    pub func document() -> interop.Reference[Document]!:
+        try self.ensure_open()
+        if let inner = self.inner:
+            let owned = try self.require_tables()
+            var i: usize = 0
+            let n = tables.node_count(owned.by_path)
+            while i < n:
+                if let node = tables.at(owned.by_path, i):
+                    if let element = node.element:
+                        for p in 0..<element.properties.count:
+                            try fault_property(inner, self.identity.view(), element.path.view(), element.properties.items[p].name.view(), &element.properties.items[p].value)
+                i += 1
+        var current = try self.require_tables()
+        var owned: tables.Tables*? = none
+        errdefer drop_owned_tables(owned)
+        for i in 0..<self.unbaked.count:
+            let next = try tables.apply_cow(current, &self.unbaked.items[i].frozen.layer)
+            drop_owned_tables(owned)
+            owned = next
+            current = next
+        var rebuilt = try tables.to_data(current)
+        errdefer rebuilt.close()
+        if self.write and self.private.count() > 0:
+            var extra = try self.private.copy()
+            errdefer extra.close()
+            let heap = try own_data(rebuilt)
+            rebuilt = DocumentData()
+            return try own_view(heap, extra)
+        return try own_document(rebuilt)
+
+    pub func query(pattern: str = "") -> querying.Query!:
+        let doc = try self.document()
+        defer doc.release()
+        return try querying.Query(doc, pattern)
+
+    pub mutating func pin(path: str) -> !:
+        try self.ensure_open()
+        if self.remote != none:
+            error(unsupported, "Prism pin is not available over IPC")
+        let inner = try self.require_inner()
+        let owned = try self.require_tables()
+        let identity = self.identity.view()
+        var i: usize = 0
+        let n = tables.node_count(owned.by_path)
+        while i < n:
+            if let node = tables.at(owned.by_path, i):
+                if let element = node.element:
+                    let element_path = element.path.view()
+                    if path == "/" or element_path == path or is_descendant(element_path, path):
+                        for p in 0..<element.properties.count:
+                            try fault_property(inner, identity, element_path, element.properties.items[p].name.view(), &element.properties.items[p].value)
+            i += 1
+        try pool.pin(&inner.pool, identity, path)
+        var copy = try text_copy(path)
+        self.pins.push(copy) catch failure:
+            copy.close()
+            pool.unpin(&inner.pool, identity, path)
+            error(failure.code, failure.message)
+
+    pub mutating func unpin(path: str) -> !:
+        try self.ensure_open()
+        if self.remote != none:
+            return
+        let inner = try self.require_inner()
+        pool.unpin(&inner.pool, self.identity.view(), path)
+        for i in 0..<self.pins.count:
+            if self.pins.items[i].view() == path:
+                self.pins.items[i].close()
+                self.pins.remove(i)
+                return
+
+    pub mutating func close():
+        if not self.open:
+            return
+        self.open = false
+        if self.remote != none or self.tls_link != none:
+            rpc_close(self.remote, self.tls_link, self.token)
+            if let client = self.remote:
+                ipc.drop_client(client)
+            self.remote = none
+            self.tls_link = none
+            close_published(&self.unbaked)
+            self.private.close()
+            self.identity.close()
+            return
+        if let inner = self.inner:
+            if let state = find_state_opt(inner, self.identity.view()):
+                state.head_lock.lock()
+                unregister_view(inner, state, self.view_generation)
+                state.head_lock.unlock()
+            for pin in self.pins.span():
+                pool.unpin(&inner.pool, self.identity.view(), pin.view())
+            close_names(&self.pins)
+            close_published(&self.unbaked)
+            if let root = self.tables:
+                tables.drop_tables(root)
+            self.private.close()
+            self.identity.close()
+            uncharge(inner, self.charged)
+            drop_inner(inner)
+            return
+        close_published(&self.unbaked)
+        self.private.close()
+        self.identity.close()
+
+pub let session_type = interop.Type[Session]("Prism session", Session.close, closeable = true)
+
+struct LiveHandle:
+    var token: u64
+    var session: Session*
+
+struct ConnCtx:
+    var inner: Inner*
+    var fd: i32
+
+    pub func init():
+        return
+
+struct TlsListen:
+    var inner: Inner*
+    var listener: net.Listener
+
+    pub func init():
+        return
+
+struct TlsConn:
+    var inner: Inner*
+    var pipe: tls_pipe.Link*
+
+    pub func init():
+        return
+
+func drop_handles(handles: List[LiveHandle]*):
+    for i in 0..<handles.count:
+        drop_session(handles.items[i].session)
+    handles.close()
+
+func find_handle(handles: List[LiveHandle]*, token: u64) -> Session*!:
+    for i in 0..<handles.count:
+        if handles.items[i].token == token:
+            return handles.items[i].session
+    error(closed, "Prism session token is unknown")
+
+func take_handle(handles: List[LiveHandle]*, token: u64) -> Session*!:
+    for i in 0..<handles.count:
+        if handles.items[i].token == token:
+            let session = handles.items[i].session
+            handles.remove(i)
+            return session
+    error(closed, "Prism session token is unknown")
+
+func remote_call(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, payload: const u8[]) -> Buffer!:
+    if let remote_unix = client:
+        return try ipc.call(remote_unix, payload)
+    if let p = remote_tls:
+        return try tls_pipe.call(p, payload)
+    error(closed, "Prism remote is closed")
+
+func adopt_remote(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64, write: bool) -> interop.Reference[Session]!:
+    if let remote_unix = client:
+        ipc.hold_client(remote_unix)
+    let native = new Session() in memory.heap catch failure:
+        if let remote_unix = client:
+            ipc.drop_client(remote_unix)
+        error(failure.code, failure.message)
+    native.remote = client
+    native.tls_link = remote_tls
+    native.token = token
+    native.write = write
+    native.open = true
+    native.identity = text_copy("root") catch failure:
+        if let remote_unix = client:
+            ipc.drop_client(remote_unix)
+        free(native) in memory.heap
+        error(failure.code, failure.message)
+    return try adopt_session(native)
+
+func rpc_snapshot(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, write: bool) -> interop.Reference[Session]!:
+    var req: Buffer
+    defer req.close()
+    try ipc.put_u8(&req, ipc.op_begin if write else ipc.op_snapshot)
+    var reply = try remote_call(client, remote_tls, req.bytes())
+    defer reply.close()
+    var reader = try ipc.expect_tag(reply.bytes(), ipc.tag_token)
+    let token = try reader.uint(8)
+    return try adopt_remote(client, remote_tls, token, write)
+
+func rpc_get(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64, path: str, name: str) -> interop.Reference[Value]!:
+    var req: Buffer
+    defer req.close()
+    try ipc.put_u8(&req, ipc.op_get)
+    try ipc.put_u64(&req, token)
+    try ipc.put_str(&req, path)
+    try ipc.put_str(&req, name)
+    var reply = try remote_call(client, remote_tls, req.bytes())
+    defer reply.close()
+    if reply.used > 0 and reply.data[0] == ipc.tag_missing:
+        error(missing, "Prism property does not exist")
+    var reader = try ipc.expect_tag(reply.bytes(), ipc.tag_value)
+    return try own_value(try read_value(&reader))
+
+func rpc_children(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64, parent: str) -> interop.Reference[Paths]!:
+    var req: Buffer
+    defer req.close()
+    try ipc.put_u8(&req, ipc.op_children)
+    try ipc.put_u64(&req, token)
+    try ipc.put_str(&req, parent)
+    var reply = try remote_call(client, remote_tls, req.bytes())
+    defer reply.close()
+    var reader = try ipc.expect_tag(reply.bytes(), ipc.tag_strings)
+    let count = try reader.count(0)
+    var paths = Paths()
+    errdefer paths.close()
+    var i: usize = 0
+    while i < count:
+        try paths.append(try reader.text())
+        i += 1
+    let owned = paths
+    paths = Paths()
+    return try own_paths(owned)
+
+func rpc_lookup(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, os_path: str) -> interop.Reference[Look]!:
+    var req: Buffer
+    defer req.close()
+    try ipc.put_u8(&req, ipc.op_lookup)
+    try ipc.put_str(&req, os_path)
+    var reply = try remote_call(client, remote_tls, req.bytes())
+    defer reply.close()
+    var reader = try ipc.expect_tag(reply.bytes(), ipc.tag_look)
+    let identity = try reader.text()
+    let path = try reader.text()
+    let kind = (LookKind)(u8)try reader.uint(1)
+    return try own_look(identity, path, kind)
+
+func rpc_add(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64, path: str, type_name: str, override: bool) -> !:
+    var req: Buffer
+    defer req.close()
+    try ipc.put_u8(&req, ipc.op_add)
+    try ipc.put_u64(&req, token)
+    try ipc.put_str(&req, path)
+    try ipc.put_str(&req, type_name)
+    try ipc.put_u8(&req, 1 if override else 0)
+    var reply = try remote_call(client, remote_tls, req.bytes())
+    defer reply.close()
+    discard(try ipc.expect_tag(reply.bytes(), ipc.tag_ok))
+
+func rpc_set(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64, path: str, name: str, value: interop.Reference[Value]) -> !:
+    var req: Buffer
+    defer req.close()
+    try ipc.put_u8(&req, ipc.op_set)
+    try ipc.put_u64(&req, token)
+    try ipc.put_str(&req, path)
+    try ipc.put_str(&req, name)
+    try ipc.put_value(&req, (try value.get()).view_data())
+    var reply = try remote_call(client, remote_tls, req.bytes())
+    defer reply.close()
+    discard(try ipc.expect_tag(reply.bytes(), ipc.tag_ok))
+
+func rpc_set_meta(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64, path: str, key: str, value: str) -> !:
+    var req: Buffer
+    defer req.close()
+    try ipc.put_u8(&req, ipc.op_set_meta)
+    try ipc.put_u64(&req, token)
+    try ipc.put_str(&req, path)
+    try ipc.put_str(&req, key)
+    try ipc.put_str(&req, value)
+    var reply = try remote_call(client, remote_tls, req.bytes())
+    defer reply.close()
+    discard(try ipc.expect_tag(reply.bytes(), ipc.tag_ok))
+
+func rpc_remove(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64, path: str) -> !:
+    var req: Buffer
+    defer req.close()
+    try ipc.put_u8(&req, ipc.op_remove)
+    try ipc.put_u64(&req, token)
+    try ipc.put_str(&req, path)
+    var reply = try remote_call(client, remote_tls, req.bytes())
+    defer reply.close()
+    discard(try ipc.expect_tag(reply.bytes(), ipc.tag_ok))
+
+func rpc_commit(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64, wait_ms: i64) -> i64!:
+    var req: Buffer
+    defer req.close()
+    try ipc.put_u8(&req, ipc.op_commit)
+    try ipc.put_u64(&req, token)
+    try ipc.put_i64(&req, wait_ms)
+    var reply = try remote_call(client, remote_tls, req.bytes())
+    defer reply.close()
+    var reader = try ipc.expect_tag(reply.bytes(), ipc.tag_generation)
+    return (i64)try reader.uint(8)
+
+func rpc_close(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64):
+    var req: Buffer
+    defer req.close()
+    ipc.put_u8(&req, ipc.op_close) catch failure:
+        return
+    ipc.put_u64(&req, token) catch failure:
+        return
+    var reply = remote_call(client, remote_tls, req.bytes()) catch failure:
+        return
+    reply.close()
+
+func look_frame(look: interop.Reference[Look]) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try ipc.put_u8(&out, ipc.tag_look)
+    try ipc.put_str(&out, look.value().identity())
+    try ipc.put_str(&out, look.value().path())
+    try ipc.put_u8(&out, (u8)look.value().kind())
+    return out
+
+func strings_frame(paths: interop.Reference[Paths]) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try ipc.put_u8(&out, ipc.tag_strings)
+    try ipc.put_u32(&out, (u32)paths.value().count())
+    var i: usize = 0
+    while i < paths.value().count():
+        try ipc.put_str(&out, try paths.value().at(i))
+        i += 1
+    return out
+
+func value_frame(value: interop.Reference[Value]) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try ipc.put_u8(&out, ipc.tag_value)
+    try ipc.put_value(&out, (try value.get()).view_data())
+    return out
+
+func dispatch(inner: Inner*, handles: List[LiveHandle]*, next: u64*, body: const u8[]) -> Buffer!:
+    if body.length == 0:
+        error(invalid, "Prism IPC request is empty")
+    var reader = Reader(data = body, pos = 1)
+    let op = body[0]
+    if op == ipc.op_snapshot or op == ipc.op_begin:
+        let native = try open_session(inner, inner.root.view(), op == ipc.op_begin)
+        let token = next[0]
+        next[0] = token + 1
+        handles.push(LiveHandle(token = token, session = native)) catch failure:
+            drop_session(native)
+            error(failure.code, failure.message)
+        return try ipc.token_frame(token)
+    if op == ipc.op_get:
+        let token = try reader.uint(8)
+        let path = try reader.text()
+        let name = try reader.text()
+        let session = try find_handle(handles, token)
+        let value: interop.Reference[Value]? = session.get(path, name) catch failure:
+            if failure.code == missing:
+                recover none
+            error(failure.code, failure.message)
+        if let owned = value:
+            defer owned.release()
+            return try value_frame(owned)
+        return try ipc.missing_frame()
+    if op == ipc.op_children:
+        let token = try reader.uint(8)
+        let path = try reader.text()
+        let session = try find_handle(handles, token)
+        let kids = try session.children(path)
+        defer kids.release()
+        return try strings_frame(kids)
+    if op == ipc.op_lookup:
+        let path = try reader.text()
+        let look = try lookup_walk(inner, path, true)
+        defer look.release()
+        return try look_frame(look)
+    if op == ipc.op_add:
+        let token = try reader.uint(8)
+        let path = try reader.text()
+        let type_name = try reader.text()
+        let override = try reader.uint(1) != 0
+        let session = try find_handle(handles, token)
+        try session.add(path, type_name, override)
+        return try ipc.ok_frame()
+    if op == ipc.op_set:
+        let token = try reader.uint(8)
+        let path = try reader.text()
+        let name = try reader.text()
+        let data = try read_value(&reader)
+        let value = try own_value(data)
+        defer value.release()
+        let session = try find_handle(handles, token)
+        try session.set(path, name, value)
+        return try ipc.ok_frame()
+    if op == ipc.op_set_meta:
+        let token = try reader.uint(8)
+        let path = try reader.text()
+        let key = try reader.text()
+        let text = try reader.text()
+        let session = try find_handle(handles, token)
+        try session.set_metadata(path, key, text)
+        return try ipc.ok_frame()
+    if op == ipc.op_remove:
+        let token = try reader.uint(8)
+        let path = try reader.text()
+        let session = try find_handle(handles, token)
+        try session.remove(path)
+        return try ipc.ok_frame()
+    if op == ipc.op_commit:
+        let token = try reader.uint(8)
+        let wait_ms = (i64)try reader.uint(8)
+        let session = try find_handle(handles, token)
+        let generation = try session.commit(wait_ms)
+        return try ipc.generation_frame(generation)
+    if op == ipc.op_close:
+        let token = try reader.uint(8)
+        let session = try take_handle(handles, token)
+        drop_session(session)
+        return try ipc.ok_frame()
+    error(invalid, "unknown Prism IPC opcode")
+
+func write_error_frame(fd: i32, code: ErrorCode, message: str):
+    var failed = ipc.error_frame(code, message) catch failure:
+        return
+    ipc.write_frame(fd, failed.bytes()) catch failure:
+        failed.close()
+        return
+    failed.close()
+
+func conn_serve(ctx: ConnCtx*):
+    var handles: List[LiveHandle]
+    defer drop_handles(&handles)
+    var next: u64 = 1
+    if ctx.inner.token.used > 0:
+        var auth = ipc.read_frame(ctx.fd) catch failure:
+            return
+        defer auth.close()
+        var reader = Reader(data = auth.bytes())
+        let raw = reader.uint(1) catch failure:
+            write_error_frame(ctx.fd, invalid, "Prism authentication required")
+            return
+        if (u8)raw != ipc.op_auth:
+            write_error_frame(ctx.fd, invalid, "Prism authentication required")
+            return
+        let offered = reader.text() catch failure:
+            write_error_frame(ctx.fd, invalid, "Prism authentication required")
+            return
+        if offered != ctx.inner.token.view():
+            write_error_frame(ctx.fd, invalid, "Prism authentication failed")
+            return
+        var ok = ipc.ok_frame() catch failure:
+            return
+        defer ok.close()
+        ipc.write_frame(ctx.fd, ok.bytes()) catch failure:
+            return
+    while true:
+        var req = ipc.read_frame(ctx.fd) catch failure:
+            return
+        var failed_dispatch = false
+        var reply = dispatch(ctx.inner, &handles, &next, req.bytes()) catch failure:
+            write_error_frame(ctx.fd, failure.code, failure.message)
+            req.close()
+            failed_dispatch = true
+            recover Buffer()
+        req.close()
+        if failed_dispatch:
+            continue
+        ipc.write_frame(ctx.fd, reply.bytes()) catch failure:
+            reply.close()
+            return
+        reply.close()
+
+func conn_loop(raw: void*?):
+    let ctx = (ConnCtx*)(raw else return)
+    conn_serve(ctx)
+    ipc.close_fd(ctx.fd)
+    drop_inner(ctx.inner)
+    free(ctx) in memory.heap
+
+func tls_session_loop(raw: void*?):
+    let ctx = (TlsConn*)(raw else return)
+    var handles: List[LiveHandle]
+    defer drop_handles(&handles)
+    var next: u64 = 1
+    if ctx.inner.token.used > 0:
+        var auth = tls_pipe.read_frame(ctx.pipe) catch failure:
+            drop_inner(ctx.inner)
+            free(ctx) in memory.heap
+            return
+        defer auth.close()
+        var reader = Reader(data = auth.bytes())
+        let raw_op = reader.uint(1) catch failure:
+            drop_inner(ctx.inner)
+            free(ctx) in memory.heap
+            return
+        if (u8)raw_op != ipc.op_auth:
+            drop_inner(ctx.inner)
+            free(ctx) in memory.heap
+            return
+        let offered = reader.text() catch failure:
+            drop_inner(ctx.inner)
+            free(ctx) in memory.heap
+            return
+        if offered != ctx.inner.token.view():
+            drop_inner(ctx.inner)
+            free(ctx) in memory.heap
+            return
+        var ok = ipc.ok_frame() catch failure:
+            drop_inner(ctx.inner)
+            free(ctx) in memory.heap
+            return
+        defer ok.close()
+        tls_pipe.send_frame(ctx.pipe, ok.bytes()) catch failure:
+            drop_inner(ctx.inner)
+            free(ctx) in memory.heap
+            return
+    while true:
+        var req = tls_pipe.read_frame(ctx.pipe) catch failure:
+            break
+        var failed = false
+        var reply = dispatch(ctx.inner, &handles, &next, req.bytes()) catch failure:
+            var errf = ipc.error_frame(failure.code, failure.message) catch inner:
+                recover Buffer()
+            tls_pipe.send_frame(ctx.pipe, errf.bytes()) catch send_fail:
+                discard(send_fail)
+            errf.close()
+            req.close()
+            failed = true
+            recover Buffer()
+        req.close()
+        if failed:
+            continue
+        tls_pipe.send_frame(ctx.pipe, reply.bytes()) catch failure:
+            reply.close()
+            break
+        reply.close()
+    drop_inner(ctx.inner)
+    free(ctx) in memory.heap
+
+func tls_accept_loop(raw: void*?):
+    let ctx = (TlsListen*)(raw else return)
+    while ctx.inner.tls_serve.load(.acquire) == 1:
+        var conn = ctx.listener.accept() catch failure:
+            thread.sleep(10)
+            continue
+        let pipe = tls_pipe.handshake_server(conn, ctx.inner.tls_host.view(), ctx.inner.tls_cert.bytes(), ctx.inner.tls_d, ctx.inner.tls_qx, ctx.inner.tls_qy) catch failure:
+            continue
+        let worker = new TlsConn() in memory.heap catch failure:
+            continue
+        worker.inner = ctx.inner
+        worker.pipe = pipe
+        hold_inner(ctx.inner)
+        let handle = thread.spawn(tls_session_loop, worker, name = "prism-tls") catch failure:
+            drop_inner(ctx.inner)
+            free(worker) in memory.heap
+            continue
+        handle.detach()
+    drop_inner(ctx.inner)
+    free(ctx) in memory.heap
+
+func accept_loop(raw: void*?):
+    let inner = (Inner*)(raw else return)
+    while inner.serving.load(.acquire) == 1:
+        let fd = ipc.accept_unix(inner.listen_fd) catch failure:
+            if inner.serving.load(.acquire) == 0:
+                drop_inner(inner)
+                return
+            thread.sleep(10)
+            recover -1
+        if fd < 0:
+            continue
+        let ctx = new ConnCtx() in memory.heap catch failure:
+            ipc.close_fd(fd)
+            continue
+        ctx.inner = inner
+        ctx.fd = fd
+        hold_inner(inner)
+        let worker = thread.spawn(conn_loop, ctx, name = "prism-ipc") catch failure:
+            drop_inner(inner)
+            ipc.close_fd(fd)
+            free(ctx) in memory.heap
+            continue
+        worker.detach()
+    drop_inner(inner)
+
+func stop_listen(inner: Inner*):
+    if inner.serving.load(.acquire) == 0 and inner.listen_fd < 0:
+        return
+    inner.serving.store(0, .release)
+    if inner.listen_fd >= 0:
+        ipc.close_fd(inner.listen_fd)
+        inner.listen_fd = -1
+    if let worker = inner.accept_thread:
+        worker.join() catch failure:
+            discard(failure)
+        inner.accept_thread = none
+    if inner.listen_path.used > 0:
+        files.delete_path(inner.listen_path.view()) catch failure:
+            discard(failure)
+        inner.listen_path.close()
+
+func start_listen(inner: Inner*, path: str) -> !:
+    if inner.serving.load(.acquire) != 0:
+        error(invalid, "Prism owner is already listening")
+    let fd = try ipc.bind_unix(path)
+    inner.listen_path = text_copy(path) catch failure:
+        ipc.close_fd(fd)
+        error(failure.code, failure.message)
+    inner.listen_fd = fd
+    inner.serving.store(1, .release)
+    hold_inner(inner)
+    inner.accept_thread = thread.spawn(accept_loop, inner, name = "prism-owner") catch failure:
+        inner.serving.store(0, .release)
+        ipc.close_fd(fd)
+        inner.listen_fd = -1
+        drop_inner(inner)
+        error(failure.code, failure.message)
+
+func hold_unbaked(source: const List[PublishedLayer]*) -> List[PublishedLayer]!:
+    var out: List[PublishedLayer]
+    errdefer close_published(&out)
+    try out.reserve(source.count)
+    for i in 0..<source.count:
+        hold_frozen(source.items[i].frozen)
+        out.push(source.items[i]) catch failure:
+            drop_frozen(source.items[i].frozen)
+            error(failure.code, failure.message)
+    return out
+
+func open_session(inner: Inner*, identity: str, write: bool) -> Session*!:
+    if not valid_identity(identity):
+        error(invalid, "invalid Prism identity")
+    hold_inner(inner)
+    errdefer drop_inner(inner)
+    let state = try find_state(inner, identity)
+    state.head_lock.lock()
+    if state.views.count >= max_views:
+        state.head_lock.unlock()
+        error(limit_exceeded, "identity has 1024 active views")
+    var name = text_copy(identity) catch failure:
+        state.head_lock.unlock()
+        error(failure.code, failure.message)
+    errdefer name.close()
+    var held = hold_unbaked(&state.unbaked) catch failure:
+        name.close()
+        state.head_lock.unlock()
+        error(failure.code, failure.message)
+    errdefer close_published(&held)
+    tables.hold_tables(state.tables)
+    let root = state.tables
+    let generation = state.generation
+    state.views.push(generation) catch failure:
+        tables.drop_tables(root)
+        close_published(&held)
+        name.close()
+        state.head_lock.unlock()
+        error(failure.code, failure.message)
+    state.head_lock.unlock()
+    let native = new Session() in memory.heap catch failure:
+        state.head_lock.lock()
+        unregister_view(inner, state, generation)
+        state.head_lock.unlock()
+        tables.drop_tables(root)
+        error(failure.code, failure.message)
+    native.inner = inner
+    native.identity = name
+    name = Buffer()
+    native.generation_base = generation
+    native.view_generation = generation
+    native.tables = root
+    native.unbaked = held
+    held = List[PublishedLayer]()
+    native.write = write
+    native.charged = 0
+    native.open = true
+    return native
+
+func adopt_session(native: Session*) -> interop.Reference[Session]!:
+    return try interop.Reference[Session].adopt(native, session_type, memory.heap)
+
+func drop_session(session: Session*):
+    session.close()
+    free(session) in memory.heap
+
+func close_held(held: List[Session*]*):
+    for i in 0..<held.count:
+        drop_session(held.items[i])
+    held.close()
+
+func hold_session(held: List[Session*]*, session: Session*) -> !:
+    errdefer drop_session(session)
+    try held.push(session)
+
+func fs_kind(session: Session*, path: str) -> LookKind!:
+    if path == "/":
+        return LookKind.directory
+    if not visible(session, path):
+        return LookKind.missing
+    let kind = try session.type_at(path)
+    if kind == "directory":
+        return LookKind.directory
+    if kind == "file":
+        return LookKind.file
+    if kind == "link":
+        return LookKind.link
+    return LookKind.other
+
+func resolve_child(session: Session*, parent: str, name: str) -> Buffer!:
+    var kids = try child_paths(session, parent)
+    defer close_names(&kids)
+    var want: Buffer
+    defer want.close()
+    if valid_name(name):
+        want = try join_element(parent, name)
+    for k in kids.span():
+        if want.used > 0 and k.view() == want.view():
+            return try k.copy()
+        if path_name(k.view()) == name:
+            return try k.copy()
+        let named: str? = session.metadata(k.view(), "name") catch failure:
+            if failure.code == missing:
+                recover none
+            error(failure.code, failure.message)
+        if let label = named:
+            if label == name:
+                return try k.copy()
+    return Buffer()
+
+func hop(inner: Inner*, session: Session*, link_path: str, visited: List[Buffer]*, held: List[Session*]*) -> Buffer!:
+    let ref = try session.metadata(link_path, "reference")
+    let root_text: str = session.metadata(link_path, "referencePath") catch failure:
+        if failure.code == missing:
+            recover "/"
+        error(failure.code, failure.message)
+    let root = "/" if root_text.length == 0 else root_text
+    if visited.count >= max_depth:
+        error(limit_exceeded, "Prism lookup nesting")
+    for seen in visited.span():
+        if seen.view() == ref:
+            error(invalid, "Prism reference cycle")
+    var marked = try text_copy(ref)
+    visited.push(marked) catch failure:
+        marked.close()
+        error(failure.code, failure.message)
+    let next = try open_session(inner, ref, false)
+    try hold_session(held, next)
+    return try text_copy(root)
+
+func lookup_walk(inner: Inner*, os_path: str, follow: bool) -> interop.Reference[Look]!:
+    var held: List[Session*]
+    defer close_held(&held)
+    var visited: List[Buffer]
+    defer close_names(&visited)
+    var parts = try split_components(os_path)
+    defer close_names(&parts)
+    let first = try open_session(inner, inner.root.view(), false)
+    try hold_session(&held, first)
+    var view = first
+    var root_id = try text_copy(view.identity.view())
+    visited.push(root_id) catch failure:
+        root_id.close()
+        error(failure.code, failure.message)
+    var cur = try text_copy("/")
+    defer cur.close()
+    var i: usize = 0
+    while true:
+        if i < parts.count:
+            let name = parts.items[i].view()
+            var child = try resolve_child(view, cur.view(), name)
+            if child.used == 0:
+                child.close()
+                return try own_look(view.identity.view(), "", LookKind.missing)
+            let kind = fs_kind(view, child.view()) catch failure:
+                child.close()
+                error(failure.code, failure.message)
+            let last = i + 1 == parts.count
+            if kind == LookKind.link and (not last or follow):
+                var next_cur = hop(inner, view, child.view(), &visited, &held) catch failure:
+                    child.close()
+                    error(failure.code, failure.message)
+                child.close()
+                cur.close()
+                cur = next_cur
+                view = held.items[held.count - 1]
+                i += 1
+                continue
+            if last:
+                let out = own_look(view.identity.view(), child.view(), kind) catch failure:
+                    child.close()
+                    error(failure.code, failure.message)
+                child.close()
+                return out
+            if kind != LookKind.directory:
+                child.close()
+                error(invalid, "Prism lookup through a non-directory")
+            cur.close()
+            cur = child
+            i += 1
+            continue
+        if cur.view() == "/":
+            return try own_look(view.identity.view(), "/", LookKind.directory)
+        let kind = try fs_kind(view, cur.view())
+        if kind == LookKind.link and follow:
+            var next_cur = try hop(inner, view, cur.view(), &visited, &held)
+            cur.close()
+            cur = next_cur
+            view = held.items[held.count - 1]
+            continue
+        return try own_look(view.identity.view(), cur.view(), kind)
+
+func next_anonymous_child(session: Session*, parent: str) -> Buffer!:
+    var kids = try child_paths(session, parent)
+    defer close_names(&kids)
+    var index: usize = 0
+    while index <= max_items:
+        var scratch: u8[32]
+        let label = try format(scratch, f"[{index}]")
+        var path = try join_element(parent, label)
+        var taken = false
+        for k in kids.span():
+            if k.view() == path.view():
+                taken = true
+                break
+        if not taken and not visible(session, path.view()):
+            return path
+        path.close()
+        index += 1
+    error(limit_exceeded, "Prism anonymous child limit exceeded")
+
+func copy_identities(inner: Inner*) -> List[Buffer]!:
+    inner.catalog_lock.lock()
+    defer inner.catalog_lock.unlock()
+    var out: List[Buffer]
+    errdefer close_names(&out)
+    try out.reserve(inner.catalog.count)
+    for i in 0..<inner.catalog.count:
+        var name = try inner.catalog.items[i].name.copy()
+        out.push(name) catch failure:
+            name.close()
+            error(failure.code, failure.message)
+    return out
+
+func remove_on(store: Store, identity: str, path: str) -> !:
+    let tx = try store.begin_identity(identity)
+    defer tx.release()
+    try tx.value().remove(path)
+    discard(try tx.value().commit())
+
+func dump_identity(store: Store, dir: str, identity: str) -> !:
+    let snap = try store.snapshot_identity(identity)
+    defer snap.release()
+    let doc = try snap.value().document()
+    defer doc.release()
+    let blob = try (try doc.get()).encode()
+    defer blob.release()
+    var dest = try file_io.join(dir, identity)
+    defer dest.close()
+    try file_io.write(dest.view(), (try blob.get()).bytes())
+
+func install_crate(inner: Inner*, identity: str, tbl: tables.Tables*, last_id: usize) -> !:
+    var owned: tables.Tables*? = tbl
+    errdefer drop_owned_tables(owned)
+    if let state = find_state_opt(inner, identity):
+        try state.writer.enter(0)
+        defer state.writer.leave()
+        state.head_lock.lock()
+        tables.drop_tables(state.tables)
+        state.tables = owned else trap("Prism dump crate")
+        owned = none
+        close_published(&state.unbaked)
+        close_published(&state.retired)
+        state.last_id = last_id
+        state.head_lock.unlock()
+        return
+    let state = try empty_state()
+    errdefer drop_state(state)
+    tables.drop_tables(state.tables)
+    state.tables = owned else trap("Prism dump crate")
+    owned = none
+    state.last_id = last_id
+    inner.catalog_lock.lock()
+    defer inner.catalog_lock.unlock()
+    for i in 0..<inner.catalog.count:
+        if inner.catalog.items[i].name.view() == identity:
+            error(invalid, "Prism identity is already mounted")
+    var name = try text_copy(identity)
+    errdefer name.close()
+    try inner.catalog.push(CatalogEntry(name = name, state = state))
+    name = Buffer()
+
+func load_identity(store: Store, dir: str, identity: str) -> !:
+    var dest = try file_io.join(dir, identity)
+    defer dest.close()
+    var bytes = try file_io.read(dest.view())
+    defer bytes.close()
+    let doc = try Document.decode(bytes.bytes())
+    defer doc.release()
+    let native = try doc.get()
+    var last: usize = 0
+    var i: usize = 0
+    while i < native.element_count():
+        if let id = native.element_id(try native.path_at(i)):
+            if id > last:
+                last = id
+        i += 1
+    let tbl = try tables.from_data(native.view_data())
+    try install_crate(try store.require(), identity, tbl, last)
+
+func catalog_has(inner: Inner*, identity: str) -> bool:
+    for i in 0..<inner.catalog.count:
+        if inner.catalog.items[i].name.view() == identity:
+            return true
+    return false
+
+func install_loaded(inner: Inner*, loaded: persist.LoadedIdentity*) -> !:
+    let state = try empty_state()
+    errdefer drop_state(state)
+    if let owned = loaded.tables:
+        tables.drop_tables(state.tables)
+        state.tables = owned
+        loaded.tables = none
+    state.generation = loaded.generation
+    state.last_id = loaded.last_id
+    try state.unbaked.reserve(loaded.unbaked.count)
+    for i in 0..<loaded.unbaked.count:
+        var layer = loaded.unbaked.items[i].layer
+        loaded.unbaked.items[i].layer = delta.Layer()
+        let frozen = freeze_layer(layer) catch failure:
+            layer.close()
+            error(failure.code, failure.message)
+        state.unbaked.push(PublishedLayer(generation = loaded.unbaked.items[i].generation, frozen = frozen, bytes = 0)) catch failure:
+            drop_frozen(frozen)
+            error(failure.code, failure.message)
+    var name = loaded.name
+    loaded.name = Buffer()
+    errdefer name.close()
+    try inner.catalog.push(CatalogEntry(name = name, state = state))
+    name = Buffer()
+
+func create_open(path: str, limit_bytes: usize, token: str) -> Inner*!:
+    if limit_bytes == 0:
+        error(invalid, "Prism store memory limit must be positive")
+    let journal = try persist.open_journal(path)
+    persist.prepare_schema(journal) catch failure:
+        persist.close_journal(journal)
+        error(failure.code, failure.message)
+    var loaded = persist.load_identities(journal) catch failure:
+        persist.close_journal(journal)
+        error(failure.code, failure.message)
+    errdefer persist.close_loaded(&loaded)
+    let inner = new Inner() in memory.heap catch failure:
+        persist.close_journal(journal)
+        error(failure.code, failure.message)
+    inner.references.store(1, .relaxed)
+    inner.listen_fd = -1
+    inner.memory_limit = limit_bytes
+    inner.persist = journal
+    inner.token = text_copy(token) catch failure:
+        inner.persist = none
+        persist.close_journal(journal)
+        drop_inner(inner)
+        error(failure.code, failure.message)
+    inner.root = text_copy("root") catch failure:
+        inner.persist = none
+        persist.close_journal(journal)
+        drop_inner(inner)
+        error(failure.code, failure.message)
+    for i in 0..<loaded.count:
+        install_loaded(inner, &loaded.items[i]) catch failure:
+            drop_inner(inner)
+            error(failure.code, failure.message)
+    if not catalog_has(inner, "root"):
+        let state = empty_state() catch failure:
+            drop_inner(inner)
+            error(failure.code, failure.message)
+        var name = text_copy("root") catch failure:
+            drop_state(state)
+            drop_inner(inner)
+            error(failure.code, failure.message)
+        inner.catalog.push(CatalogEntry(name = name, state = state)) catch failure:
+            name.close()
+            drop_state(state)
+            drop_inner(inner)
+            error(failure.code, failure.message)
+    persist.close_loaded(&loaded)
+    loaded = List[persist.LoadedIdentity]()
+    var published: usize = 0
+    for i in 0..<inner.catalog.count:
+        register_tables(inner, inner.catalog.items[i].name.view(), inner.catalog.items[i].state.tables)
+        published += inner.catalog.items[i].state.tables.bytes
+    adjust_table_charge(inner, published) catch failure:
+        drop_inner(inner)
+        error(failure.code, failure.message)
+    evict_to_limit(inner) catch failure:
+        drop_inner(inner)
+        error(failure.code, failure.message)
+    return inner
+
+pub struct Store:
+    var inner: Inner*?
+    var remote: ipc.Client*?
+    var tls_heap: tls_pipe.Link*?
+    var tls_on: bool
+
+    pub func init(limit_bytes: usize = max_bytes) -> !:
+        self.tls_heap = none
+        self.tls_on = false
+        if limit_bytes == 0:
+            error(invalid, "Prism store memory limit must be positive")
+        let inner = try new Inner() in memory.heap
+        inner.references.store(1, .relaxed)
+        inner.listen_fd = -1
+        inner.memory_limit = limit_bytes
+        inner.root = text_copy("root") catch failure:
+            free(inner) in memory.heap
+            error(failure.code, failure.message)
+        let state = empty_state() catch failure:
+            inner.root.close()
+            free(inner) in memory.heap
+            error(failure.code, failure.message)
+        var name = text_copy("root") catch failure:
+            drop_state(state)
+            inner.root.close()
+            free(inner) in memory.heap
+            error(failure.code, failure.message)
+        inner.catalog.push(CatalogEntry(name = name, state = state)) catch failure:
+            name.close()
+            drop_state(state)
+            inner.root.close()
+            free(inner) in memory.heap
+            error(failure.code, failure.message)
+        name = Buffer()
+        self.inner = inner
+        self.remote = none
+
+    pub static func memory(limit_bytes: usize = max_bytes) -> interop.Reference[Store]!:
+        let native = try new Store(limit_bytes) in memory.heap
+        return try interop.Reference[Store].adopt(native, store_type, memory.heap)
+
+    pub static func open(path: str, limit_bytes: usize = max_bytes, token: str = "") -> interop.Reference[Store]!:
+        let native = try new Store(limit_bytes) in memory.heap
+        errdefer native.close()
+        let previous = native.inner
+        native.inner = try create_open(path, limit_bytes, token)
+        if let old = previous:
+            drop_inner(old)
+        return try interop.Reference[Store].adopt(native, store_type, memory.heap)
+
+    pub static func connect(socket_path: str, token: str = "") -> interop.Reference[Store]!:
+        let client = try ipc.connect_client(socket_path)
+        if token.length > 0:
+            var req: Buffer
+            ipc.put_u8(&req, ipc.op_auth) catch failure:
+                ipc.drop_client(client)
+                error(failure.code, failure.message)
+            ipc.put_str(&req, token) catch failure:
+                req.close()
+                ipc.drop_client(client)
+                error(failure.code, failure.message)
+            var reply = ipc.call(client, req.bytes()) catch failure:
+                req.close()
+                ipc.drop_client(client)
+                error(failure.code, failure.message)
+            req.close()
+            defer reply.close()
+            if reply.used == 0 or reply.data[0] != ipc.tag_ok:
+                ipc.drop_client(client)
+                error(invalid, "Prism authentication failed")
+        let native = new Store() in memory.heap catch failure:
+            ipc.drop_client(client)
+            error(failure.code, failure.message)
+        errdefer native.close()
+        native.remote = client
+        if let old = native.inner:
+            drop_inner(old)
+        native.inner = none
+        return try interop.Reference[Store].adopt(native, store_type, memory.heap)
+
+    pub func listen() -> !:
+        let inner = try self.require()
+        let journal = inner.persist else error(invalid, "Prism listen requires Store.open")
+        var sock = try ipc.socket_path(persist.journal_path(journal))
+        defer sock.close()
+        try start_listen(inner, sock.view())
+
+    pub func listen_tls(host: str, port: u16) -> u16!:
+        let inner = try self.require()
+        if host.length == 0:
+            error(invalid, "TLS host is required")
+        inner.tls_host.close()
+        inner.tls_host = try text_copy(host)
+        var cert: u8[2048]
+        let n = try tls_pipe.mint(host, inner.tls_d, inner.tls_qx, inner.tls_qy, cert)
+        inner.tls_cert.close()
+        inner.tls_cert = try copied(cert[..<n])
+        var host_c: u8[256]
+        if host.length + 1 > host_c.length:
+            error(invalid, "TLS host name too long")
+        for i in 0..<host.length:
+            host_c[i] = host.bytes[i]
+        host_c[host.length] = 0
+        let addr = try net.resolve((c.str)(str)host_c[..<host.length], port)
+        let listener = try net.Listener.bind(addr)
+        let bound = try listener.address()
+        inner.tls_serve.store(1, .release)
+        let ctx = try new TlsListen() in memory.heap
+        ctx.inner = inner
+        ctx.listener = listener
+        hold_inner(inner)
+        let worker = thread.spawn(tls_accept_loop, ctx, name = "prism-tls-accept") catch failure:
+            drop_inner(inner)
+            free(ctx) in memory.heap
+            error(failure.code, failure.message)
+        worker.detach()
+        return bound.port
+
+    pub func tls_issuer_x() -> const u8[]!:
+        let inner = try self.require()
+        return inner.tls_qx
+
+    pub func tls_issuer_y() -> const u8[]!:
+        let inner = try self.require()
+        return inner.tls_qy
+
+    pub static func connect_tls(host: str, port: u16, token: str, issuer_x: const u8[], issuer_y: const u8[]) -> interop.Reference[Store]!:
+        let remote = try tls_pipe.handshake_client(host, port, issuer_x, issuer_y)
+        if token.length > 0:
+            var req: Buffer
+            ipc.put_u8(&req, ipc.op_auth) catch failure:
+                error(failure.code, failure.message)
+            ipc.put_str(&req, token) catch failure:
+                req.close()
+                error(failure.code, failure.message)
+            var reply = tls_pipe.call(remote, req.bytes()) catch failure:
+                req.close()
+                error(failure.code, failure.message)
+            req.close()
+            defer reply.close()
+            if reply.used == 0 or reply.data[0] != ipc.tag_ok:
+                error(invalid, "Prism authentication failed")
+        let native = new Store() in memory.heap catch failure:
+            error(failure.code, failure.message)
+        errdefer native.close()
+        if let old = native.inner:
+            drop_inner(old)
+        native.inner = none
+        native.remote = none
+        native.tls_heap = remote
+        native.tls_on = true
+        return try interop.Reference[Store].adopt(native, store_type, memory.heap)
+
+    pub func serve() -> !:
+        let inner = try self.require()
+        if inner.serving.load(.acquire) == 0 and inner.tls_serve.load(.acquire) == 0:
+            error(invalid, "Prism owner is not listening")
+        while inner.serving.load(.acquire) == 1 or inner.tls_serve.load(.acquire) == 1:
+            thread.sleep(50)
+
+    func require() -> Inner*!:
+        return self.inner else error(closed, "Prism store is closed")
+
+    pub func snapshot() -> interop.Reference[Session]!:
+        if self.remote != none or self.tls_on:
+            var remote_tls: tls_pipe.Link*? = none
+            if self.tls_on:
+                remote_tls = self.tls_heap
+            return try rpc_snapshot(self.remote, remote_tls, false)
+        let inner = try self.require()
+        let native = try open_session(inner, inner.root.view(), false)
+        return try adopt_session(native)
+
+    pub func begin() -> interop.Reference[Session]!:
+        if self.remote != none or self.tls_on:
+            var remote_tls: tls_pipe.Link*? = none
+            if self.tls_on:
+                remote_tls = self.tls_heap
+            return try rpc_snapshot(self.remote, remote_tls, true)
+        let inner = try self.require()
+        let native = try open_session(inner, inner.root.view(), true)
+        return try adopt_session(native)
+
+    pub func snapshot_identity(identity: str) -> interop.Reference[Session]!:
+        let inner = try self.require()
+        let native = try open_session(inner, identity, false)
+        return try adopt_session(native)
+
+    pub func begin_identity(identity: str) -> interop.Reference[Session]!:
+        let inner = try self.require()
+        let native = try open_session(inner, identity, true)
+        return try adopt_session(native)
+
+    pub func open_document(identity: str) -> interop.Reference[Session]!:
+        return try self.snapshot_identity(identity)
+
+    pub func lookup(os_path: str, follow: bool = true) -> interop.Reference[Look]!:
+        if self.remote != none or self.tls_on:
+            discard(follow)
+            var remote_tls: tls_pipe.Link*? = none
+            if self.tls_on:
+                remote_tls = self.tls_heap
+            return try rpc_lookup(self.remote, remote_tls, os_path)
+        let inner = try self.require()
+        return try lookup_walk(inner, os_path, follow)
+
+    pub func kind(os_path: str) -> LookKind!:
+        let look = try self.lookup(os_path, true)
+        defer look.release()
+        return look.value().kind()
+
+    pub func read(os_path: str) -> interop.Reference[Value]!:
+        let look = try self.lookup(os_path, true)
+        defer look.release()
+        if look.value().kind() == LookKind.missing:
+            error(missing, "Prism path does not exist")
+        let path = look.value().path()
+        if path == "/" or look.value().kind() == LookKind.directory:
+            error(invalid, "Prism read of a directory")
+        let session = try self.snapshot_identity(look.value().identity())
+        defer session.release()
+        let bytes: interop.Reference[Value]? = session.value().get(path, "bytes") catch failure:
+            if failure.code == missing:
+                recover none
+            error(failure.code, failure.message)
+        if let value = bytes:
+            return value
+        return try session.value().get(path, "text")
+
+    pub func exists(os_path: str) -> bool!:
+        return try self.kind(os_path) != LookKind.missing
+
+    pub func is_dir(os_path: str) -> bool!:
+        return try self.kind(os_path) == LookKind.directory
+
+    pub func is_file(os_path: str) -> bool!:
+        return try self.kind(os_path) == LookKind.file
+
+    pub func entries(os_path: str) -> interop.Reference[fs.Entries]!:
+        let look = try self.lookup(os_path, true)
+        defer look.release()
+        if look.value().kind() == LookKind.missing:
+            error(missing, "Prism path does not exist")
+        if look.value().kind() != LookKind.directory:
+            error(invalid, "Prism entries of a non-directory")
+        let session = try self.snapshot_identity(look.value().identity())
+        defer session.release()
+        let kids = try session.value().children(look.value().path())
+        defer kids.release()
+        var items: List[fs.Entry]
+        errdefer fs.close_entries(&items)
+        var i: usize = 0
+        while i < kids.value().count():
+            let child = try kids.value().at(i)
+            let leaf = path_name(child)
+            let named: str = session.value().metadata(child, "name") catch failure:
+                if failure.code == missing:
+                    recover leaf
+                error(failure.code, failure.message)
+            let label = leaf if named.length == 0 else named
+            var host = try fs.join_host(os_path, label)
+            let child_look = self.lookup(host.view(), true) catch failure:
+                host.close()
+                error(failure.code, failure.message)
+            let followed = fs.followed_kind(child_look.value().kind())
+            if let kind = followed:
+                var item = fs.make_entry(label, host.view(), kind) catch failure:
+                    child_look.release()
+                    host.close()
+                    error(failure.code, failure.message)
+                items.push(item) catch failure:
+                    item.close()
+                    child_look.release()
+                    host.close()
+                    error(failure.code, failure.message)
+            child_look.release()
+            host.close()
+            i += 1
+        fs.sort_entries(&items)
+        let owned = items
+        items = List[fs.Entry]()
+        return try fs.own_entries(owned)
+
+    pub func list(os_path: str) -> interop.Reference[Paths]!:
+        let listing = try self.entries(os_path)
+        defer listing.release()
+        var paths = Paths()
+        errdefer paths.close()
+        var i: usize = 0
+        while i < listing.value().count():
+            try paths.append(try listing.value().name_at(i))
+            i += 1
+        let owned = paths
+        paths = Paths()
+        return try own_paths(owned)
+
+    pub func make_directory(os_path: str) -> !:
+        if os_path.length == 0 or os_path == "/":
+            return
+        let look = try self.lookup(os_path, true)
+        defer look.release()
+        let kind = look.value().kind()
+        if kind == LookKind.directory:
+            return
+        if kind != LookKind.missing:
+            error(invalid, "Prism path exists and is not a directory")
+        var parent = try fs.parent_host(os_path)
+        defer parent.close()
+        try self.make_directory(parent.view())
+        let parent_look = try self.lookup(parent.view(), true)
+        defer parent_look.release()
+        if parent_look.value().kind() != LookKind.directory:
+            error(invalid, "Prism lookup through a non-directory")
+        var leaf = try fs.last_component(os_path)
+        defer leaf.close()
+        let tx = try self.begin_identity(parent_look.value().identity())
+        defer tx.release()
+        var dest: Buffer
+        defer dest.close()
+        if valid_name(leaf.view()):
+            dest = try join_element(parent_look.value().path(), leaf.view())
+        else:
+            dest = try next_anonymous_child(try tx.get(), parent_look.value().path())
+        try tx.value().add(dest.view(), "directory")
+        if not valid_name(leaf.view()):
+            try tx.value().set_metadata(dest.view(), "name", leaf.view())
+        discard(try tx.value().commit())
+
+    pub func delete(os_path: str) -> !:
+        let look = try self.lookup(os_path, false)
+        defer look.release()
+        let kind = look.value().kind()
+        if kind == LookKind.missing:
+            error(missing, "Prism path does not exist")
+        if kind == LookKind.directory or look.value().path() == "/":
+            error(invalid, "Prism delete of a directory")
+        try remove_on(self, look.value().identity(), look.value().path())
+
+    pub func remove_directory(os_path: str) -> !:
+        let look = try self.lookup(os_path, false)
+        defer look.release()
+        let kind = look.value().kind()
+        if kind == LookKind.missing:
+            error(missing, "Prism path does not exist")
+        if kind != LookKind.directory or look.value().path() == "/":
+            error(invalid, "Prism remove_directory requires an empty directory")
+        let session = try self.snapshot_identity(look.value().identity())
+        defer session.release()
+        let kids = try session.value().children(look.value().path())
+        defer kids.release()
+        if kids.value().count() != 0:
+            error(invalid, "Prism remove_directory requires an empty directory")
+        try remove_on(self, look.value().identity(), look.value().path())
+
+    pub func remove_all(os_path: str) -> !:
+        let look = try self.lookup(os_path, false)
+        defer look.release()
+        if look.value().kind() == LookKind.missing:
+            return
+        if look.value().path() == "/":
+            let tx = try self.begin_identity(look.value().identity())
+            defer tx.release()
+            let kids = try tx.value().children("/")
+            defer kids.release()
+            var i: usize = 0
+            while i < kids.value().count():
+                try tx.value().remove(try kids.value().at(i))
+                i += 1
+            discard(try tx.value().commit())
+            return
+        try remove_on(self, look.value().identity(), look.value().path())
+
+    pub func write(os_path: str, value: interop.Reference[Value]) -> !:
+        let look = try self.lookup(os_path, true)
+        defer look.release()
+        let kind = look.value().kind()
+        if kind == LookKind.directory:
+            error(invalid, "Prism write of a directory")
+        let slot = "text" if (try value.get()).dtype() == DType.string else "bytes"
+        if kind != LookKind.missing:
+            let tx = try self.begin_identity(look.value().identity())
+            defer tx.release()
+            try tx.value().set(look.value().path(), slot, value)
+            discard(try tx.value().commit())
+            return
+        var parent = try fs.parent_host(os_path)
+        defer parent.close()
+        let parent_look = try self.lookup(parent.view(), true)
+        defer parent_look.release()
+        if parent_look.value().kind() != LookKind.directory:
+            error(missing, "Prism parent does not exist")
+        var leaf = try fs.last_component(os_path)
+        defer leaf.close()
+        let tx = try self.begin_identity(parent_look.value().identity())
+        defer tx.release()
+        var dest: Buffer
+        defer dest.close()
+        if valid_name(leaf.view()):
+            dest = try join_element(parent_look.value().path(), leaf.view())
+        else:
+            dest = try next_anonymous_child(try tx.get(), parent_look.value().path())
+        try tx.value().add(dest.view(), "file")
+        if not valid_name(leaf.view()):
+            try tx.value().set_metadata(dest.view(), "name", leaf.view())
+        try tx.value().set(dest.view(), slot, value)
+        discard(try tx.value().commit())
+
+    pub func mount(identity: str) -> !:
+        let inner = try self.require()
+        if not valid_identity(identity):
+            error(invalid, "invalid Prism identity")
+        inner.catalog_lock.lock()
+        defer inner.catalog_lock.unlock()
+        for i in 0..<inner.catalog.count:
+            if inner.catalog.items[i].name.view() == identity:
+                error(invalid, "Prism identity is already mounted")
+        let state = try empty_state()
+        errdefer drop_state(state)
+        var name = try text_copy(identity)
+        errdefer name.close()
+        try inner.catalog.push(CatalogEntry(name = name, state = state))
+        name = Buffer()
+
+    pub func bake(wait_ms: i64 = 0) -> i64!:
+        let inner = try self.require()
+        return try bake_identity(inner, inner.root.view(), wait_ms)
+
+    pub func checkpoint(wait_ms: i64 = 0) -> i64!:
+        return try self.bake(wait_ms)
+
+    pub func bake_identity(identity: str, wait_ms: i64 = 0) -> i64!:
+        let inner = try self.require()
+        return try bake_identity(inner, identity, wait_ms)
+
+    pub func set_limit(limit_bytes: usize) -> !:
+        let inner = try self.require()
+        if limit_bytes == 0:
+            error(invalid, "Prism store memory limit must be positive")
+        let previous = inner.memory_limit
+        inner.memory_limit = limit_bytes
+        evict_to_limit(inner) catch failure:
+            inner.memory_limit = previous
+            error(failure.code, failure.message)
+        if inner.resident.load(.acquire) > (u64)limit_bytes:
+            inner.memory_limit = previous
+            error(limit_exceeded, "Prism store memory limit exceeded")
+
+    pub func statistics() -> Statistics!:
+        let inner = try self.require()
+        let state = try find_state(inner, inner.root.view())
+        state.head_lock.lock()
+        let generation = (i64)state.generation
+        let elements = (i64)tables.element_count(state.tables)
+        let views = (i64)state.views.count
+        state.head_lock.unlock()
+        let admission = state.writer.statistics()
+        return Statistics(generation, elements, (i64)inner.resident.load(.acquire), (i64)inner.memory_limit, views,
+            admission.waiting, admission.peak, admission.enqueued, admission.busy_returns, admission.timeouts,
+            (i64)inner.conflicted.load(.acquire), (i64)logical_bytes(inner), (i64)pool.pinned_bytes(&inner.pool),
+            (i64)inner.pool.faults, (i64)inner.pool.evictions)
+
+    pub func dump(path: str) -> !:
+        try file_io.ensure_directory(path)
+        let inner = try self.require()
+        var names = try copy_identities(inner)
+        defer close_names(&names)
+        for name in names.span():
+            try dump_identity(self, path, name.view())
+
+    pub func load(path: str) -> !:
+        var names = try file_io.list_names(path)
+        defer close_names(&names)
+        for name in names.span():
+            if valid_identity(name.view()):
+                try load_identity(self, path, name.view())
+
+    pub mutating func close():
+        if let remote = self.remote:
+            ipc.drop_client(remote)
+            self.remote = none
+        if let inner = self.inner:
+            stop_listen(inner)
+            drop_inner(inner)
+        self.inner = none
+
+func bake_identity(inner: Inner*, identity: str, wait_ms: i64) -> i64!:
+    let state = try find_state(inner, identity)
+    try state.writer.enter(wait_ms)
+    defer state.writer.leave()
+    state.head_lock.lock()
+    if state.unbaked.count == 0:
+        let generation = state.generation
+        state.head_lock.unlock()
+        return (i64)generation
+    var pending: List[PublishedLayer]
+    errdefer pending.close()
+    try pending.reserve(state.unbaked.count)
+    for i in 0..<state.unbaked.count:
+        try pending.push(state.unbaked.items[i])
+    tables.hold_tables(state.tables)
+    var current = state.tables
+    state.head_lock.unlock()
+    var owned: tables.Tables*? = none
+    errdefer drop_owned_tables(owned)
+    for i in 0..<pending.count:
+        let next = try tables.apply_cow(current, &pending.items[i].frozen.layer)
+        if let extra = owned:
+            tables.drop_tables(extra)
+        else:
+            tables.drop_tables(current)
+        owned = next
+        current = next
+    let built = owned else trap("bake produced no tables")
+    state.head_lock.lock()
+    state.retired.reserve(state.retired.count + pending.count) catch failure:
+        state.head_lock.unlock()
+        error(failure.code, failure.message)
+    tables.drop_tables(state.tables)
+    state.tables = built
+    owned = none
+    for i in 0..<pending.count:
+        discard(try state.retired.push(pending.items[i]))
+    state.unbaked.count = 0
+    state.unbaked.close()
+    sweep_retired(inner, state)
+    if state.views.count == 0:
+        while state.retired.count > 0:
+            uncharge(inner, state.retired.items[0].bytes)
+            drop_frozen(state.retired.items[0].frozen)
+            state.retired.remove(0)
+    let generation = state.generation
+    let baked = state.tables
+    state.head_lock.unlock()
+    pending.close()
+    if let journal = inner.persist:
+        try persist.reclaim(journal, identity, baked, generation, wait_ms)
+    register_tables(inner, identity, baked)
+    try adjust_table_charge(inner, baked.bytes)
+    try evict_to_limit(inner)
+    return (i64)generation
+
+pub let store_type = interop.Type[Store]("Prism store", Store.close, closeable = true)

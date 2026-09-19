@@ -5,6 +5,10 @@ pub let invalid: ErrorCode = ErrorCode.package(180)
 pub let limit_exceeded: ErrorCode = ErrorCode.package(181)
 pub let missing: ErrorCode = ErrorCode.package(182)
 pub let unsupported: ErrorCode = ErrorCode.package(183)
+pub let closed: ErrorCode = ErrorCode.package(184)
+pub let conflict: ErrorCode = ErrorCode.package(185)
+pub let busy: ErrorCode = ErrorCode.package(186)
+pub let timed_out: ErrorCode = ErrorCode.package(187)
 pub let format_version: u16 = 4
 
 pub enum Encoding as u8:

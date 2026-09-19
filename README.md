@@ -1,9 +1,11 @@
 # luce-prism
 
-Prism's native document library, written in **Luce Base** and usable from **Luce**.
-A document holds path-addressed elements, typed multidimensional values, metadata,
-animation and connections. Documents, images, vectors, scenes and bundles can share
-this substrate without the container depending on their renderers or codecs.
+Prism's native document engine, written in **Luce Base** and usable from **Luce**.
+It is self-contained: in-memory tables, WAL, flock, save/load, and a Unix owner
+socket. It does not depend on luce-db. A document holds path-addressed elements,
+typed multidimensional values, metadata, animation and connections. Documents,
+images, vectors, scenes and bundles can share this substrate without the container
+depending on their renderers or codecs.
 
 This package ports the Prism format and its document services from `kinogaki-core`:
 composition and explicit references, overlay/diff/merge, animation, registered

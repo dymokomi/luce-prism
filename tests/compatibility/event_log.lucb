@@ -90,8 +90,26 @@ func compaction_gcs_old_history_keeping_head() -> !:
     defer next.release()
     assert(try log.commit(next) == 4)
 
+func compact_does_not_mutate_live_views() -> !:
+    let base = try state(0.0)
+    defer base.release()
+    var log = try prism.EventLog(base)
+    defer log.close()
+    try populate(&log)
+    let live = try log.head()
+    defer live.release()
+    let expected = try live.value().materialize()
+    defer expected.release()
+    try log.compact(0)
+    assert(try live.value().equals(expected))
+    let head = try log.head()
+    defer head.release()
+    assert(try head.value().equals(expected))
+    assert(log.layer_count() == 0)
+
 pub func run() -> !:
     try commit_offsets_and_replay()
     try since_is_the_catch_up_feed()
     try compaction_gcs_old_history_keeping_head()
-    print("PASS 3 legacy event-log cases, replay bounds and commits after compaction")
+    try compact_does_not_mutate_live_views()
+    print("PASS 3 legacy event-log cases, replay bounds, compaction, and live views")

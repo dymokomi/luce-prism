@@ -142,6 +142,18 @@ func vector_topk_bounds_and_metric() -> !:
     try doc.value().remove("/e")
     try expect(try l2.nearest([0.8, 0.2, 0.0], 1), ["/e/z"])
 
+func spatial_reads_through_overlay() -> !:
+    let base = try cloud()
+    defer base.release()
+    let layer = try prism.Document.parse("#prisma 4.0\ndelete \"/c/d\" over cloud \"c\" { over node \"a\" { float3 loc = (10.0,0,0) } }")
+    defer layer.release()
+    let doc = try base.value().overlay(layer)
+    defer doc.release()
+    var index = try prism.SpatialIndex(doc, "loc", 1.0)
+    defer index.close()
+    assert(index.size() == 4)
+    try expect(try index.within(prism.Vec3(10.0, 0.0, 0.0), 0.2), ["/c/a"])
+
 pub func run() -> !:
     try within_radius_matches_the_worked_example()
     try within_matches_brute_force()
@@ -152,4 +164,5 @@ pub func run() -> !:
     try text_search_all_is_AND()
     try vector_nearest_cosine()
     try vector_topk_bounds_and_metric()
+    try spatial_reads_through_overlay()
     print("PASS 5 legacy spatial and 4 text/vector index cases, plus distant searches and snapshot lifetime")

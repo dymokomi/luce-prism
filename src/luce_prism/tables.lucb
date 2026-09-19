@@ -1,0 +1,904 @@
+## Persistent path AVL. Snapshots hold a Tables root; unique-owner Document mutates in place.
+import memory
+import luce_prism.composition.delta as delta
+from luce_prism.animation import Property
+import luce_prism.model as model
+from luce_prism.model import DocumentData
+from luce_prism.path import is_descendant, parent_path
+from luce_prism.storage import Buffer, List, Pair, close_names, copied, copy_pairs, text_copy
+from luce_prism.types import limit_exceeded, missing, max_items
+from luce_prism.value import is_stub
+
+func compare_keys(a: const u8[], b: const u8[]) -> i32:
+    let n = a.length if a.length < b.length else b.length
+    for i in 0..<n:
+        if a[i] < b[i]:
+            return -1
+        if a[i] > b[i]:
+            return 1
+    return -1 if a.length < b.length else (1 if a.length > b.length else 0)
+
+pub func id_key(identifier: usize) -> Buffer!:
+    var bytes: u8[8]
+    var value = (u64)identifier
+    var i: usize = 8
+    while i > 0:
+        i -= 1
+        bytes[i] = (u8)(value & 255)
+        value = value >> 8
+    return try copied(bytes)
+
+pub struct Element:
+    var references: @u64
+    pub var identifier: usize
+    pub var path: Buffer
+    pub var kind: Buffer
+    pub var properties: List[Property]
+    pub var metadata: List[Pair]
+
+    pub func init():
+        return
+
+    pub mutating func close():
+        self.path.close()
+        self.kind.close()
+        for i in 0..<self.properties.count:
+            self.properties.items[i].close()
+        self.properties.close()
+        for i in 0..<self.metadata.count:
+            self.metadata.items[i].close()
+        self.metadata.close()
+
+pub func hold_element(element: Element*):
+    discard(element.references.add(1, .relaxed))
+
+pub func drop_element(element: Element*):
+    if element.references.sub(1, .acq_rel) == 1:
+        element.close()
+        free(element) in memory.heap
+
+pub func own_element(source: const model.Element*) -> Element*!:
+    let out = try new Element() in memory.heap
+    out.references.store(1, .relaxed)
+    errdefer drop_element(out)
+    out.identifier = source.identifier
+    out.path = try source.path.copy()
+    out.kind = try source.kind.copy()
+    try out.properties.reserve(source.properties.count)
+    for prop in source.properties.span():
+        var owned = try prop.copy()
+        errdefer owned.close()
+        try out.properties.push(owned)
+    out.metadata = try copy_pairs(&source.metadata)
+    return out
+
+pub struct ChildList:
+    var references: @u64
+    pub var paths: List[Buffer]
+
+    pub func init():
+        return
+
+    pub mutating func close():
+        close_names(&self.paths)
+
+pub func hold_children(children: ChildList*):
+    discard(children.references.add(1, .relaxed))
+
+pub func drop_children(children: ChildList*):
+    if children.references.sub(1, .acq_rel) == 1:
+        children.close()
+        free(children) in memory.heap
+
+pub func own_children() -> ChildList*!:
+    let out = try new ChildList() in memory.heap
+    out.references.store(1, .relaxed)
+    return out
+
+pub struct Asset:
+    var references: @u64
+    pub var path: Buffer
+    pub var mime: Buffer
+    pub var bytes: Buffer
+
+    pub func init():
+        return
+
+    pub mutating func close():
+        self.path.close()
+        self.mime.close()
+        self.bytes.close()
+
+pub func hold_asset(asset: Asset*):
+    discard(asset.references.add(1, .relaxed))
+
+pub func drop_asset(asset: Asset*):
+    if asset.references.sub(1, .acq_rel) == 1:
+        asset.close()
+        free(asset) in memory.heap
+
+pub struct Node:
+    var references: @u64
+    pub var key: Buffer
+    pub var element: Element*?
+    pub var children: ChildList*?
+    pub var path: Buffer
+    pub var conn_src: Buffer
+    pub var asset: Asset*?
+    pub var left: Node*?
+    pub var right: Node*?
+    pub var height: i32
+    pub var count: usize
+
+    pub func init():
+        return
+
+pub func hold(node: Node*?) -> Node*?:
+    if let n = node:
+        discard(n.references.add(1, .relaxed))
+    return node
+
+pub func drop(node: Node*?):
+    if let n = node:
+        if n.references.sub(1, .acq_rel) == 1:
+            drop(n.left)
+            drop(n.right)
+            if let element = n.element:
+                drop_element(element)
+            if let children = n.children:
+                drop_children(children)
+            if let asset = n.asset:
+                drop_asset(asset)
+            n.key.close()
+            n.path.close()
+            n.conn_src.close()
+            free(n) in memory.heap
+
+func height_of(node: Node*?) -> i32:
+    let n = node else return 0
+    return n.height
+
+pub func node_count(node: Node*?) -> usize:
+    let n = node else return 0
+    return n.count
+
+func make(key: Buffer, left: Node*?, right: Node*?) -> Node*!:
+    var owned = key
+    errdefer owned.close()
+    let total = node_count(left) + node_count(right) + 1
+    if total > max_items:
+        error(limit_exceeded, "Prism table limit exceeded")
+    let hl = height_of(left)
+    let hr = height_of(right)
+    let h = hl if hl > hr else hr
+    let out = try new Node() in memory.heap
+    out.key = owned
+    owned = Buffer()
+    out.left = left
+    out.right = right
+    out.height = h + 1
+    out.count = total
+    discard(hold(left))
+    discard(hold(right))
+    out.references.store(1, .relaxed)
+    return out
+
+func with_element(node: Node*, element: Element*):
+    node.element = element
+    hold_element(element)
+
+func with_children(node: Node*, children: ChildList*):
+    node.children = children
+    hold_children(children)
+
+func with_path(node: Node*, path: Buffer):
+    node.path = path
+
+func with_conn(node: Node*, source: Buffer):
+    node.conn_src = source
+
+func with_asset(node: Node*, asset: Asset*):
+    node.asset = asset
+    hold_asset(asset)
+
+func clone_node(src: const Node*, left: Node*?, right: Node*?) -> Node*!:
+    var key = try src.key.copy()
+    let out = try make(key, left, right)
+    errdefer drop(out)
+    if let element = src.element:
+        with_element(out, element)
+    if let children = src.children:
+        with_children(out, children)
+    if src.path.used > 0:
+        out.path = try src.path.copy()
+    if src.conn_src.used > 0:
+        out.conn_src = try src.conn_src.copy()
+    if let asset = src.asset:
+        with_asset(out, asset)
+    return out
+
+func balanced(src: const Node*, left: Node*?, right: Node*?) -> Node*!:
+    if height_of(left) > height_of(right) + 1:
+        let l = left else trap("AVL left invariant")
+        if height_of(l.left) >= height_of(l.right):
+            let r = try clone_node(src, l.right, right)
+            defer drop(r)
+            return try clone_node(l, l.left, r)
+        let middle = l.right else trap("AVL left-right invariant")
+        let a = try clone_node(l, l.left, middle.left)
+        defer drop(a)
+        let b = try clone_node(src, middle.right, right)
+        defer drop(b)
+        return try clone_node(middle, a, b)
+    if height_of(right) > height_of(left) + 1:
+        let r = right else trap("AVL right invariant")
+        if height_of(r.right) >= height_of(r.left):
+            let l = try clone_node(src, left, r.left)
+            defer drop(l)
+            return try clone_node(r, l, r.right)
+        let middle = r.left else trap("AVL right-left invariant")
+        let a = try clone_node(src, left, middle.left)
+        defer drop(a)
+        let b = try clone_node(r, middle.right, r.right)
+        defer drop(b)
+        return try clone_node(middle, a, b)
+    return try clone_node(src, left, right)
+
+pub func find(root: Node*?, key: const u8[]) -> Node*?:
+    var cursor = root
+    while let n = cursor:
+        let order = compare_keys(key, n.key.bytes())
+        if order == 0:
+            return n
+        cursor = n.left if order < 0 else n.right
+    return none
+
+pub func put(root: Node*?, node: Node*) -> Node*!:
+    if let n = root:
+        let order = compare_keys(node.key.bytes(), n.key.bytes())
+        if order == 0:
+            return try clone_node(node, n.left, n.right)
+        if order < 0:
+            let left = try put(n.left, node)
+            defer drop(left)
+            return try balanced(n, left, n.right)
+        let right = try put(n.right, node)
+        defer drop(right)
+        return try balanced(n, n.left, right)
+    discard(hold(node))
+    return node
+
+pub func remove(root: Node*?, key: const u8[]) -> Node*?!:
+    let n = root else return none
+    let order = compare_keys(key, n.key.bytes())
+    if order < 0:
+        let left = try remove(n.left, key)
+        defer drop(left)
+        return try balanced(n, left, n.right)
+    if order > 0:
+        let right = try remove(n.right, key)
+        defer drop(right)
+        return try balanced(n, n.left, right)
+    if n.left == none:
+        return hold(n.right)
+    if n.right == none:
+        return hold(n.left)
+    var next = n.right else trap("AVL removal invariant")
+    while let l = next.left:
+        next = l
+    let right = try remove(n.right, next.key.bytes())
+    defer drop(right)
+    return try balanced(next, n.left, right)
+
+pub func at(root: Node*?, index: usize) -> Node*?:
+    let n = root else return none
+    let left = node_count(n.left)
+    if index < left:
+        return at(n.left, index)
+    if index == left:
+        return n
+    return at(n.right, index - left - 1)
+
+pub func validate(root: Node*?) -> bool:
+    let n = root else return true
+    let difference = height_of(n.left) - height_of(n.right)
+    let hl = height_of(n.left)
+    let hr = height_of(n.right)
+    let h = hl if hl > hr else hr
+    return difference >= -1 and difference <= 1 and n.height == h + 1 and n.count == node_count(n.left) + node_count(n.right) + 1 and validate(n.left) and validate(n.right)
+
+pub struct Tables:
+    var references: @u64
+    pub var by_path: Node*?
+    var by_parent: Node*?
+    var by_id: Node*?
+    var connections: Node*?
+    var assets: Node*?
+    var globs: List[Pair]
+    pub var bytes: usize
+
+    pub func init():
+        return
+
+pub func valid(tables: const Tables*) -> bool:
+    return validate(tables.by_path) and validate(tables.by_parent) and validate(tables.by_id) and validate(tables.connections) and validate(tables.assets)
+
+pub func hold_tables(tables: Tables*):
+    discard(tables.references.add(1, .relaxed))
+
+pub func drop_tables(tables: Tables*):
+    if tables.references.sub(1, .acq_rel) == 1:
+        drop(tables.by_path)
+        drop(tables.by_parent)
+        drop(tables.by_id)
+        drop(tables.connections)
+        drop(tables.assets)
+        for i in 0..<tables.globs.count:
+            tables.globs.items[i].close()
+        tables.globs.close()
+        free(tables) in memory.heap
+
+pub func empty_tables() -> Tables*!:
+    let out = try new Tables() in memory.heap
+    out.references.store(1, .relaxed)
+    return out
+
+func fork(tables: const Tables*) -> Tables*!:
+    let out = try new Tables() in memory.heap
+    out.references.store(1, .relaxed)
+    errdefer drop_tables(out)
+    out.by_path = hold(tables.by_path)
+    out.by_parent = hold(tables.by_parent)
+    out.by_id = hold(tables.by_id)
+    out.connections = hold(tables.connections)
+    out.assets = hold(tables.assets)
+    out.globs = try copy_pairs(&tables.globs)
+    out.bytes = tables.bytes
+    return out
+
+func replace_root(tables: Tables*, which: usize, next: Node*?):
+    if which == 0:
+        drop(tables.by_path)
+        tables.by_path = next
+    elif which == 1:
+        drop(tables.by_parent)
+        tables.by_parent = next
+    elif which == 2:
+        drop(tables.by_id)
+        tables.by_id = next
+    elif which == 3:
+        drop(tables.connections)
+        tables.connections = next
+    else:
+        drop(tables.assets)
+        tables.assets = next
+
+pub func find_element(tables: const Tables*, path: str) -> Element*?:
+    let node = find(tables.by_path, path.bytes) else return none
+    return node.element
+
+pub func children_of(tables: const Tables*, parent: str) -> ChildList*?:
+    let node = find(tables.by_parent, parent.bytes) else return none
+    return node.children
+
+pub func element_count(tables: const Tables*) -> usize:
+    return node_count(tables.by_path)
+
+pub func payload_bytes(tables: const Tables*) -> usize:
+    var total: usize = 0
+    var i: usize = 0
+    let n = node_count(tables.by_path)
+    while i < n:
+        if let node = at(tables.by_path, i):
+            if let element = node.element:
+                for prop in element.properties.span():
+                    if not is_stub(&prop.value):
+                        total += prop.value.payload.used
+        i += 1
+    return total
+
+pub func logical_payload_bytes(tables: const Tables*) -> usize:
+    var total: usize = 0
+    var i: usize = 0
+    let n = node_count(tables.by_path)
+    while i < n:
+        if let node = at(tables.by_path, i):
+            if let element = node.element:
+                for prop in element.properties.span():
+                    if is_stub(&prop.value):
+                        total += prop.value.locator.size
+                    else:
+                        total += prop.value.payload.used
+        i += 1
+    return total
+
+pub func max_identifier(tables: const Tables*) -> usize:
+    var highest: usize = 0
+    var i: usize = 0
+    let n = node_count(tables.by_path)
+    while i < n:
+        if let node = at(tables.by_path, i):
+            if let element = node.element:
+                if element.identifier > highest:
+                    highest = element.identifier
+        i += 1
+    return highest
+
+pub func incoming_at(tables: const Tables*, target: str) -> str?:
+    let node = find(tables.connections, target.bytes) else return none
+    if node.conn_src.used == 0:
+        return none
+    return node.conn_src.view()
+
+pub func path_by_id(tables: const Tables*, identifier: usize) -> str?:
+    var key = id_key(identifier) catch failure:
+        return none
+    defer key.close()
+    let node = find(tables.by_id, key.bytes()) else return none
+    if node.path.used == 0:
+        return none
+    return node.path.view()
+
+func leaf_element(path: str, element: Element*) -> Node*!:
+    var key = try text_copy(path)
+    let node = try make(key, none, none)
+    with_element(node, element)
+    return node
+
+func leaf_children(parent: str, children: ChildList*) -> Node*!:
+    var key = try text_copy(parent)
+    let node = try make(key, none, none)
+    with_children(node, children)
+    return node
+
+func leaf_id(identifier: usize, path: str) -> Node*!:
+    var key = try id_key(identifier)
+    let node = try make(key, none, none)
+    errdefer drop(node)
+    node.path = try text_copy(path)
+    return node
+
+func leaf_conn(target: str, source: str) -> Node*!:
+    var key = try text_copy(target)
+    let node = try make(key, none, none)
+    errdefer drop(node)
+    node.conn_src = try text_copy(source)
+    return node
+
+func leaf_asset(path: str, asset: Asset*) -> Node*!:
+    var key = try text_copy(path)
+    let node = try make(key, none, none)
+    with_asset(node, asset)
+    return node
+
+func drop_pending_element(element: Element*?):
+    if let item = element:
+        drop_element(item)
+
+func drop_pending_children(children: ChildList*?):
+    if let item = children:
+        drop_children(item)
+
+func drop_pending_asset(asset: Asset*?):
+    if let item = asset:
+        drop_asset(item)
+
+func element_node(source: const model.Element*) -> Node*!:
+    let element = try own_element(source)
+    var pending: Element*? = element
+    errdefer drop_pending_element(pending)
+    let node = try leaf_element(source.path.view(), element)
+    drop_element(element)
+    pending = none
+    return node
+
+func push_text(list: List[Buffer]*, path: str) -> !:
+    var copy = try text_copy(path)
+    errdefer copy.close()
+    try list.push(copy)
+
+func push_buffer(list: List[Buffer]*, source: const Buffer*) -> !:
+    var copy = try source.copy()
+    errdefer copy.close()
+    try list.push(copy)
+
+func parent_node(parent: str, path: str) -> Node*!:
+    let list = try own_children()
+    var pending: ChildList*? = list
+    errdefer drop_pending_children(pending)
+    try push_text(&list.paths, path)
+    let node = try leaf_children(parent, list)
+    drop_children(list)
+    pending = none
+    return node
+
+func copied_parent_node(parent: str, existing: ChildList*, path: str) -> Node*!:
+    let list = try copy_child_list(existing)
+    var pending: ChildList*? = list
+    errdefer drop_pending_children(pending)
+    if child_index(list, path) == none:
+        try push_text(&list.paths, path)
+    let node = try leaf_children(parent, list)
+    drop_children(list)
+    pending = none
+    return node
+
+func asset_node(path: str, mime: str, bytes: const u8[]) -> Node*!:
+    let held = try new Asset() in memory.heap
+    held.references.store(1, .relaxed)
+    var pending: Asset*? = held
+    errdefer drop_pending_asset(pending)
+    held.path = try text_copy(path)
+    held.mime = try text_copy(mime)
+    held.bytes = try copied(bytes)
+    let node = try leaf_asset(path, held)
+    drop_asset(held)
+    pending = none
+    return node
+
+func child_index(children: const ChildList*, path: str) -> usize?:
+    for i in 0..<children.paths.count:
+        if children.paths.items[i].view() == path:
+            return i
+    return none
+
+func copy_child_list(children: const ChildList*) -> ChildList*!:
+    let out = try own_children()
+    errdefer drop_children(out)
+    try out.paths.reserve(children.paths.count)
+    for path in children.paths.span():
+        try push_buffer(&out.paths, &path)
+    return out
+
+func append_child(tables: Tables*, parent: str, path: str, cow: bool) -> !:
+    if let existing = children_of(tables, parent):
+        try append_existing_child(tables, parent, path, existing, cow)
+        return
+    let node = try parent_node(parent, path)
+    defer drop(node)
+    let next = try put(tables.by_parent, node)
+    replace_root(tables, 1, next)
+
+func append_existing_child(tables: Tables*, parent: str, path: str, existing: ChildList*, cow: bool) -> !:
+    if cow or existing.references.load(.relaxed) > 1:
+        let node = try copied_parent_node(parent, existing, path)
+        defer drop(node)
+        let next = try put(tables.by_parent, node)
+        replace_root(tables, 1, next)
+        return
+    if child_index(existing, path) == none:
+        try push_text(&existing.paths, path)
+    let node = try leaf_children(parent, existing)
+    defer drop(node)
+    let next = try put(tables.by_parent, node)
+    replace_root(tables, 1, next)
+
+func drop_child(tables: Tables*, parent: str, path: str, cow: bool) -> !:
+    let existing = children_of(tables, parent) else return
+    if child_index(existing, path) == none:
+        return
+    if cow or existing.references.load(.relaxed) > 1:
+        try drop_copied_child(tables, parent, existing, path)
+        return
+    let slot = child_index(existing, path) else return
+    existing.paths.items[slot].close()
+    existing.paths.remove(slot)
+    if existing.paths.count == 0:
+        let next = try remove(tables.by_parent, parent.bytes)
+        replace_root(tables, 1, next)
+        return
+    let node = try leaf_children(parent, existing)
+    defer drop(node)
+    let next = try put(tables.by_parent, node)
+    replace_root(tables, 1, next)
+
+func drop_copied_child(tables: Tables*, parent: str, existing: ChildList*, path: str) -> !:
+    let kids = try copy_child_list(existing)
+    var pending: ChildList*? = kids
+    errdefer drop_pending_children(pending)
+    let slot = child_index(kids, path) else return
+    kids.paths.items[slot].close()
+    kids.paths.remove(slot)
+    if kids.paths.count == 0:
+        let next = try remove(tables.by_parent, parent.bytes)
+        replace_root(tables, 1, next)
+        return
+    let node = try leaf_children(parent, kids)
+    drop_children(kids)
+    pending = none
+    defer drop(node)
+    let next = try put(tables.by_parent, node)
+    replace_root(tables, 1, next)
+
+pub func put_element(tables: Tables*, source: const model.Element*, cow: bool) -> !:
+    let path = source.path.view()
+    let node = try element_node(source)
+    defer drop(node)
+    let next = try put(tables.by_path, node)
+    replace_root(tables, 0, next)
+    if source.identifier != 0:
+        let id_node = try leaf_id(source.identifier, path)
+        defer drop(id_node)
+        let ids = try put(tables.by_id, id_node)
+        replace_root(tables, 2, ids)
+    try append_child(tables, parent_path(path), path, cow)
+
+pub func remove_path(tables: Tables*, path: str, cow: bool) -> !:
+    if let kids = children_of(tables, path):
+        var copies: List[Buffer]
+        defer close_names(&copies)
+        try copies.reserve(kids.paths.count)
+        for child in kids.paths.span():
+            try push_buffer(&copies, &child)
+        for child in copies.span():
+            try remove_path(tables, child.view(), cow)
+    if let element = find_element(tables, path):
+        if element.identifier != 0:
+            var key = try id_key(element.identifier)
+            defer key.close()
+            let ids = try remove(tables.by_id, key.bytes())
+            replace_root(tables, 2, ids)
+    let paths = try remove(tables.by_path, path.bytes)
+    replace_root(tables, 0, paths)
+    try drop_child(tables, parent_path(path), path, cow)
+    try remove_incident(tables, path, cow)
+
+func remove_incident(tables: Tables*, path: str, cow: bool) -> !:
+    var targets: List[Buffer]
+    defer close_names(&targets)
+    var n = node_count(tables.connections)
+    var i: usize = 0
+    while i < n:
+        if let node = at(tables.connections, i):
+            if is_descendant(node.key.view(), path) or is_descendant(node.conn_src.view(), path):
+                try push_buffer(&targets, &node.key)
+        i += 1
+    for target in targets.span():
+        let next = try remove(tables.connections, target.bytes())
+        replace_root(tables, 3, next)
+    var asset_paths: List[Buffer]
+    defer close_names(&asset_paths)
+    n = node_count(tables.assets)
+    i = 0
+    while i < n:
+        if let node = at(tables.assets, i):
+            if is_descendant(node.key.view(), path):
+                try push_buffer(&asset_paths, &node.key)
+        i += 1
+    for asset_path in asset_paths.span():
+        let next = try remove(tables.assets, asset_path.bytes())
+        replace_root(tables, 4, next)
+
+pub func from_data(data: const DocumentData*) -> Tables*!:
+    let out = try empty_tables()
+    errdefer drop_tables(out)
+    for element in data.elements.span():
+        try put_element(out, &element, false)
+    for connection in data.connections.span():
+        let node = try leaf_conn(connection.key.view(), connection.value.view())
+        defer drop(node)
+        let next = try put(out.connections, node)
+        replace_root(out, 3, next)
+    for asset in data.assets.span():
+        let node = try asset_node(asset.path.view(), asset.mime.view(), asset.bytes.bytes())
+        defer drop(node)
+        let next = try put(out.assets, node)
+        replace_root(out, 4, next)
+        out.bytes += asset.bytes.used
+    out.globs = try copy_pairs(&data.globs)
+    out.bytes += payload_bytes(out)
+    return out
+
+func emit_elements(tables: const Tables*, parent: str, output: DocumentData*) -> !:
+    let kids = children_of(tables, parent) else return
+    for child in kids.paths.span():
+        let path = child.view()
+        let row = find_element(tables, path) else continue
+        var source = model.Element(identifier = row.identifier)
+        errdefer source.close()
+        source.path = try row.path.copy()
+        source.kind = try row.kind.copy()
+        try source.properties.reserve(row.properties.count)
+        for prop in row.properties.span():
+            var owned = try prop.copy()
+            errdefer owned.close()
+            try source.properties.push(owned)
+        source.metadata = try copy_pairs(&row.metadata)
+        try output.insert_copy(&source)
+        try emit_elements(tables, path, output)
+
+pub func to_data(tables: const Tables*) -> DocumentData!:
+    var output = DocumentData()
+    errdefer output.close()
+    output.references.store(1, .relaxed)
+    try emit_elements(tables, "/", &output)
+    var n = node_count(tables.connections)
+    var i: usize = 0
+    while i < n:
+        if let node = at(tables.connections, i):
+            try output.connect(node.conn_src.view(), node.key.view())
+        i += 1
+    n = node_count(tables.assets)
+    i = 0
+    while i < n:
+        if let node = at(tables.assets, i):
+            if let asset = node.asset:
+                try output.set_asset(asset.path.view(), asset.bytes.bytes(), asset.mime.view())
+        i += 1
+    output.globs = try copy_pairs(&tables.globs)
+    return output
+
+func apply_one(tables: Tables*, layer: const delta.Layer*, cow: bool) -> !:
+    for entry in layer.items.span():
+        if entry.key.cell == delta.Cell.element and entry.op.deleted:
+            let path = entry.key.path.view()
+            if find_element(tables, path) != none:
+                try remove_path(tables, path, cow)
+    for entry in layer.items.span():
+        if entry.key.cell == delta.Cell.disconnect:
+            let next = try remove(tables.connections, entry.key.path.bytes())
+            replace_root(tables, 3, next)
+    for entry in layer.items.span():
+        if entry.key.cell != delta.Cell.element or entry.op.deleted:
+            continue
+        let path = entry.key.path.view()
+        if find_element(tables, path) != none:
+            if entry.op.type_name.used > 0:
+                try set_kind(tables, path, entry.op.type_name.view(), cow)
+        elif not entry.op.override:
+            var source = model.Element(identifier = entry.op.identifier)
+            errdefer source.close()
+            source.path = try text_copy(path)
+            source.kind = try entry.op.type_name.copy()
+            try put_element(tables, &source, cow)
+    for entry in layer.items.span():
+        let path = entry.key.path.view()
+        if find_element(tables, path) == none:
+            continue
+        if entry.key.cell == delta.Cell.property:
+            try apply_property(tables, path, &entry, cow)
+        elif entry.key.cell == delta.Cell.metadata:
+            try apply_metadata(tables, path, &entry, cow)
+        elif entry.key.cell == delta.Cell.asset:
+            try apply_asset(tables, path, &entry, cow)
+    for entry in layer.items.span():
+        if entry.key.cell == delta.Cell.connection:
+            let node = try leaf_conn(entry.key.path.view(), entry.op.text.view())
+            defer drop(node)
+            let next = try put(tables.connections, node)
+            replace_root(tables, 3, next)
+    for entry in layer.items.span():
+        if entry.key.cell != delta.Cell.reorder:
+            continue
+        try apply_reorder(tables, entry.key.path.view(), &entry.op, cow)
+
+func unique_element(tables: Tables*, path: str, cow: bool) -> Element*!:
+    let current = find_element(tables, path) else error(missing, "Prism element does not exist")
+    if not cow and current.references.load(.relaxed) == 1:
+        return current
+    var source = model.Element(identifier = current.identifier)
+    errdefer source.close()
+    source.path = try current.path.copy()
+    source.kind = try current.kind.copy()
+    try source.properties.reserve(current.properties.count)
+    for prop in current.properties.span():
+        var owned = try prop.copy()
+        errdefer owned.close()
+        try source.properties.push(owned)
+    source.metadata = try copy_pairs(&current.metadata)
+    let node = try element_node(&source)
+    defer drop(node)
+    let root = try put(tables.by_path, node)
+    replace_root(tables, 0, root)
+    return find_element(tables, path) else error(missing, "Prism element does not exist")
+
+func set_kind(tables: Tables*, path: str, name: str, cow: bool) -> !:
+    let element = try unique_element(tables, path, cow)
+    element.kind.close()
+    element.kind = try text_copy(name)
+
+func apply_property(tables: Tables*, path: str, entry: const delta.Entry*, cow: bool) -> !:
+    let element = try unique_element(tables, path, cow)
+    if entry.op.deleted:
+        element_remove_property(element, entry.key.name.view())
+        return
+    var prop = Property()
+    errdefer prop.close()
+    prop.name = try entry.key.name.copy()
+    prop.type_name = try entry.op.type_name.copy()
+    prop.value = try entry.op.value.copy()
+    try prop.samples.reserve(entry.op.samples.count)
+    for sample in entry.op.samples.span():
+        var owned = try sample.copy()
+        errdefer owned.close()
+        try prop.samples.push(owned)
+    try element_put_property(element, &prop)
+    prop.close()
+    prop = Property()
+
+func element_remove_property(element: Element*, name: str):
+    for i in 0..<element.properties.count:
+        if element.properties.items[i].name.view() == name:
+            element.properties.items[i].close()
+            element.properties.remove(i)
+            return
+
+func element_put_property(element: Element*, prop: const Property*) -> !:
+    var owned = try prop.copy()
+    errdefer owned.close()
+    for i in 0..<element.properties.count:
+        if element.properties.items[i].name.view() == prop.name.view():
+            element.properties.items[i].close()
+            element.properties.items[i] = owned
+            return
+    try element.properties.push(owned)
+
+func apply_metadata(tables: Tables*, path: str, entry: const delta.Entry*, cow: bool) -> !:
+    let element = try unique_element(tables, path, cow)
+    if entry.op.deleted:
+        for i in 0..<element.metadata.count:
+            if element.metadata.items[i].key.view() == entry.key.name.view():
+                element.metadata.items[i].close()
+                element.metadata.remove(i)
+                return
+        return
+    var found = false
+    for i in 0..<element.metadata.count:
+        if element.metadata.items[i].key.view() == entry.key.name.view():
+            element.metadata.items[i].value.close()
+            element.metadata.items[i].value = try entry.op.text.copy()
+            found = true
+            break
+    if not found:
+        var pair = Pair()
+        errdefer pair.close()
+        pair.key = try entry.key.name.copy()
+        pair.value = try entry.op.text.copy()
+        try element.metadata.push(pair)
+        pair = Pair()
+
+func apply_asset(tables: Tables*, path: str, entry: const delta.Entry*, cow: bool) -> !:
+    let node = try asset_node(path, entry.op.text.view(), entry.op.value.payload.bytes())
+    defer drop(node)
+    let next = try put(tables.assets, node)
+    replace_root(tables, 4, next)
+
+func apply_reorder(tables: Tables*, parent: str, op: const delta.Op*, cow: bool) -> !:
+    let kids = try own_children()
+    var pending: ChildList*? = kids
+    errdefer drop_pending_children(pending)
+    var seen: List[Buffer]
+    defer close_names(&seen)
+    for child in op.children.span():
+        if find_element(tables, child.view()) == none:
+            continue
+        if parent_path(child.view()) != parent:
+            continue
+        try push_buffer(&kids.paths, &child)
+        try push_buffer(&seen, &child)
+    if let existing = children_of(tables, parent):
+        for child in existing.paths.span():
+            var known = false
+            for item in seen.span():
+                if item.view() == child.view():
+                    known = true
+                    break
+            if not known and find_element(tables, child.view()) != none:
+                try push_buffer(&kids.paths, &child)
+    let node = try leaf_children(parent, kids)
+    drop_children(kids)
+    pending = none
+    defer drop(node)
+    let next = try put(tables.by_parent, node)
+    replace_root(tables, 1, next)
+
+pub func apply_in_place(tables: Tables*, layer: const delta.Layer*) -> !:
+    if tables.references.load(.relaxed) != 1:
+        error(limit_exceeded, "in-place table apply requires a unique owner")
+    try apply_one(tables, layer, false)
+
+pub func apply_cow(tables: Tables*, layer: const delta.Layer*) -> Tables*!:
+    let out = try fork(tables)
+    errdefer drop_tables(out)
+    try apply_one(out, layer, true)
+    return out

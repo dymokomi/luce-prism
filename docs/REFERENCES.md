@@ -35,7 +35,27 @@ The writer emits the `reference` directive. The reader also accepts the legacy
 
 `Document.load`, `decode` and `parse` read one authored document. Opening the ASCII
 file exposes its inline preview and reference metadata even if the external file
-is unavailable. The caller chooses when to load the external content:
+is unavailable. `Session.get` does not follow `reference` arcs.
+
+Live path lookup mounts the `reference` string as a catalog identity and walks
+OS components with `Store.lookup`. A missing `referencePath` is `"/"` (the mount
+root), not compose's first top-level child:
+
+```luce
+store.mount("media.prism")
+# photos is type link; reference "media.prism"; no referencePath
+store.lookup("/users/alice/photos", true)
+# Look("media.prism", "/", directory)
+store.read("/users/alice/photos/vacation")
+# media's /vacation bytes; the root identity is not grafted
+```
+
+`Store.kind` uses `lookup(follow=true)`. Intermediate links always switch
+identity; a terminal link with `follow=false` stays `LookKind.link`. Cycles are
+visited identities. `compose` / `compose_file` / `ReferenceLibrary.materialize`
+still graft for export and the oracle.
+
+Callers that are not using a Store can still load a sibling file explicitly:
 
 ```luce
 let page = Document.load(directory + "/page.prisma")
@@ -71,11 +91,12 @@ properties byte for byte against the expected document.
 In the legacy composition model, an explicit `referencePath` selects the subtree
 whose root becomes the referencing element. Local properties take precedence.
 When that key is omitted, the first top-level referenced element is selected.
-Recursive composition, default target selection, wildcard targets and cycle
-handling are implemented by `ReferenceLibrary.compose(name)` and
-`compose_file(path)`. The latter resolves filenames relative to the referring
-file. Calling either is an explicit request to expand references; `get`,
-`resolve`, `load`, and `parse` themselves inspect only authored local data.
+That default is compose-only: `Store.lookup` uses `"/"`. Recursive composition,
+default target selection, wildcard targets and cycle handling are implemented by
+`ReferenceLibrary.compose(name)` / `materialize(name)` and `compose_file(path)`.
+The latter resolves filenames relative to the referring file. Calling either is
+an explicit request to expand references; `get`, `resolve`, `load`, and `parse`
+themselves inspect only authored local data.
 
 For host-controlled resolution, construct `ReferenceLibrary()`, add each document
 with `add(name, document)`, then call `compose(name)`. Registration captures an

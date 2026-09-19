@@ -3,9 +3,10 @@ import interop
 import memory
 import luce_prism.query.scalars as scalars
 from luce_prism.collections.index import Index
-from luce_prism.document import Document
+from luce_prism.document import Document, assemble_element, walk_document
+from luce_prism.model import Element
 from luce_prism.animation import resolve_property
-from luce_prism.storage import List, Buffer, Pair, text_copy
+from luce_prism.storage import List, Buffer, Pair, text_copy, close_names
 from luce_prism.types import DType, invalid
 
 struct Rule:
@@ -75,44 +76,60 @@ pub struct Schema:
                 return
         try self.rules.push(rule)
 
+    func check_row(element: const Element*, by_type: const Index*, seen: List[Index]*, paths: List[Buffer]*, result: Violations*) -> !:
+        let type_index = by_type.find(element.kind.view()) else return
+        for index in by_type.buckets.items[type_index].rows.span():
+            let rule = &self.rules.items[index]
+            let name = rule.field.view()
+            let position = element.property(name)
+            if position == none:
+                if rule.required:
+                    try result.append(element.path.view(), ["missing required property '", name, "'"])
+                continue
+            var value = try resolve_property(&element.properties.items[position else 0], 0.0)
+            defer value.close()
+            if value.kind != rule.dtype:
+                let actual = dtype_name(value.kind)
+                let expected = dtype_name(rule.dtype)
+                try result.append(element.path.view(), ["property '", name, "' is ", actual, ", expected ", expected])
+            if rule.unique:
+                if let found = try scalars.key(&value):
+                    var key = found
+                    defer key.close()
+                    if let previous = seen.items[index].find(key.view()):
+                        let first = seen.items[index].buckets.items[previous].rows.items[0]
+                        let path = paths.items[first].view()
+                        try result.append(element.path.view(), ["duplicate value for unique property '", name, "' (also at ", path, ")"])
+                    else:
+                        var copied = try text_copy(element.path.view())
+                        errdefer copied.close()
+                        discard(try seen.items[index].add(key.view(), paths.count))
+                        try paths.push(copied)
+                        copied = Buffer()
+
     pub func validate(doc: interop.Reference[Document]) -> interop.Reference[Violations]!:
-        let data = (try doc.get()).view_data()
         var by_type: Index
         defer by_type.close()
         var seen: List[Index]
         defer close_indexes(&seen)
+        var paths: List[Buffer]
+        defer close_names(&paths)
         for i in 0..<self.rules.count:
             discard(try by_type.add(self.rules.items[i].type_name.view(), i))
             try seen.push(Index())
         var result = Violations()
         errdefer result.close()
-        for row in 0..<data.elements.count:
-            let element = &data.elements.items[row]
-            let type_index = by_type.find(element.kind.view()) else continue
-            for index in by_type.buckets.items[type_index].rows.span():
-                let rule = &self.rules.items[index]
-                let name = rule.field.view()
-                let position = element.property(name)
-                if position == none:
-                    if rule.required:
-                        try result.append(element.path.view(), ["missing required property '", name, "'"])
-                    continue
-                var value = try resolve_property(&element.properties.items[position else 0], 0.0)
-                defer value.close()
-                if value.kind != rule.dtype:
-                    let actual = dtype_name(value.kind)
-                    let expected = dtype_name(rule.dtype)
-                    try result.append(element.path.view(), ["property '", name, "' is ", actual, ", expected ", expected])
-                if rule.unique:
-                    if let found = try scalars.key(&value):
-                        var key = found
-                        defer key.close()
-                        if let previous = seen.items[index].find(key.view()):
-                            let first = seen.items[index].buckets.items[previous].rows.items[0]
-                            let path = data.elements.items[first].path.view()
-                            try result.append(element.path.view(), ["duplicate value for unique property '", name, "' (also at ", path, ")"])
-                        else:
-                            discard(try seen.items[index].add(key.view(), row))
+        let view = try doc.get()
+        if view.is_layered():
+            var walk = try walk_document(view)
+            defer walk.close()
+            for path in walk.span():
+                var element = try assemble_element(view, path)
+                defer element.close()
+                try self.check_row(&element, &by_type, &seen, &paths, &result)
+        else:
+            for element in view.view_data().elements.span():
+                try self.check_row(&element, &by_type, &seen, &paths, &result)
         let owned = result
         result = Violations()
         return try own_violations(owned)

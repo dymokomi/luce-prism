@@ -2,5 +2,11 @@
 name = "luce_prism"
 source = "src"
 
+[dependencies]
+luce_tls = "../luce-tls"
+luce_crypto = "../luce-crypto"
+
 [exports]
 prism = "luce_prism.prism"
+tables = "luce_prism.tables"
+persist = "luce_prism.persist"

@@ -6,6 +6,7 @@ import files
 import c
 import luce_prism.comparison as comparison
 import luce_prism.composition.layers as layers
+import luce_prism.composition.delta as delta
 import luce_prism.authoring.names as names
 import luce_prism.authoring.prefab as prefab
 import luce_prism.logic.builders as logic_builders
@@ -15,90 +16,143 @@ import luce_prism.pattern as patterns
 from luce_prism.logic.atoms import Atom, Atoms, RuleKind
 from luce_prism.authoring.paths import Paths, own_paths
 from luce_prism.path import is_descendant, parent_path
-from luce_prism.model import DocumentData
+from luce_prism.model import DocumentData, Element, drop_data, hold_data, own_data
+import luce_prism.tables as tables
 from luce_prism.serialization.binary import write_binary
 from luce_prism.serialization.dispatch import read_document
 from luce_prism.serialization.package import write_package
 from luce_prism.serialization.text_writer import write_text
-from luce_prism.storage import Blob, own_blob
-from luce_prism.types import HandleType, Encoding, Interpolation, invalid, max_bytes
+from luce_prism.storage import Blob, List, own_blob, text_copy
+from luce_prism.types import HandleType, Encoding, Interpolation, invalid, missing, max_bytes
 from luce_prism.value import Value, own_value
 from luce_prism.animation import Property, Sample
 
 pub struct Document:
     # Package implementation access. Not part of the stable consumer API.
-    var data: DocumentData
+    var data: DocumentData*
+    var tables: tables.Tables*
+    var tables_dirty: bool
+    var extra: delta.Layer
+    var layered: bool
     var generation: usize
+    var open: bool
 
-    pub func init():
-        return
+    pub func init() -> !:
+        self.extra = delta.Layer()
+        self.layered = false
+        self.generation = 0
+        let data = try new DocumentData() in memory.heap
+        data.references.store(1, .relaxed)
+        errdefer drop_data(data)
+        self.data = data
+        self.tables = try tables.empty_tables()
+        self.tables_dirty = false
+        self.open = true
 
     pub func revision() -> usize:
         return self.generation
 
+    pub func is_layered() -> bool:
+        return self.layered
+
+    mutating func writable() -> DocumentData*!:
+        if self.data.references.load(.relaxed) == 1:
+            return self.data
+        var copy = try self.data.copy()
+        errdefer copy.close()
+        drop_data(self.data)
+        let heap = try new DocumentData() in memory.heap
+        heap.close()
+        heap[0] = copy
+        copy = DocumentData()
+        heap.references.store(1, .relaxed)
+        self.data = heap
+        self.tables_dirty = true
+        return self.data
+
+    mutating func ensure_tables() -> !:
+        if not self.tables_dirty:
+            return
+        let built = try tables.from_data(self.data)
+        tables.drop_tables(self.tables)
+        self.tables = built
+        self.tables_dirty = false
+
     pub func view_data() -> const DocumentData*:
-        return &self.data
+        return self.data
 
     pub func copy() -> interop.Reference[Document]!:
-        return try own_document(try self.data.copy())
+        let copied = try own_document(try self.data.copy())
+        if self.layered:
+            let native = try copied.get()
+            native.extra.close()
+            native.extra = try self.extra.copy()
+            native.layered = true
+        return copied
 
     pub func extract(path: str) -> interop.Reference[Document]!:
-        return try own_document(try prefab.extract(&self.data, path))
+        return try own_document(try prefab.extract(self.data, path))
+
+    mutating func replace_tables(next: DocumentData):
+        self.data.close()
+        self.data[0] = next
+        self.data.references.store(1, .relaxed)
+        self.tables_dirty = true
 
     pub mutating func compile_math(name: str, expression: str) -> !:
         self.generation += 1
-        var next = try self.data.copy()
+        var next = try (try self.writable()).copy()
         errdefer next.close()
         try surface_math.compile(&next, name, expression)
-        self.data.close()
-        self.data = next
+        self.replace_tables(next)
+        next = DocumentData()
 
     pub mutating func compile_logic(name: str, rule: str) -> !:
         self.generation += 1
-        var next = try self.data.copy()
+        var next = try (try self.writable()).copy()
         errdefer next.close()
         try surface_logic.compile(&next, name, rule)
-        self.data.close()
-        self.data = next
+        self.replace_tables(next)
+        next = DocumentData()
 
     pub mutating func add_fact(name: str, head: interop.Reference[Atom]) -> !:
         self.generation += 1
-        var next = try self.data.copy()
+        var next = try (try self.writable()).copy()
         errdefer next.close()
         try logic_builders.add_fact(&next, name, (try head.get()).view_data())
-        self.data.close()
-        self.data = next
+        self.replace_tables(next)
+        next = DocumentData()
 
     pub mutating func add_rule(name: str, kind: RuleKind, head: interop.Reference[Atom], body: interop.Reference[Atoms]) -> !:
         self.generation += 1
-        var next = try self.data.copy()
+        var next = try (try self.writable()).copy()
         errdefer next.close()
         try logic_builders.add_rule(&next, name, kind, (try head.get()).view_data(), (try body.get()).view_data())
-        self.data.close()
-        self.data = next
+        self.replace_tables(next)
+        next = DocumentData()
 
     pub mutating func add_superiority(name: str, superior: str, inferior: str) -> !:
         self.generation += 1
-        var next = try self.data.copy()
+        var next = try (try self.writable()).copy()
         errdefer next.close()
         try logic_builders.add_superiority(&next, name, superior, inferior)
-        self.data.close()
-        self.data = next
+        self.replace_tables(next)
+        next = DocumentData()
 
     pub mutating func instantiate(fragment: interop.Reference[Document], parent: str = "/") -> interop.Reference[Paths]!:
         self.generation += 1
-        var next = try self.data.copy()
+        var next = try (try self.writable()).copy()
         errdefer next.close()
         let roots = try own_paths(try prefab.instantiate(&next, (try fragment.get()).view_data(), parent))
-        self.data.close()
-        self.data = next
+        self.replace_tables(next)
+        next = DocumentData()
         return roots
 
     pub func children(parent: str = "/") -> interop.Reference[Paths]!:
         var paths = Paths()
         errdefer paths.close()
-        for i in 0..<self.data.child_count(parent):
-            try paths.append(self.data.child_at(parent, i) else error(invalid, "invalid Prism child index"))
+        for i in 0..<self.child_count(parent):
+            try paths.append(self.child_at(parent, i) else error(invalid, "invalid Prism child index"))
         let owned = paths
         paths = Paths()
         return try own_paths(owned)
@@ -114,17 +168,21 @@ pub struct Document:
         return try own_paths(owned)
 
     pub func has_property(path: str, name: str) -> bool:
+        if self.layered:
+            return delta.has_property(self.data, &self.extra, none, path, name)
         return self.data.has_property(path, name)
 
     pub mutating func remove_property(path: str, name: str) -> !:
         self.generation += 1
-        try self.data.remove_property(path, name)
+        try (try self.writable()).remove_property(path, name)
 
     pub mutating func remove_metadata(path: str, key: str) -> !:
         self.generation += 1
-        try self.data.remove_metadata(path, key)
+        try (try self.writable()).remove_metadata(path, key)
 
     pub func has_metadata(path: str, key: str) -> bool:
+        if self.layered:
+            return delta.has_metadata(self.data, &self.extra, none, path, key)
         return self.data.has_metadata(path, key)
 
     pub func metadata_count(path: str) -> usize!:
@@ -135,21 +193,97 @@ pub struct Document:
 
     pub mutating func set_type(path: str, name: str) -> !:
         self.generation += 1
-        try self.data.set_type(path, name)
+        try (try self.writable()).set_type(path, name)
 
-    pub func overlay(layer: interop.Reference[Document]) -> interop.Reference[Document]!:
-        let other = try layer.get()
-        let opinions: DocumentData[1] = [other.data]
-        return try own_document(try layers.overlay(&self.data, opinions))
+    pub mutating func overlay(layer: interop.Reference[Document]) -> interop.Reference[Document]!:
+        var attached = try delta.from_document((try layer.get()).view_data())
+        errdefer attached.close()
+        if self.layered:
+            var merged = try delta.merge(&self.extra, &attached)
+            attached.close()
+            attached = merged
+        try self.ensure_tables()
+        hold_data(self.data)
+        tables.hold_tables(self.tables)
+        let native = new Document() in memory.heap catch failure:
+            tables.drop_tables(self.tables)
+            drop_data(self.data)
+            error(failure.code, failure.message)
+        let empty = native.data
+        native.data = self.data
+        drop_data(empty)
+        tables.drop_tables(native.tables)
+        native.tables = self.tables
+        native.tables_dirty = false
+        native.extra.close()
+        native.extra = attached
+        native.layered = true
+        attached = delta.Layer()
+        return try interop.Reference[Document].adopt(native, document_type, memory.heap)
+
+    pub mutating func bake() -> !:
+        if not self.layered:
+            return
+        self.generation += 1
+        if self.data.references.load(.relaxed) == 1:
+            try delta.apply(self.data, &self.extra)
+            self.tables_dirty = true
+        else:
+            try self.ensure_tables()
+            let next = try tables.apply_cow(self.tables, &self.extra)
+            errdefer tables.drop_tables(next)
+            var rebuilt = try tables.to_data(next)
+            errdefer rebuilt.close()
+            let heap = try own_data(rebuilt)
+            rebuilt = DocumentData()
+            drop_data(self.data)
+            self.data = heap
+            tables.drop_tables(self.tables)
+            self.tables = next
+            self.tables_dirty = false
+        self.extra.close()
+        self.extra = delta.Layer()
+        self.layered = false
+
+    func snapshot_data() -> DocumentData!:
+        if not self.layered:
+            return try self.data.copy()
+        var output = try self.data.copy()
+        errdefer output.close()
+        try delta.apply(&output, &self.extra)
+        return output
+
+    pub func materialize() -> interop.Reference[Document]!:
+        return try own_document(try self.snapshot_data())
 
     pub func diff(target: interop.Reference[Document]) -> interop.Reference[Document]!:
+        var left_owned = DocumentData()
+        defer left_owned.close()
+        var right_owned = DocumentData()
+        defer right_owned.close()
+        var left: const DocumentData* = self.data
+        if self.layered:
+            left_owned = try self.snapshot_data()
+            left = &left_owned
         let other = try target.get()
-        return try own_document(try layers.diff(&self.data, &other.data))
+        var right: const DocumentData* = other.data
+        if other.layered:
+            right_owned = try other.snapshot_data()
+            right = &right_owned
+        return try own_document(try layers.diff(left, right))
 
     pub func equals(other: interop.Reference[Document]) -> bool!:
-        return comparison.equal_documents(&self.data, (try other.get()).view_data())
+        if not self.layered and not (try other.get()).layered:
+            return comparison.equal_documents(self.data, (try other.get()).view_data())
+        let left = try self.materialize()
+        defer left.release()
+        let right = try (try other.get()).materialize()
+        defer right.release()
+        return comparison.equal_documents((try left.get()).view_data(), (try right.get()).view_data())
 
     pub func contains(path: str) -> bool:
+        if self.layered:
+            return delta.visible(self.data, &self.extra, none, path)
         return self.data.contains(path)
 
     pub func element_id(path: str) -> usize?:
@@ -159,9 +293,21 @@ pub struct Document:
         return self.data.path_for_id(identifier)
 
     pub func child_count(parent: str = "/") -> usize:
+        if self.layered:
+            var kids = delta.children(self.data, &self.extra, none, parent) catch failure:
+                return 0
+            defer kids.close()
+            return kids.count
         return self.data.child_count(parent)
 
     pub func child_at(parent: str, index: usize) -> str?:
+        if self.layered:
+            var kids = delta.children(self.data, &self.extra, none, parent) catch failure:
+                return none
+            defer kids.close()
+            if index >= kids.count:
+                return none
+            return kids.items[index]
         return self.data.child_at(parent, index)
 
     pub func element_count() -> usize:
@@ -171,41 +317,67 @@ pub struct Document:
         return try self.data.path_at(index)
 
     pub func type_at(path: str) -> str!:
+        if self.layered:
+            if not delta.visible(self.data, &self.extra, none, path):
+                error(missing, "Prism element does not exist")
+            if let op = self.extra.get(path, delta.Cell.element):
+                if op.type_name.used > 0:
+                    return op.type_name.view()
+            return try self.data.type_at(path)
         return try self.data.type_at(path)
 
     pub mutating func add(path: str, type_name: str, override: bool = false) -> !:
         self.generation += 1
-        try self.data.add(path, type_name, override)
+        if self.layered:
+            var op = delta.Op(override = override)
+            errdefer op.close()
+            op.type_name = try text_copy(type_name)
+            try self.extra.put(path, delta.Cell.element, "", op)
+            return
+        try (try self.writable()).add(path, type_name, override)
 
     pub mutating func append(path: str, type_name: str, override: bool = false) -> str!:
         self.generation += 1
-        var allocated = try names.unique_path(&self.data, path)
+        let owned = try self.writable()
+        var allocated = try names.unique_path(owned, path)
         defer allocated.close()
-        try self.data.insert(allocated.view(), type_name, override)
-        return try self.data.path_at(self.data.element_count() - 1)
+        try owned.insert(allocated.view(), type_name, override)
+        return try owned.path_at(owned.element_count() - 1)
 
     pub mutating func add_child(parent: str, type_name: str) -> str!:
         self.generation += 1
-        var allocated = try names.anonymous_path(&self.data, parent)
+        let owned = try self.writable()
+        var allocated = try names.anonymous_path(owned, parent)
         defer allocated.close()
-        try self.data.insert(allocated.view(), type_name)
-        return try self.data.path_at(self.data.element_count() - 1)
+        try owned.insert(allocated.view(), type_name)
+        return try owned.path_at(owned.element_count() - 1)
 
     pub mutating func move(path: str, destination: str) -> str!:
         self.generation += 1
-        if not self.data.contains(path) or is_descendant(parent_path(destination), path):
+        let owned = try self.writable()
+        if not owned.contains(path) or is_descendant(parent_path(destination), path):
             return path
-        let identifier = self.data.element_id(path) else error(invalid, "missing Prism element")
-        var allocated = try names.unique_path(&self.data, destination, path)
+        let identifier = owned.element_id(path) else error(invalid, "missing Prism element")
+        var allocated = try names.unique_path(owned, destination, path)
         defer allocated.close()
-        try self.data.rename(path, allocated.view())
-        return self.data.path_for_id(identifier) else error(invalid, "moved Prism element lost its identity")
+        try owned.rename(path, allocated.view())
+        return owned.path_for_id(identifier) else error(invalid, "moved Prism element lost its identity")
 
     pub mutating func set(path: str, name: str, value: interop.Reference[Value], type_name: str = "") -> !:
         self.generation += 1
-        try self.data.set(path, name, value, type_name)
+        if self.layered:
+            var op = delta.Op()
+            errdefer op.close()
+            op.value = try (try value.get()).view_data().copy()
+            if type_name.length > 0:
+                op.type_name = try text_copy(type_name)
+            try self.extra.put(path, delta.Cell.property, name, op)
+            return
+        try (try self.writable()).set(path, name, value, type_name)
 
     pub func get(path: str, name: str) -> interop.Reference[Value]!:
+        if self.layered:
+            return try own_value(try delta.read_property(self.data, &self.extra, none, path, name))
         return try self.data.get(path, name)
 
     pub func property_count(path: str) -> usize!:
@@ -216,54 +388,94 @@ pub struct Document:
 
     pub mutating func set_metadata(path: str, key: str, value: str) -> !:
         self.generation += 1
-        try self.data.set_metadata(path, key, value)
+        try (try self.writable()).set_metadata(path, key, value)
 
     pub func metadata(path: str, key: str) -> str!:
+        if self.layered:
+            return try delta.read_metadata(self.data, &self.extra, none, path, key)
         return try self.data.metadata(path, key)
 
     pub mutating func connect(source: str, target: str) -> !:
         self.generation += 1
-        try self.data.connect(source, target)
+        try (try self.writable()).connect(source, target)
 
     pub func connection_count() -> usize:
         return self.data.connection_count()
 
-    pub func source(target: str) -> str!:
-        return try self.data.source(target)
+    pub func incoming_at(target: str) -> str?:
+        if self.layered:
+            return delta.incoming(self.data, &self.extra, none, target)
+        return self.data.incoming(target)
 
-    pub mutating func disconnect(target: str):
+    pub func source(target: str) -> str!:
+        return self.incoming_at(target) else error(missing, "Prism input is not connected")
+
+    func assemble(path: str) -> Element!:
+        if self.layered:
+            return try delta.assemble(self.data, &self.extra, none, path)
+        return try self.data.elements.items[try self.data.require(path)].copy()
+
+    pub func intern_path(path: str) -> str?:
+        if self.layered:
+            return delta.intern_path(self.data, &self.extra, none, path)
+        if let index = self.data.find(path):
+            return self.data.elements.items[index].path.view()
+        return none
+
+    func walk_from(parent: str, out: List[str]*) -> !:
+        if self.layered:
+            var kids = try delta.children(self.data, &self.extra, none, parent)
+            defer kids.close()
+            for path in kids.span():
+                try out.push(path)
+                try self.walk_from(path, out)
+            return
+        let count = self.data.child_count(parent)
+        for i in 0..<count:
+            let path = self.data.child_at(parent, i) else continue
+            try out.push(path)
+            try self.walk_from(path, out)
+
+    func walk_visible() -> List[str]!:
+        var out: List[str]
+        errdefer out.close()
+        try self.walk_from("/", &out)
+        return out
+
+    pub mutating func disconnect(target: str) -> !:
         self.generation += 1
-        self.data.disconnect(target)
+        (try self.writable()).disconnect(target)
 
     pub mutating func set_sample(path: str, name: str, time: f64, value: interop.Reference[Value], interpolation: Interpolation = Interpolation.linear) -> !:
         self.generation += 1
-        try self.data.set_sample(path, name, time, value, interpolation)
+        try (try self.writable()).set_sample(path, name, time, value, interpolation)
 
     pub mutating func animate(path: str, name: str, time: f64, value: interop.Reference[Value], interpolation: Interpolation = Interpolation.linear) -> !:
         self.generation += 1
-        if self.data.has_property(path, name):
-            try self.data.set_sample(path, name, time, value, interpolation)
+        let owned = try self.writable()
+        if owned.has_property(path, name):
+            try owned.set_sample(path, name, time, value, interpolation)
             return
-        var next = try self.data.copy()
+        var next = try owned.copy()
         errdefer next.close()
         try next.set(path, name, value)
         try next.set_sample(path, name, time, value, interpolation)
-        self.data.close()
-        self.data = next
+        self.replace_tables(next)
+        next = DocumentData()
 
     pub mutating func set_handles(path: str, name: str, time: f64, kind: HandleType, left: const f64[], right: const f64[]) -> !:
         self.generation += 1
-        try self.data.set_handles(path, name, time, kind, left, right)
+        try (try self.writable()).set_handles(path, name, time, kind, left, right)
 
     pub mutating func remove_sample(path: str, name: str, time: f64) -> !:
         self.generation += 1
-        try self.data.remove_sample(path, name, time)
+        try (try self.writable()).remove_sample(path, name, time)
 
     pub func sample_count(path: str, name: str) -> usize!:
         return try self.data.sample_count(path, name)
 
     func property(path: str, name: str) -> const Property*!:
-        let element = &self.data.elements.items[try self.data.require(path)]
+        let element = self.data.elements.items[try self.data.require(path)]
         let index = element.property(name) else error(invalid, "Prism property does not exist")
         return &element.properties.items[index]
 
@@ -302,35 +514,38 @@ pub struct Document:
 
     pub mutating func mark_deleted(path: str) -> !:
         self.generation += 1
-        try self.data.mark_deleted(path)
+        try (try self.writable()).mark_deleted(path)
 
     pub mutating func mark_disconnected(target: str) -> !:
         self.generation += 1
-        try self.data.mark_disconnected(target)
+        try (try self.writable()).mark_disconnected(target)
 
     pub mutating func mark_unset(path: str, name: str, metadata: bool = false) -> !:
         self.generation += 1
-        try self.data.mark_unset(path, name, metadata)
+        try (try self.writable()).mark_unset(path, name, metadata)
 
     pub mutating func reorder(parent: str, children: const str[]) -> !:
         self.generation += 1
-        try self.data.reorder(parent, children)
+        try (try self.writable()).reorder(parent, children)
 
     pub mutating func connect_pattern(source: str, target_pattern: str) -> !:
         self.generation += 1
-        try self.data.connect_pattern(source, target_pattern)
+        try (try self.writable()).connect_pattern(source, target_pattern)
 
     pub mutating func set_asset(path: str, bytes: const u8[], mime: str = "application/octet-stream") -> !:
         self.generation += 1
-        try self.data.set_asset(path, bytes, mime)
+        try (try self.writable()).set_asset(path, bytes, mime)
 
     pub mutating func rename(path: str, destination: str) -> !:
         self.generation += 1
-        try self.data.rename(path, destination)
+        try (try self.writable()).rename(path, destination)
 
     pub mutating func remove(path: str) -> !:
         self.generation += 1
-        try self.data.remove(path)
+        if self.layered:
+            try self.extra.put(path, delta.Cell.element, "", delta.Op(deleted = true))
+            return
+        try (try self.writable()).remove(path)
 
     pub func asset_count() -> usize:
         return self.data.asset_count()
@@ -343,32 +558,53 @@ pub struct Document:
 
     pub mutating func close():
         self.generation += 1
-        self.data.close()
+        self.extra.close()
+        self.layered = false
+        if not self.open:
+            return
+        self.open = false
+        tables.drop_tables(self.tables)
+        drop_data(self.data)
 
     pub func encode(encoding: Encoding = Encoding.binary, compressed: bool = false) -> interop.Reference[Blob]!:
+        if self.layered:
+            let flat = try self.materialize()
+            defer flat.release()
+            return try (try flat.get()).encode(encoding, compressed)
         if encoding == Encoding.package:
-            return try own_blob(try write_package(&self.data, compressed))
+            return try own_blob(try write_package(self.data, compressed))
         if self.data.assets.count > 0:
             error(invalid, "use package encoding to preserve Prism assets")
         if encoding == Encoding.text:
-            return try own_blob(try write_text(&self.data))
+            return try own_blob(try write_text(self.data))
         if encoding == Encoding.binary:
-            return try own_blob(try write_binary(&self.data, compressed))
+            return try own_blob(try write_binary(self.data, compressed))
         error(invalid, "choose a Prism encoding")
 
     pub func encode_package(text_scene: bool = false, compressed: bool = false) -> interop.Reference[Blob]!:
-        return try own_blob(try write_package(&self.data, compressed, text_scene))
+        if self.layered:
+            let flat = try self.materialize()
+            defer flat.release()
+            return try (try flat.get()).encode_package(text_scene, compressed)
+        return try own_blob(try write_package(self.data, compressed, text_scene))
 
-    pub mutating func remove_asset(path: str):
+    pub mutating func remove_asset(path: str) -> !:
         self.generation += 1
-        self.data.remove_asset(path)
+        (try self.writable()).remove_asset(path)
 
     pub static func decode(bytes: const u8[]) -> interop.Reference[Document]!:
         let native = try new Document() in memory.heap
-        read_document(bytes, &native.data) catch failure:
+        read_document(bytes, native.data) catch failure:
             native.close()
             free(native) in memory.heap
             error(failure.code, failure.message)
+        let built = tables.from_data(native.data) catch failure:
+            native.close()
+            free(native) in memory.heap
+            error(failure.code, failure.message)
+        tables.drop_tables(native.tables)
+        native.tables = built
+        native.tables_dirty = false
         return try interop.Reference[Document].adopt(native, document_type, memory.heap)
 
     pub static func parse(text: str) -> interop.Reference[Document]!:
@@ -393,11 +629,52 @@ pub struct Document:
 
 pub let document_type = interop.Type[Document]("Prism document", Document.close, closeable = true)
 
+pub func snapshot_document(native: const Document*) -> DocumentData!:
+    return try native.snapshot_data()
+
+pub func assemble_element(native: const Document*, path: str) -> Element!:
+    return try native.assemble(path)
+
+pub func walk_document(native: const Document*) -> List[str]!:
+    return try native.walk_visible()
+
 pub func own_document(data: DocumentData) -> interop.Reference[Document]!:
     var owned = data
     errdefer owned.close()
     let native = try new Document() in memory.heap
-    native.data = owned
-    # adopt consumes native, including on failure; it becomes the sole owner.
+    native.data.close()
+    native.data[0] = owned
+    native.data.references.store(1, .relaxed)
     owned = DocumentData()
+    let built = tables.from_data(native.data) catch failure:
+        native.close()
+        free(native) in memory.heap
+        error(failure.code, failure.message)
+    tables.drop_tables(native.tables)
+    native.tables = built
+    native.tables_dirty = false
+    return try interop.Reference[Document].adopt(native, document_type, memory.heap)
+
+pub func own_view(data: DocumentData*, extra: delta.Layer) -> interop.Reference[Document]!:
+    var attached = extra
+    errdefer attached.close()
+    hold_data(data)
+    let native = new Document() in memory.heap catch failure:
+        drop_data(data)
+        error(failure.code, failure.message)
+    let empty = native.data
+    native.data = data
+    drop_data(empty)
+    let built = tables.from_data(data) catch failure:
+        native.close()
+        free(native) in memory.heap
+        error(failure.code, failure.message)
+    tables.drop_tables(native.tables)
+    native.tables = built
+    native.tables_dirty = false
+    if attached.count() > 0:
+        native.extra.close()
+        native.extra = attached
+        native.layered = true
+        attached = delta.Layer()
     return try interop.Reference[Document].adopt(native, document_type, memory.heap)

@@ -1,6 +1,7 @@
 ## Owned document records and authoring operations. No serialization or external I/O.
 import interop
 import math
+import memory
 from luce_prism.animation import Property, Sample, insert_sample, resolve_property
 from luce_prism.collections.topology import Topology
 from luce_prism.pattern import matches
@@ -89,6 +90,7 @@ pub struct Asset:
         self.bytes.close()
 
 pub struct DocumentData:
+    pub var references: @u64
     pub var elements: List[Element]
     var topology: Topology
     # Connection key is target, value is source, sorted by target.
@@ -106,6 +108,7 @@ pub struct DocumentData:
     pub func copy() -> DocumentData!:
         var output = DocumentData()
         errdefer output.close()
+        output.references.store(1, .relaxed)
         output.topology.last_id = self.topology.last_id
         try output.elements.reserve(self.elements.count)
         for element in self.elements.span():
@@ -653,6 +656,29 @@ pub struct DocumentData:
         for i in 0..<self.assets.count:
             self.assets.items[i].close()
         self.assets.close()
+
+pub func close_elements(elements: List[Element]*):
+    for i in 0..<elements.count:
+        elements.items[i].close()
+    elements.close()
+
+pub func hold_data(data: DocumentData*):
+    discard(data.references.add(1, .relaxed))
+
+pub func drop_data(data: DocumentData*):
+    if data.references.sub(1, .acq_rel) == 1:
+        data.close()
+        free(data) in memory.heap
+
+pub func own_data(data: DocumentData) -> DocumentData*!:
+    var owned = data
+    let heap = new DocumentData() in memory.heap catch failure:
+        error(failure.code, failure.message)
+    heap.close()
+    heap[0] = owned
+    owned = DocumentData()
+    heap.references.store(1, .relaxed)
+    return heap
 
 pub struct PathEdit:
     pub var target: Buffer*

@@ -4,7 +4,8 @@ import math
 import luce_prism.indexes.ranked as ranked
 from luce_prism.collections.index import Index
 from luce_prism.query.results import Selection
-from luce_prism.document import Document
+from luce_prism.document import Document, assemble_element, walk_document
+from luce_prism.model import Element
 from luce_prism.animation import resolve_property
 from luce_prism.storage import List, Buffer, Reader
 from luce_prism.types import DType
@@ -49,28 +50,40 @@ pub struct TextIndex:
         errdefer self.close()
         try self.build(doc, field)
 
+    mutating func consider(element: const Element*, field: str) -> !:
+        let position = element.property(field) else return
+        var value = try resolve_property(&element.properties.items[position], 0.0)
+        defer value.close()
+        if value.kind != DType.string or value.count() == 0:
+            return
+        var reader = Reader(data = value.payload.bytes())
+        let text = try reader.text()
+        if text.length == 0:
+            return
+        let row = self.rows.count()
+        try self.rows.append(element)
+        var words = try tokenize(text)
+        defer words.close()
+        var frequencies: Index
+        defer frequencies.close()
+        for word in words.words.span():
+            discard(try frequencies.add(word.view(), 0))
+        for word in frequencies.buckets.span():
+            discard(try self.vocabulary.add(word.key.view(), self.postings.count))
+            try self.postings.push(Posting(row = row, frequency = word.rows.count))
+
     mutating func build(doc: interop.Reference[Document], field: str) -> !:
-        for element in (try doc.get()).view_data().elements.span():
-            let position = element.property(field) else continue
-            var value = try resolve_property(&element.properties.items[position], 0.0)
-            defer value.close()
-            if value.kind != DType.string or value.count() == 0:
-                continue
-            var reader = Reader(data = value.payload.bytes())
-            let text = try reader.text()
-            if text.length == 0:
-                continue
-            let row = self.rows.count()
-            try self.rows.append(&element)
-            var words = try tokenize(text)
-            defer words.close()
-            var frequencies: Index
-            defer frequencies.close()
-            for word in words.words.span():
-                discard(try frequencies.add(word.view(), 0))
-            for word in frequencies.buckets.span():
-                discard(try self.vocabulary.add(word.key.view(), self.postings.count))
-                try self.postings.push(Posting(row = row, frequency = word.rows.count))
+        let view = try doc.get()
+        if view.is_layered():
+            var paths = try walk_document(view)
+            defer paths.close()
+            for path in paths.span():
+                var element = try assemble_element(view, path)
+                defer element.close()
+                try self.consider(&element, field)
+            return
+        for element in view.view_data().elements.span():
+            try self.consider(&element, field)
 
     pub func terms() -> usize:
         return self.vocabulary.buckets.count

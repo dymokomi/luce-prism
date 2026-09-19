@@ -1,0 +1,339 @@
+## Unix-domain framing for the Prism owner. Store methods live in store.lucb so this
+## module does not import Store.
+import memory
+import c
+import platform
+import sync
+import strings
+from luce_prism.storage import Buffer, Reader
+from luce_prism.types import closed, invalid, limit_exceeded, missing, conflict, busy, timed_out, unsupported
+from luce_prism.value import ValueData, read_value, write_value
+
+pub let max_frame: usize = 16777216
+pub let op_snapshot: u8 = 1
+pub let op_get: u8 = 2
+pub let op_children: u8 = 3
+pub let op_lookup: u8 = 4
+pub let op_begin: u8 = 5
+pub let op_set: u8 = 6
+pub let op_add: u8 = 7
+pub let op_remove: u8 = 8
+pub let op_set_meta: u8 = 9
+pub let op_commit: u8 = 10
+pub let op_close: u8 = 11
+pub let op_auth: u8 = 12
+pub let tag_ok: u8 = 0
+pub let tag_token: u8 = 1
+pub let tag_value: u8 = 2
+pub let tag_missing: u8 = 3
+pub let tag_strings: u8 = 4
+pub let tag_look: u8 = 5
+pub let tag_generation: u8 = 6
+pub let tag_error: u8 = 255
+
+extern func socket(domain: i32, kind: i32, protocol: i32) -> platform.SocketDescriptor
+extern func bind(descriptor: platform.SocketDescriptor, address: const void*, length: u32) -> i32
+extern func listen(descriptor: platform.SocketDescriptor, backlog: i32) -> i32
+extern func accept(descriptor: platform.SocketDescriptor, address: void*?, length: u32*?) -> platform.SocketDescriptor
+extern func connect(descriptor: platform.SocketDescriptor, address: const void*, length: u32) -> i32
+extern func posix_send as "send"(descriptor: platform.SocketDescriptor, data: const void*, length: usize, flags: i32) -> isize
+extern func posix_recv as "recv"(descriptor: platform.SocketDescriptor, buffer: void*, length: usize, flags: i32) -> isize
+extern func posix_close as "close"(descriptor: platform.SocketDescriptor) -> i32
+extern func fcntl(descriptor: platform.SocketDescriptor, command: i32, ...) -> i32
+extern func setsockopt(descriptor: platform.SocketDescriptor, level: i32, option: i32, value: const void*, length: u32) -> i32
+extern func unlink_path as "unlink"(path: c.str) -> i32
+
+let af_unix: i32 = 1
+let sock_stream: i32 = 1
+let get_fd: i32 = 1
+let set_fd: i32 = 2
+let fd_cloexec: i32 = 1
+let sock_level: i32 = 65535 if platform.macos else 1
+let nosigpipe_opt: i32 = 4130
+let send_flags: i32 = 0 if platform.macos else 16384
+
+pub struct Client:
+    var references: @u64
+    var fd: i32
+    var lock: sync.Mutex
+
+    pub func init():
+        return
+
+pub func hold_client(client: Client*):
+    discard(client.references.add(1, .relaxed))
+
+pub func drop_client(client: Client*):
+    if client.references.sub(1, .acq_rel) == 1:
+        if client.fd >= 0:
+            discard(posix_close(client.fd))
+        client.fd = -1
+        free(client) in memory.heap
+
+pub func socket_path(dbpath: str) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try out.text(dbpath)
+    try out.text(".sock")
+    return out
+
+func mark_cloexec(fd: platform.SocketDescriptor) -> !:
+    var flags = fcntl(fd, get_fd)
+    while flags < 0 and c.errno() == c.interrupted:
+        flags = fcntl(fd, get_fd)
+    if flags < 0:
+        error(closed, "Prism socket flags could not be queried")
+    if (flags & fd_cloexec) != 0:
+        return
+    var result = fcntl(fd, set_fd, flags | fd_cloexec)
+    while result < 0 and c.errno() == c.interrupted:
+        result = fcntl(fd, set_fd, flags | fd_cloexec)
+    if result < 0:
+        error(closed, "Prism socket could not be marked close-on-exec")
+
+func guard_sigpipe(fd: platform.SocketDescriptor):
+    if not platform.macos:
+        return
+    var yes: i32 = 1
+    discard(setsockopt(fd, sock_level, nosigpipe_opt, &yes, 4))
+
+func fill_unix(path: str, raw: u8[]) -> u32!:
+    if path.length == 0 or path.length > 100 or raw.length < 110:
+        error(invalid, "Prism socket path is too long")
+    if platform.macos:
+        raw[0] = (u8)(2 + path.length + 1)
+        raw[1] = 1
+        memory.copy(raw[2..], path.bytes, path.length)
+        raw[2 + path.length] = 0
+        return (u32)(2 + path.length + 1)
+    raw[0] = 1
+    raw[1] = 0
+    memory.copy(raw[2..], path.bytes, path.length)
+    raw[2 + path.length] = 0
+    return (u32)(2 + path.length + 1)
+
+func open_unix() -> platform.SocketDescriptor!:
+    let fd = socket(af_unix, sock_stream, 0)
+    if fd < 0:
+        error(closed, "Prism unix socket could not be created")
+    mark_cloexec(fd) catch failure:
+        discard(posix_close(fd))
+        error(failure.code, failure.message)
+    guard_sigpipe(fd)
+    return fd
+
+pub func bind_unix(path: str) -> i32!:
+    with memory.heap:
+        let name = try strings.copy(path)
+        defer strings.release(name)
+        discard(unlink_path((c.str)name))
+    var raw: u8[110]
+    for i in 0..<raw.length:
+        raw[i] = 0
+    let length = try fill_unix(path, raw)
+    let fd = try open_unix()
+    if bind(fd, &raw[0], length) != 0:
+        discard(posix_close(fd))
+        error(busy, "Prism owner could not bind its socket")
+    if listen(fd, 128) != 0:
+        discard(posix_close(fd))
+        error(busy, "Prism owner could not listen")
+    return fd
+
+pub func accept_unix(listen_fd: i32) -> i32!:
+    var fd = accept(listen_fd, none, none)
+    while fd < 0 and c.errno() == c.interrupted:
+        fd = accept(listen_fd, none, none)
+    if fd < 0:
+        error(closed, "Prism owner accept failed")
+    mark_cloexec(fd) catch failure:
+        discard(posix_close(fd))
+        error(failure.code, failure.message)
+    guard_sigpipe(fd)
+    return fd
+
+pub func connect_unix(path: str) -> i32!:
+    var raw: u8[110]
+    for i in 0..<raw.length:
+        raw[i] = 0
+    let length = try fill_unix(path, raw)
+    let fd = try open_unix()
+    if connect(fd, &raw[0], length) != 0:
+        discard(posix_close(fd))
+        error(closed, "Prism client could not connect")
+    return fd
+
+pub func close_fd(fd: i32):
+    if fd >= 0:
+        discard(posix_close(fd))
+
+func send_all(fd: i32, data: const u8[]) -> !:
+    var offset: usize = 0
+    while offset < data.length:
+        let sent = posix_send(fd, data[offset..].data, data.length - offset, send_flags)
+        if sent < 0:
+            if c.errno() == c.interrupted:
+                continue
+            error(closed, "Prism socket send failed")
+        if sent == 0:
+            error(closed, "Prism socket send made no progress")
+        offset += (usize)sent
+
+func recv_all(fd: i32, data: u8[]) -> !:
+    var offset: usize = 0
+    while offset < data.length:
+        let got = posix_recv(fd, data[offset..].data, data.length - offset, 0)
+        if got < 0:
+            if c.errno() == c.interrupted:
+                continue
+            error(closed, "Prism socket recv failed")
+        if got == 0:
+            error(closed, "Prism socket closed")
+        offset += (usize)got
+
+pub func write_frame(fd: i32, payload: const u8[]) -> !:
+    if payload.length > max_frame:
+        error(limit_exceeded, "Prism IPC frame exceeds 16 MiB")
+    var header: u8[4]
+    let n = (u32)payload.length
+    header[0] = (u8)(n & 255)
+    header[1] = (u8)((n >> 8) & 255)
+    header[2] = (u8)((n >> 16) & 255)
+    header[3] = (u8)((n >> 24) & 255)
+    try send_all(fd, header)
+    if payload.length > 0:
+        try send_all(fd, payload)
+
+pub func read_frame(fd: i32) -> Buffer!:
+    var header: u8[4]
+    try recv_all(fd, header)
+    let n = (usize)header[0] | ((usize)header[1] << 8) | ((usize)header[2] << 16) | ((usize)header[3] << 24)
+    if n > max_frame:
+        error(limit_exceeded, "Prism IPC frame exceeds 16 MiB")
+    var out: Buffer
+    errdefer out.close()
+    if n == 0:
+        return out
+    try out.reserve(n)
+    try recv_all(fd, out.data[..<n])
+    out.used = n
+    return out
+
+pub func connect_client(path: str) -> Client*!:
+    let fd = try connect_unix(path)
+    let client = new Client() in memory.heap catch failure:
+        close_fd(fd)
+        error(failure.code, failure.message)
+    client.fd = -1
+    client.references.store(1, .relaxed)
+    client.fd = fd
+    client.lock = sync.Mutex()
+    return client
+
+pub func call(client: Client*, request: const u8[]) -> Buffer!:
+    client.lock.lock()
+    defer client.lock.unlock()
+    if client.fd < 0:
+        error(closed, "Prism client is closed")
+    try write_frame(client.fd, request)
+    return try read_frame(client.fd)
+
+pub func put_u8(out: Buffer*, value: u8) -> !:
+    try out.byte(value)
+
+pub func put_u32(out: Buffer*, value: u32) -> !:
+    try out.uint((u64)value, 4)
+
+pub func put_u64(out: Buffer*, value: u64) -> !:
+    try out.uint(value, 8)
+
+pub func put_i64(out: Buffer*, value: i64) -> !:
+    try out.uint((u64)value, 8)
+
+pub func put_str(out: Buffer*, value: str) -> !:
+    try out.sized(value)
+
+pub func put_value(out: Buffer*, value: const ValueData*) -> !:
+    try write_value(out, value)
+
+pub func error_tag(code: ErrorCode) -> u32:
+    if code == invalid:
+        return 180
+    if code == limit_exceeded:
+        return 181
+    if code == missing:
+        return 182
+    if code == unsupported:
+        return 183
+    if code == closed:
+        return 184
+    if code == conflict:
+        return 185
+    if code == busy:
+        return 186
+    if code == timed_out:
+        return 187
+    return 180
+
+pub func error_code(tag: u32) -> ErrorCode:
+    if tag == 181:
+        return limit_exceeded
+    if tag == 182:
+        return missing
+    if tag == 183:
+        return unsupported
+    if tag == 184:
+        return closed
+    if tag == 185:
+        return conflict
+    if tag == 186:
+        return busy
+    if tag == 187:
+        return timed_out
+    return invalid
+
+pub func error_frame(code: ErrorCode, message: str) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try put_u8(&out, tag_error)
+    try put_u32(&out, error_tag(code))
+    try put_str(&out, message)
+    return out
+
+pub func ok_frame() -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try put_u8(&out, tag_ok)
+    return out
+
+pub func token_frame(token: u64) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try put_u8(&out, tag_token)
+    try put_u64(&out, token)
+    return out
+
+pub func missing_frame() -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try put_u8(&out, tag_missing)
+    return out
+
+pub func generation_frame(generation: i64) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try put_u8(&out, tag_generation)
+    try put_i64(&out, generation)
+    return out
+
+pub func expect_tag(body: const u8[], tag: u8) -> Reader!:
+    if body.length == 0:
+        error(closed, "Prism IPC response is empty")
+    if body[0] == tag_error:
+        var reader = Reader(data = body, pos = 1)
+        let code = error_code((u32)try reader.uint(4))
+        let message = try reader.text()
+        error(code, message)
+    if body[0] != tag:
+        error(closed, "Prism IPC response tag mismatch")
+    return Reader(data = body, pos = 1)

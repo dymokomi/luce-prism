@@ -1,0 +1,79 @@
+## TLS record pipe for Prism IPC frames. store.lucb owns accept/dispatch.
+import memory
+import net
+import sync
+import session as tls
+import x509
+import crypto_native
+from luce_prism.storage import Buffer
+from luce_prism.types import closed, invalid, limit_exceeded
+import luce_prism.ipc as ipc
+
+pub struct Link:
+    pub var conn: net.Connection
+    pub var secrets: tls.Secrets
+    pub var lock: sync.Mutex
+
+    pub func init():
+        return
+
+pub func send_frame(link: Link*, payload: const u8[]) -> !:
+    if payload.length > ipc.max_frame:
+        error(limit_exceeded, "Prism TLS frame exceeds 16 MiB")
+    var packet: Buffer
+    errdefer packet.close()
+    let n = (u32)payload.length
+    try packet.byte((u8)(n & 255))
+    try packet.byte((u8)((n >> 8) & 255))
+    try packet.byte((u8)((n >> 16) & 255))
+    try packet.byte((u8)((n >> 24) & 255))
+    if payload.length > 0:
+        try packet.put(payload)
+    try tls.send(&link.conn, &link.secrets, packet.bytes())
+
+pub func read_frame(link: Link*) -> Buffer!:
+    var acc: Buffer
+    errdefer acc.close()
+    while true:
+        if acc.used >= 4:
+            let need = (usize)acc.data[0] | ((usize)acc.data[1] << 8) | ((usize)acc.data[2] << 16) | ((usize)acc.data[3] << 24)
+            if need > ipc.max_frame:
+                error(limit_exceeded, "Prism TLS frame exceeds 16 MiB")
+            if acc.used >= 4 + need:
+                var out: Buffer
+                errdefer out.close()
+                if need > 0:
+                    try out.put(acc.data[4..<4 + need])
+                return out
+        var chunk: u8[16640]
+        let got = try tls.receive(&link.conn, &link.secrets, chunk)
+        if got == 0:
+            error(closed, "Prism TLS connection closed")
+        try acc.put(chunk[..<got])
+
+pub func call(link: Link*, request: const u8[]) -> Buffer!:
+    link.lock.lock()
+    defer link.lock.unlock()
+    try send_frame(link, request)
+    return try read_frame(link)
+
+pub func handshake_client(host: str, port: u16, issuer_x: const u8[], issuer_y: const u8[]) -> Link*!:
+    var secrets = tls.Secrets()
+    var conn = try tls.connect(host, port, issuer_x, issuer_y, &secrets)
+    let out = try new Link() in memory.heap
+    out.conn = conn
+    out.secrets = secrets
+    return out
+
+pub func handshake_server(conn: net.Connection, host: str, cert: const u8[], d: const u8[], qx: const u8[], qy: const u8[]) -> Link*!:
+    var live = conn
+    var secrets = tls.Secrets()
+    try tls.accept(&live, host, cert, d, qx, qy, &secrets)
+    let out = try new Link() in memory.heap
+    out.conn = live
+    out.secrets = secrets
+    return out
+
+pub func mint(host: str, d: u8[], qx: u8[], qy: u8[], der: u8[]) -> usize!:
+    try crypto_native.ecdsa_p256_keygen(d, qx, qy)
+    return try x509.mint_self_signed(host, d, qx, qy, der)

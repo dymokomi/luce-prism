@@ -54,11 +54,11 @@ pub func calculate(values: const f64[], operation: Aggregate) -> f64?:
     variance = variance / (f64)values.length
     return math.sqrt(variance) if operation == Aggregate.standard_deviation else variance
 
-pub func numeric(doc: const DocumentData*, rows: const usize[], field: str, operation: Aggregate) -> f64?!:
+pub func numeric_rows(elements: const Element[], rows: const usize[], field: str, operation: Aggregate) -> f64?!:
     var values: List[f64]
     defer values.close()
     for index in rows:
-        if let number = try number_at(&doc.elements.items[index], field):
+        if let number = try number_at(&elements[index], field):
             try values.push(number)
     if operation == Aggregate.median:
         if values.count == 0:
@@ -68,6 +68,9 @@ pub func numeric(doc: const DocumentData*, rows: const usize[], field: str, oper
         let middle = values.count // 2
         return values.items[middle] if values.count % 2 != 0 else (values.items[middle - 1] + values.items[middle]) / 2.0
     return calculate(values.span(), operation)
+
+pub func numeric(doc: const DocumentData*, rows: const usize[], field: str, operation: Aggregate) -> f64?!:
+    return try numeric_rows(doc.elements.span(), rows, field, operation)
 
 func sift(values: f64[], start: usize, count: usize):
     var root = start
@@ -95,11 +98,11 @@ pub func sort_numbers(values: f64[]):
         values[end] = previous
         sift(values, 0, end)
 
-pub func distinct(doc: const DocumentData*, rows: const usize[], field: str) -> usize!:
+pub func distinct_rows(elements: const Element[], rows: const usize[], field: str) -> usize!:
     var index: Index
     defer index.close()
     for row in rows:
-        let element = &doc.elements.items[row]
+        let element = &elements[row]
         if let position = element.property(field):
             var value = try resolve_property(&element.properties.items[position], 0.0)
             defer value.close()
@@ -108,6 +111,9 @@ pub func distinct(doc: const DocumentData*, rows: const usize[], field: str) -> 
                 defer key.close()
                 discard(try index.add(key.view(), row))
     return index.buckets.count
+
+pub func distinct(doc: const DocumentData*, rows: const usize[], field: str) -> usize!:
+    return try distinct_rows(doc.elements.span(), rows, field)
 
 # The old group label uses std::to_string(double): six fractional decimal places.
 # This libc seam matches it without changing the exact identity key used for joins.

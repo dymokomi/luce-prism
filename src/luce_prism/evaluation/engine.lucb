@@ -4,7 +4,7 @@ import memory
 import ownership
 import math
 from luce_prism.model import DocumentData, Element
-from luce_prism.document import Document, own_document
+from luce_prism.document import Document, own_document, snapshot_document
 from luce_prism.animation import Property, resolve_property
 from luce_prism.value import Value, ValueData, scalar_bits, own_value
 from luce_prism.storage import List, Buffer, text_copy, find_pair, less
@@ -331,7 +331,7 @@ pub struct Evaluator:
         errdefer self.engine.close()
         if not math.is_finite(time):
             error(invalid, "evaluation time must be finite")
-        self.engine.doc = try (try doc.get()).view_data().copy()
+        self.engine.doc = try snapshot_document(try doc.get())
         self.engine.registry = try (try registry.get()).data.copy()
         self.engine.time = time
 

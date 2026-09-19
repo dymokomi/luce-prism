@@ -158,6 +158,170 @@ func reference_wildcard_carries_internal_connections() -> !:
     defer output.release()
     assert(try output.value().source("/hw/bolt.albedo") == "/hw/mat.out")
 
+func seed_photos(store: prism.Store*) -> !:
+    try store.mount("media.prism")
+    let root = try store.begin()
+    defer root.release()
+    try root.value().add("/users", "directory")
+    try root.value().add("/users/alice", "directory")
+    try root.value().add("/users/alice/photos", "link")
+    try root.value().set_metadata("/users/alice/photos", "reference", "media.prism")
+    discard(try root.value().commit())
+    let media = try store.begin_identity("media.prism")
+    defer media.release()
+    try media.value().add("/vacation", "file")
+    let payload = try prism.Value.array(prism.DType.uint8, [4], b"JPEG")
+    defer payload.release()
+    try media.value().set("/vacation", "bytes", payload)
+    discard(try media.value().commit())
+
+func lookup_photos_without_reference_path_is_mount_root() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    try seed_photos(&store)
+    let look = try store.lookup("/users/alice/photos", true)
+    defer look.release()
+    assert(look.value().identity() == "media.prism")
+    assert(look.value().path() == "/")
+    assert(look.value().kind() == prism.LookKind.directory)
+    let slash = try store.lookup("//users//alice/photos")
+    defer slash.release()
+    assert(slash.value().identity() == "media.prism")
+    assert(slash.value().path() == "/")
+    assert(try store.kind("/users/alice/photos") == prism.LookKind.directory)
+
+func read_vacation_bytes_without_grafting() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    try seed_photos(&store)
+    let got = try store.read("/users/alice/photos/vacation")
+    defer got.release()
+    let expected = try prism.Value.array(prism.DType.uint8, [4], b"JPEG")
+    defer expected.release()
+    assert(try got.value().equals(expected))
+    let snap = try store.snapshot()
+    defer snap.release()
+    assert(not try snap.value().contains("/users/alice/photos/vacation"))
+    assert(try snap.value().metadata("/users/alice/photos", "reference") == "media.prism")
+    let grafted: interop.Reference[prism.Value]? = snap.value().get("/users/alice/photos/vacation", "bytes") catch failure:
+        assert(failure.code == prism.missing)
+        recover none
+    if let unexpected = grafted:
+        unexpected.release()
+        assert(false)
+    let look = try store.lookup("/users/alice/photos/vacation", true)
+    defer look.release()
+    assert(look.value().identity() == "media.prism")
+    assert(look.value().path() == "/vacation")
+    assert(look.value().kind() == prism.LookKind.file)
+
+func session_get_does_not_lookup() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    try seed_photos(&store)
+    let snap = try store.snapshot()
+    defer snap.release()
+    assert(try snap.value().type_at("/users/alice/photos") == "link")
+    assert(try snap.value().metadata("/users/alice/photos", "reference") == "media.prism")
+    assert(not try snap.value().contains("/vacation"))
+
+func lookup_follow_false_stops_on_terminal_link() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    try seed_photos(&store)
+    let look = try store.lookup("/users/alice/photos", false)
+    defer look.release()
+    assert(look.value().identity() == "root")
+    assert(look.value().path() == "/users/alice/photos")
+    assert(look.value().kind() == prism.LookKind.link)
+    let nested = try store.lookup("/users/alice/photos/vacation", false)
+    defer nested.release()
+    assert(nested.value().identity() == "media.prism")
+    assert(nested.value().path() == "/vacation")
+    assert(nested.value().kind() == prism.LookKind.file)
+
+func lookup_detects_identity_cycle() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    try store.mount("media.prism")
+    let root = try store.begin()
+    defer root.release()
+    try root.value().add("/loop", "link")
+    try root.value().set_metadata("/loop", "reference", "media.prism")
+    discard(try root.value().commit())
+    let media = try store.begin_identity("media.prism")
+    defer media.release()
+    try media.value().add("/back", "link")
+    try media.value().set_metadata("/back", "reference", "root")
+    discard(try media.value().commit())
+    var cycled = false
+    let result: interop.Reference[prism.Look]? = store.lookup("/loop/back/x") catch failure:
+        assert(failure.code == prism.invalid)
+        cycled = true
+        recover none
+    if let unexpected = result:
+        unexpected.release()
+        assert(false)
+    assert(cycled)
+
+func lookup_resolves_host_name_metadata() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    let tx = try store.begin()
+    defer tx.release()
+    try tx.value().add("/users", "directory")
+    try tx.value().add("/users/alice", "directory")
+    try tx.value().add("/users/alice/[0]", "file")
+    try tx.value().set_metadata("/users/alice/[0]", "name", "notes.txt")
+    let payload = try prism.Value.text("hi")
+    defer payload.release()
+    try tx.value().set("/users/alice/[0]", "text", payload)
+    discard(try tx.value().commit())
+    let look = try store.lookup("/users/alice/notes.txt")
+    defer look.release()
+    assert(look.value().identity() == "root")
+    assert(look.value().path() == "/users/alice/[0]")
+    assert(look.value().kind() == prism.LookKind.file)
+    let got = try store.read("/users/alice/notes.txt")
+    defer got.release()
+    assert(try got.value().text_at() == "hi")
+
+func lookup_through_non_directory_fails() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    let tx = try store.begin()
+    defer tx.release()
+    try tx.value().add("/notes", "file")
+    discard(try tx.value().commit())
+    var refused = false
+    let result: interop.Reference[prism.Look]? = store.lookup("/notes/x") catch failure:
+        assert(failure.code == prism.invalid)
+        refused = true
+        recover none
+    if let unexpected = result:
+        unexpected.release()
+        assert(false)
+    assert(refused)
+
+func lookup_missing_is_not_an_error() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    let look = try store.lookup("/nope")
+    defer look.release()
+    assert(look.value().identity() == "root")
+    assert(look.value().path() == "")
+    assert(look.value().kind() == prism.LookKind.missing)
+    assert(try store.kind("/nope") == prism.LookKind.missing)
+    var absent = false
+    let result: interop.Reference[prism.Value]? = store.read("/nope") catch failure:
+        assert(failure.code == prism.missing)
+        absent = true
+        recover none
+    if let unexpected = result:
+        unexpected.release()
+        assert(false)
+    assert(absent)
+
 pub func run(directory: str) -> !:
     try compose_grafts_referenced_subtree()
     try compose_local_opinions_win()
@@ -172,4 +336,12 @@ pub func run(directory: str) -> !:
     try reference_wildcard_grafts_matches_as_children()
     try reference_wildcard_brings_subtrees_and_scaffolding()
     try reference_wildcard_carries_internal_connections()
-    print("PASS 13 legacy reference composition cases")
+    try lookup_photos_without_reference_path_is_mount_root()
+    try read_vacation_bytes_without_grafting()
+    try session_get_does_not_lookup()
+    try lookup_follow_false_stops_on_terminal_link()
+    try lookup_detects_identity_cycle()
+    try lookup_resolves_host_name_metadata()
+    try lookup_through_non_directory_fails()
+    try lookup_missing_is_not_an_error()
+    print("PASS 13 legacy reference composition cases + namei")

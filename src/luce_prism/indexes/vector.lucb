@@ -3,7 +3,8 @@ import interop
 import math
 import luce_prism.indexes.ranked as ranked
 from luce_prism.query.results import Selection
-from luce_prism.document import Document
+from luce_prism.document import Document, assemble_element, walk_document
+from luce_prism.model import Element
 from luce_prism.animation import resolve_property
 from luce_prism.storage import List
 from luce_prism.types import DType
@@ -34,28 +35,39 @@ pub struct VectorIndex:
         errdefer self.close()
         try self.build(doc, field)
 
+    mutating func consider(element: const Element*, field: str) -> !:
+        let position = element.property(field) else return
+        var value = try resolve_property(&element.properties.items[position], 0.0)
+        defer value.close()
+        if value.kind != DType.float32 or value.shape.count != 1 or value.count() == 0:
+            return
+        if self.dimension != 0 and value.count() != self.dimension:
+            return
+        self.dimension = value.count()
+        try self.entries.reserve(self.entries.count + 1)
+        var entry: Entry
+        errdefer entry.close()
+        try entry.vector.reserve(self.dimension)
+        for i in 0..<self.dimension:
+            let number = try value.number(i)
+            try entry.vector.push((f32)number)
+            entry.norm += number * number
+        entry.norm = math.sqrt(entry.norm)
+        try self.rows.append(element)
+        try self.entries.push(entry)
+
     mutating func build(doc: interop.Reference[Document], field: str) -> !:
-        let data = (try doc.get()).view_data()
-        for element in data.elements.span():
-            let position = element.property(field) else continue
-            var value = try resolve_property(&element.properties.items[position], 0.0)
-            defer value.close()
-            if value.kind != DType.float32 or value.shape.count != 1 or value.count() == 0:
-                continue
-            if self.dimension != 0 and value.count() != self.dimension:
-                continue
-            self.dimension = value.count()
-            try self.entries.reserve(self.entries.count + 1)
-            var entry: Entry
-            errdefer entry.close()
-            try entry.vector.reserve(self.dimension)
-            for i in 0..<self.dimension:
-                let number = try value.number(i)
-                try entry.vector.push((f32)number)
-                entry.norm += number * number
-            entry.norm = math.sqrt(entry.norm)
-            try self.rows.append(&element)
-            try self.entries.push(entry)
+        let view = try doc.get()
+        if view.is_layered():
+            var paths = try walk_document(view)
+            defer paths.close()
+            for path in paths.span():
+                var element = try assemble_element(view, path)
+                defer element.close()
+                try self.consider(&element, field)
+            return
+        for element in view.view_data().elements.span():
+            try self.consider(&element, field)
 
     pub func size() -> usize:
         return self.entries.count
