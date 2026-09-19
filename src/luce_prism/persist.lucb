@@ -418,7 +418,7 @@ func max_complete_gen(snap: wal.View*, identity: str) -> u64?!:
                     defer marker.close()
                     var hashed = try unbaked_count_key(identity, gen)
                     defer hashed.close()
-                    if try snap_copy(snap, marker.view()) != none or try snap_copy(snap, hashed.view()) != none:
+                    if try snap.get(marker.view()) != none or try snap.get(hashed.view()) != none:
                         highest = gen
         i += 1
     return highest
@@ -694,7 +694,7 @@ func remove_snap_chunks(tx: wal.Transaction*, snap: wal.View*, identity: str) ->
         while index < count:
             var key = try snap_chunk_key(identity, (usize)index)
             defer key.close()
-            if try snap_copy(snap, key.view()) != none:
+            if try snap.get(key.view()) != none:
                 try tx.remove(key.view())
             index += 1
 
@@ -757,7 +757,7 @@ pub func reclaim(journal: Journal*, identity: str, owned: const tables.Tables*, 
             error(prism_wal_code(failure.code), failure.message)
         var hashed = try snap_count_key(identity)
         defer hashed.close()
-        if try snap_copy(&snap, hashed.view()) != none:
+        if try snap.get(hashed.view()) != none:
             tx.remove(hashed.view()) catch failure:
                 error(prism_wal_code(failure.code), failure.message)
     tx.put(through_key.view(), through_text.bytes()) catch failure:

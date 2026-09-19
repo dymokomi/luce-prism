@@ -109,6 +109,15 @@ Media tests compare payload bytes for
 a 512×512 RGBA image, an embedded PNG, 16-bit channels and finite floating-point
 arrays in every encoding. See [validation](docs/VALIDATION.md).
 
+`python3 tests/snapshot_reclaim.py --mode all` checks the transition from
+inline snapshot chunks to an external snapshot file and reopens a committed,
+unbaked generation in a fresh process. Use `--mode sanitize` for ASan/UBSan and
+`--mode native0 --heap` on macOS to require zero leaked allocations. Existence
+checks during reclamation borrow WAL entries instead of allocating discarded
+copies of chunk payloads. The heap runner is adapted from the same author's
+dual-licensed `luce-auth` test helper; it captures output in regular files and
+cleans up only the process group it starts.
+
 Prism includes JSON, Markdown, HTML, SVG, text, and blob adapters. Image decoding
 remains in `luce-image`; Prism stores its pixels and encoded files without a
 runtime dependency on that package. GPU, threading, and rendering remain the

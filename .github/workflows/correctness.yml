@@ -67,6 +67,21 @@ jobs:
         run: |
           set -o pipefail
           python3 tests/table_export.py 2>&1 | tee build/table-export.log
+      - name: Snapshot reclamation in six modes
+        working-directory: luce-prism
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 tests/test_heap_process.py
+          python3 tests/snapshot_reclaim.py --mode all 2>&1 | tee build/snapshot-reclaim.log
+          python3 tests/snapshot_reclaim.py --mode sanitize 2>&1 | tee build/snapshot-reclaim-sanitize.log
+      - name: Snapshot reclamation heap ownership
+        if: runner.os == 'macOS'
+        working-directory: luce-prism
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 tests/snapshot_reclaim.py --mode native0 --heap 2>&1 | tee build/snapshot-reclaim-heap.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -75,3 +90,4 @@ jobs:
             luce-prism/build/correctness.log
             luce-prism/build/table-export.log
             luce-prism/build/listener-close.log
+            luce-prism/build/snapshot-reclaim*.log

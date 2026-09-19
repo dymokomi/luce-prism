@@ -1,0 +1,47 @@
+import prism
+import memory
+
+pub func main(arguments: str[]) -> i32!:
+    assert(arguments.length == 3)
+    let store = try prism.Store.open(arguments[1], token = "snapshot-fixture")
+    defer store.release()
+    if arguments[2] == "write":
+        let bytes = try alloc u8[1048576] in memory.heap
+        defer free(bytes) in memory.heap
+        for i in 0..<bytes.length: bytes[i] = (u8)(i % 251)
+        let value = try prism.Value.array(prism.DType.uint8, [1048576], bytes)
+        defer value.release()
+        for round in 0..<(usize)2:
+            let tx = try store.value().begin()
+            defer tx.release()
+            if round == 0: try tx.value().add("/data", "file")
+            for i in 0..<(usize)10:
+                var label_buffer: u8[32]
+                let label = try format(label_buffer, f"v{round * 10 + i}")
+                try tx.value().set("/data", label, value)
+            discard(try tx.value().commit(wait_ms = 1000))
+            tx.value().close()
+            discard(try store.value().bake(wait_ms = 1000))
+        # Leave one committed generation unbaked, exercising reopen discovery.
+        let pending = try store.value().begin()
+        defer pending.release()
+        let marker = try prism.Value.text("pending")
+        defer marker.release()
+        try pending.value().set("/data", "pending", marker)
+        discard(try pending.value().commit(wait_ms = 1000))
+    else:
+        let snapshot = try store.value().snapshot()
+        defer snapshot.release()
+        for i in 0..<(usize)20:
+            var label_buffer: u8[32]
+            let label = try format(label_buffer, f"v{i}")
+            let value = try snapshot.value().get("/data", label)
+            defer value.release()
+            let bytes = value.value().bytes()
+            assert(bytes.length == 1048576)
+            assert(bytes[0] == 0 and bytes[1048575] == (u8)(1048575 % 251))
+        let pending = try snapshot.value().get("/data", "pending")
+        defer pending.release()
+        assert(try pending.value().text_at() == "pending")
+    print("PASS snapshot reclaim and unbaked reopen")
+    return 0
