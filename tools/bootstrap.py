@@ -26,7 +26,7 @@ def main():
     crypto = ROOT.parent / "luce-crypto"
     for source, pin in ((base, "BASE"), (luce, "LUCE"), (crypto, "CRYPTO"),
                         (ROOT.parent / "luce-tls", "TLS")):
-        expected = (ROOT / "bootstrap" / pin).read_text().strip()
+        expected = (ROOT / "bootstrap" / pin).read_text(encoding="ascii").strip()
         actual = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
         if subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"]):
             raise SystemExit(f"dirty source: {source}")

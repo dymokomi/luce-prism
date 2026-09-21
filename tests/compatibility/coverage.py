@@ -19,10 +19,10 @@ EXTERNAL_SUITES = {
 
 def audit(update=False, require_complete=False):
     path = HERE / 'inventory.json'
-    inventory = json.loads(path.read_text())
+    inventory = json.loads(path.read_text(encoding='utf-8'))
     implementations = {}
     for source in sorted(HERE.glob('*.lucb')):
-        text = source.read_text()
+        text = source.read_text(encoding='utf-8')
         names = set(re.findall(r'^func ([A-Za-z_][A-Za-z0-9_]*)\(', text, re.M))
         names.update(re.findall(r'Case\("([A-Za-z_][A-Za-z0-9_]*)"', text))
         for name in names:
@@ -33,7 +33,7 @@ def audit(update=False, require_complete=False):
     for source in sorted(HERE.glob('*.json')):
         if source.name == 'inventory.json':
             continue
-        fixtures = json.loads(source.read_text())
+        fixtures = json.loads(source.read_text(encoding='utf-8'))
         if not isinstance(fixtures, list):
             continue
         for fixture in fixtures:

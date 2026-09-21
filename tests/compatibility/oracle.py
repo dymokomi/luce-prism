@@ -10,7 +10,7 @@ HERE = Path(__file__).resolve().parent
 def run_native(native, oracle, scratch):
     """Both encodings must reconstruct independently pinned C++ model bytes."""
     comparisons = 0
-    for case in json.loads((HERE / 'native.json').read_text()):
+    for case in json.loads((HERE / 'native.json').read_text(encoding='utf-8')):
         source = scratch / 'native-corpus-source'
         source.write_text(case['source'], encoding='utf-8')
         for writer in ([native, oracle] if oracle else [native]):
@@ -27,7 +27,7 @@ def run_native(native, oracle, scratch):
 
 def run_surface(native, oracle, scratch):
     comparisons = 0
-    for case in json.loads((HERE / 'surface.json').read_text()):
+    for case in json.loads((HERE / 'surface.json').read_text(encoding='utf-8')):
         source = scratch / 'surface-source'
         source.write_text(case['source'], encoding='utf-8')
         for program in ([native, oracle] if oracle else [native]):
@@ -45,7 +45,7 @@ def run_surface(native, oracle, scratch):
 
 
 def run_codecs(native, oracle, scratch):
-    cases = json.loads((HERE / 'codecs.json').read_text())
+    cases = json.loads((HERE / 'codecs.json').read_text(encoding='utf-8'))
     comparisons = 0
     for index, case in enumerate(cases):
         context = f'{case["name"]} [{index}]'
