@@ -60,9 +60,11 @@ def main():
     modes = [["--native", "--opt", str(level)] for level in levels]
     if args.opt is None:
         modes += [["--backend=c"], ["--backend=c", "--release"]]
+    cache = ROOT / 'build/cache'
+    cache.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, LUCE_BASE=str(args.base.resolve()))
     env.setdefault('LUCE_STD', str(ROOT.parent / 'luce-base/src/std'))
-    env.setdefault('LUCE_CACHE', str(ROOT / 'build/cache'))
+    env.setdefault('LUCE_CACHE', str(cache))
     consumers = [
         (args.base, name + '.lucb') for name in (
             'main', 'format', 'media', 'semantics', 'authoring',

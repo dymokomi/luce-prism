@@ -45,6 +45,15 @@ extern func posix_close as "close"(descriptor: platform.SocketDescriptor) -> i32
 extern func fcntl(descriptor: platform.SocketDescriptor, command: i32, ...) -> i32
 extern func setsockopt(descriptor: platform.SocketDescriptor, level: i32, option: i32, value: const void*, length: u32) -> i32
 extern func unlink_path as "unlink"(path: c.str) -> i32
+extern func WSAStartup(version: u16, data: void*) -> i32
+extern func WSACleanup() -> i32
+extern func WSAGetLastError() -> i32
+extern func closesocket(descriptor: platform.SocketDescriptor) -> i32
+extern func ioctlsocket(descriptor: platform.SocketDescriptor, command: i32, value: u32*) -> i32
+extern func SetHandleInformation(handle: void*, mask: u32, flags: u32) -> i32
+extern func windows_send as "send"(descriptor: platform.SocketDescriptor, data: const void*, length: i32, flags: i32) -> i32
+extern func windows_recv as "recv"(descriptor: platform.SocketDescriptor, buffer: void*, length: i32, flags: i32) -> i32
+extern func atexit(callback: func() -> unit) -> i32
 
 let af_unix: i32 = 1
 let sock_stream: i32 = 1
@@ -54,11 +63,53 @@ let fd_cloexec: i32 = 1
 let nonblocking_flag: i32 = 4 if platform.macos else 2048
 let sock_level: i32 = 65535 if platform.macos else 1
 let nosigpipe_opt: i32 = 4130
-let send_flags: i32 = 0 if platform.macos else 16384
+let send_flags: i32 = 0 if platform.macos or platform.windows else 16384
+let interrupted: i32 = 10004 if platform.windows else c.interrupted
+
+var winsock_lock: sync.Mutex
+var winsock_ready: bool
+
+func socket_errno() -> i32:
+    if platform.windows:
+        return WSAGetLastError()
+    return c.errno()
+
+func socket_cleanup():
+    discard(WSACleanup())
+
+func socket_startup() -> !:
+    if not platform.windows:
+        return
+    winsock_lock.lock()
+    defer winsock_lock.unlock()
+    if winsock_ready:
+        return
+    var data: u64[64]
+    if WSAStartup(514, (void*)&data[0]) != 0:
+        error(closed, "Prism Winsock startup failed")
+    if atexit(socket_cleanup) != 0:
+        discard(WSACleanup())
+        error(closed, "Prism Winsock cleanup could not be registered")
+    winsock_ready = true
+
+func socket_close(fd: platform.SocketDescriptor) -> i32:
+    if platform.windows:
+        return closesocket(fd)
+    return posix_close(fd)
+
+func socket_send(fd: platform.SocketDescriptor, data: const void*, length: usize, flags: i32) -> isize:
+    if platform.windows:
+        return (isize)windows_send(fd, data, (i32)length, flags)
+    return posix_send(fd, data, length, flags)
+
+func socket_recv(fd: platform.SocketDescriptor, data: void*, length: usize, flags: i32) -> isize:
+    if platform.windows:
+        return (isize)windows_recv(fd, data, (i32)length, flags)
+    return posix_recv(fd, data, length, flags)
 
 pub struct Client:
     var references: @u64
-    var fd: i32
+    var fd: platform.SocketDescriptor
     var lock: sync.Mutex
 
     pub func init():
@@ -70,7 +121,7 @@ pub func hold_client(client: Client*):
 pub func drop_client(client: Client*):
     if client.references.sub(1, .acq_rel) == 1:
         if client.fd >= 0:
-            discard(posix_close(client.fd))
+            discard(socket_close(client.fd))
         client.fd = -1
         free(client) in memory.heap
 
@@ -82,15 +133,19 @@ pub func socket_path(dbpath: str) -> Buffer!:
     return out
 
 func mark_cloexec(fd: platform.SocketDescriptor) -> !:
+    if platform.windows:
+        if SetHandleInformation((void*)fd, 1, 0) == 0:
+            error(closed, "Prism socket could not be made non-inheritable")
+        return
     var flags = fcntl(fd, get_fd)
-    while flags < 0 and c.errno() == c.interrupted:
+    while flags < 0 and socket_errno() == interrupted:
         flags = fcntl(fd, get_fd)
     if flags < 0:
         error(closed, "Prism socket flags could not be queried")
     if (flags & fd_cloexec) != 0:
         return
     var result = fcntl(fd, set_fd, flags | fd_cloexec)
-    while result < 0 and c.errno() == c.interrupted:
+    while result < 0 and socket_errno() == interrupted:
         result = fcntl(fd, set_fd, flags | fd_cloexec)
     if result < 0:
         error(closed, "Prism socket could not be marked close-on-exec")
@@ -117,101 +172,108 @@ func fill_unix(path: str, raw: u8[]) -> u32!:
     return (u32)(2 + path.length + 1)
 
 func open_unix() -> platform.SocketDescriptor!:
+    try socket_startup()
     let fd = socket(af_unix, sock_stream, 0)
     if fd < 0:
         error(closed, "Prism unix socket could not be created")
     mark_cloexec(fd) catch failure:
-        discard(posix_close(fd))
+        discard(socket_close(fd))
         error(failure.code, failure.message)
     guard_sigpipe(fd)
     return fd
 
-func set_nonblocking(fd: i32, enabled: bool) -> !:
+func set_nonblocking(fd: platform.SocketDescriptor, enabled: bool) -> !:
+    if platform.windows:
+        var flag: u32 = 1 if enabled else 0
+        if ioctlsocket(fd, -2147195266, &flag) != 0:
+            error(closed, "Prism socket mode change failed")
+        return
     var flags = fcntl(fd, 3)
-    while flags < 0 and c.errno() == c.interrupted: flags = fcntl(fd, 3)
+    while flags < 0 and socket_errno() == interrupted: flags = fcntl(fd, 3)
     if flags < 0: error(closed, "Prism socket flags unavailable")
     let changed = flags | nonblocking_flag if enabled else flags & ~nonblocking_flag
     var result = fcntl(fd, 4, changed)
-    while result < 0 and c.errno() == c.interrupted: result = fcntl(fd, 4, changed)
+    while result < 0 and socket_errno() == interrupted: result = fcntl(fd, 4, changed)
     if result < 0: error(closed, "Prism socket mode change failed")
 
-pub func bind_unix(path: str) -> i32!:
-    with memory.heap:
-        let name = try strings.copy(path)
-        defer strings.release(name)
-        discard(unlink_path((c.str)name))
+pub func bind_unix(path: str) -> platform.SocketDescriptor!:
+    if not platform.windows:
+        with memory.heap:
+            let name = try strings.copy(path)
+            defer strings.release(name)
+            discard(unlink_path((c.str)name))
     var raw: u8[110]
     for i in 0..<raw.length:
         raw[i] = 0
     let length = try fill_unix(path, raw)
     let fd = try open_unix()
     if bind(fd, &raw[0], length) != 0:
-        discard(posix_close(fd))
+        discard(socket_close(fd))
         error(busy, "Prism owner could not bind its socket")
     if listen(fd, 128) != 0:
-        discard(posix_close(fd))
+        discard(socket_close(fd))
         error(busy, "Prism owner could not listen")
     set_nonblocking(fd, true) catch failure:
-        discard(posix_close(fd))
+        discard(socket_close(fd))
         error(failure.code, failure.message)
     return fd
 
-pub func accept_unix(listen_fd: i32) -> i32!:
+pub func accept_unix(listen_fd: platform.SocketDescriptor) -> platform.SocketDescriptor!:
     var fd = accept(listen_fd, none, none)
-    while fd < 0 and c.errno() == c.interrupted:
+    while fd < 0 and socket_errno() == interrupted:
         fd = accept(listen_fd, none, none)
     if fd < 0:
         error(closed, "Prism owner accept failed")
     mark_cloexec(fd) catch failure:
-        discard(posix_close(fd))
+        discard(socket_close(fd))
         error(failure.code, failure.message)
     # BSD may inherit listener flags; session framing uses blocking I/O.
     set_nonblocking(fd, false) catch failure:
-        discard(posix_close(fd))
+        discard(socket_close(fd))
         error(failure.code, failure.message)
     guard_sigpipe(fd)
     return fd
 
-pub func connect_unix(path: str) -> i32!:
+pub func connect_unix(path: str) -> platform.SocketDescriptor!:
     var raw: u8[110]
     for i in 0..<raw.length:
         raw[i] = 0
     let length = try fill_unix(path, raw)
     let fd = try open_unix()
     if connect(fd, &raw[0], length) != 0:
-        discard(posix_close(fd))
+        discard(socket_close(fd))
         error(closed, "Prism client could not connect")
     return fd
 
-pub func close_fd(fd: i32):
+pub func close_fd(fd: platform.SocketDescriptor):
     if fd >= 0:
-        discard(posix_close(fd))
+        discard(socket_close(fd))
 
-func send_all(fd: i32, data: const u8[]) -> !:
+func send_all(fd: platform.SocketDescriptor, data: const u8[]) -> !:
     var offset: usize = 0
     while offset < data.length:
-        let sent = posix_send(fd, data[offset..].data, data.length - offset, send_flags)
+        let sent = socket_send(fd, data[offset..].data, data.length - offset, send_flags)
         if sent < 0:
-            if c.errno() == c.interrupted:
+            if socket_errno() == interrupted:
                 continue
             error(closed, "Prism socket send failed")
         if sent == 0:
             error(closed, "Prism socket send made no progress")
         offset += (usize)sent
 
-func recv_all(fd: i32, data: u8[]) -> !:
+func recv_all(fd: platform.SocketDescriptor, data: u8[]) -> !:
     var offset: usize = 0
     while offset < data.length:
-        let got = posix_recv(fd, data[offset..].data, data.length - offset, 0)
+        let got = socket_recv(fd, data[offset..].data, data.length - offset, 0)
         if got < 0:
-            if c.errno() == c.interrupted:
+            if socket_errno() == interrupted:
                 continue
             error(closed, "Prism socket recv failed")
         if got == 0:
             error(closed, "Prism socket closed")
         offset += (usize)got
 
-pub func write_frame(fd: i32, payload: const u8[]) -> !:
+pub func write_frame(fd: platform.SocketDescriptor, payload: const u8[]) -> !:
     if payload.length > max_frame:
         error(limit_exceeded, "Prism IPC frame exceeds 16 MiB")
     var header: u8[4]
@@ -224,7 +286,7 @@ pub func write_frame(fd: i32, payload: const u8[]) -> !:
     if payload.length > 0:
         try send_all(fd, payload)
 
-pub func read_frame(fd: i32) -> Buffer!:
+pub func read_frame(fd: platform.SocketDescriptor) -> Buffer!:
     var header: u8[4]
     try recv_all(fd, header)
     let n = (usize)header[0] | ((usize)header[1] << 8) | ((usize)header[2] << 16) | ((usize)header[3] << 24)

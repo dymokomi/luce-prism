@@ -5,6 +5,7 @@ import sync
 import thread
 import files
 import c
+import platform
 import luce_prism.admit as admit
 import luce_prism.ipc as ipc
 import luce_prism.tls_pipe as tls_pipe
@@ -107,7 +108,7 @@ pub struct Inner:
     var resident: @u64
     var conflicted: @u64
     var persist: persist.Journal*?
-    var listen_fd: i32
+    var listen_fd: platform.SocketDescriptor
     var listen_path: Buffer
     var serving: @u64
     var accept_thread: thread.Handle?
@@ -975,7 +976,7 @@ struct LiveHandle:
 
 struct ConnCtx:
     var inner: Inner*
-    var fd: i32
+    var fd: platform.SocketDescriptor
 
     pub func init():
         return
@@ -1313,7 +1314,7 @@ func dispatch(inner: Inner*, handles: List[LiveHandle]*, next: u64*, body: const
         return try ipc.ok_frame()
     error(invalid, "unknown Prism IPC opcode")
 
-func write_error_frame(fd: i32, code: ErrorCode, message: str):
+func write_error_frame(fd: platform.SocketDescriptor, code: ErrorCode, message: str):
     var failed = ipc.error_frame(code, message) catch failure:
         return
     ipc.write_frame(fd, failed.bytes()) catch failure:

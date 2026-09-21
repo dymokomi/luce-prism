@@ -6,10 +6,12 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
-base = ROOT / 'build/toolchain/luce-base'
+base = Path(os.environ.get('LUCE_BASE_COMPILER', ROOT / 'build/toolchain/luce-base'))
+cache = ROOT / 'build/cache'
+cache.mkdir(parents=True, exist_ok=True)
 env = dict(os.environ)
 env.setdefault('LUCE_STD', str(ROOT.parent / 'luce-base/src/std'))
-env.setdefault('LUCE_CACHE', str(ROOT / 'build/cache'))
+env.setdefault('LUCE_CACHE', str(cache))
 modes = [(f'native{i}', ['--native', '--opt', str(i)]) for i in range(4)]
 modes += [('c', ['--backend=c']), ('c-release', ['--backend=c', '--release'])]
 for mode, flags in modes:
