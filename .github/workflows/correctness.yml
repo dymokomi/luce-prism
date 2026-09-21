@@ -5,7 +5,7 @@ permissions:
 jobs:
   test:
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -67,6 +67,12 @@ jobs:
         run: |
           set -o pipefail
           python3 tests/table_export.py 2>&1 | tee build/table-export.log
+      - name: Shared pool worker race
+        working-directory: luce-prism
+        shell: bash
+        run: |
+          set -o pipefail
+          python3 tests/pool_race.py 2>&1 | tee build/pool-race.log
       - name: Snapshot reclamation in six modes
         working-directory: luce-prism
         shell: bash
@@ -89,5 +95,6 @@ jobs:
           path: |
             luce-prism/build/correctness.log
             luce-prism/build/table-export.log
+            luce-prism/build/pool-race.log
             luce-prism/build/listener-close.log
             luce-prism/build/snapshot-reclaim*.log

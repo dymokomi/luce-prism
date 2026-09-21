@@ -102,6 +102,7 @@ struct CatalogEntry:
 pub struct Inner:
     var references: @u64
     var catalog_lock: sync.Mutex
+    var pool_lock: sync.Mutex
     var catalog: List[CatalogEntry]
     var root: Buffer
     var memory_limit: usize
@@ -205,6 +206,87 @@ func uncharge(inner: Inner*, delta_bytes: usize):
 func estimate(path: str, name: str, payload: usize) -> usize:
     return 64 + path.length + name.length + payload
 
+struct PoolKey:
+    var identity: Buffer
+    var path: Buffer
+    var name: Buffer
+
+    mutating func close():
+        self.identity.close()
+        self.path.close()
+        self.name.close()
+
+struct PoolStatistics:
+    var pinned_bytes: usize
+    var faults: u64
+    var evictions: u64
+
+func touch_pool(inner: Inner*, identity: str, path: str, name: str, size: usize) -> !:
+    inner.pool_lock.lock()
+    defer inner.pool_lock.unlock()
+    try pool.touch(&inner.pool, identity, path, name, size)
+
+func drop_pool_entry(inner: Inner*, identity: str, path: str, name: str):
+    inner.pool_lock.lock()
+    defer inner.pool_lock.unlock()
+    pool.drop_entry(&inner.pool, identity, path, name)
+
+func pool_is_pinned(inner: Inner*, identity: str, path: str) -> bool:
+    inner.pool_lock.lock()
+    defer inner.pool_lock.unlock()
+    return pool.pinned(&inner.pool, identity, path)
+
+func copy_coldest_pool_key(inner: Inner*) -> PoolKey?:
+    inner.pool_lock.lock()
+    defer inner.pool_lock.unlock()
+    let index = pool.coldest(&inner.pool) else return none
+    var identity = inner.pool.entries.items[index].identity.copy() catch failure:
+        return none
+    var path = inner.pool.entries.items[index].path.copy() catch failure:
+        identity.close()
+        return none
+    var name = inner.pool.entries.items[index].name.copy() catch failure:
+        path.close()
+        identity.close()
+        return none
+    return PoolKey(identity = identity, path = path, name = name)
+
+func allocate_extent(inner: Inner*) -> u64:
+    inner.pool_lock.lock()
+    defer inner.pool_lock.unlock()
+    let extent = inner.pool.next_extent
+    inner.pool.next_extent += 1
+    return extent
+
+func record_eviction(inner: Inner*, size: usize):
+    inner.pool_lock.lock()
+    defer inner.pool_lock.unlock()
+    inner.pool.evictions += 1
+    if inner.table_charge >= size:
+        inner.table_charge -= size
+
+func record_fault(inner: Inner*, size: usize):
+    inner.pool_lock.lock()
+    defer inner.pool_lock.unlock()
+    inner.table_charge += size
+    inner.pool.faults += 1
+
+func pin_pool(inner: Inner*, identity: str, path: str) -> !:
+    inner.pool_lock.lock()
+    defer inner.pool_lock.unlock()
+    try pool.pin(&inner.pool, identity, path)
+
+func unpin_pool(inner: Inner*, identity: str, path: str):
+    inner.pool_lock.lock()
+    defer inner.pool_lock.unlock()
+    pool.unpin(&inner.pool, identity, path)
+
+func pool_statistics(inner: Inner*) -> PoolStatistics:
+    inner.pool_lock.lock()
+    defer inner.pool_lock.unlock()
+    return PoolStatistics(pinned_bytes = pool.pinned_bytes(&inner.pool), faults = inner.pool.faults,
+        evictions = inner.pool.evictions)
+
 func register_tables(inner: Inner*, identity: str, owned: tables.Tables*):
     var i: usize = 0
     let n = tables.node_count(owned.by_path)
@@ -213,7 +295,7 @@ func register_tables(inner: Inner*, identity: str, owned: tables.Tables*):
             if let element = node.element:
                 for prop in element.properties.span():
                     if not is_stub(&prop.value) and prop.value.payload.used > 0:
-                        pool.touch(&inner.pool, identity, element.path.view(), prop.name.view(), prop.value.payload.used) catch failure:
+                        touch_pool(inner, identity, element.path.view(), prop.name.view(), prop.value.payload.used) catch failure:
                             discard(failure)
         i += 1
     owned.bytes = tables.payload_bytes(owned)
@@ -225,7 +307,7 @@ func find_property(element: tables.Element*, name: str) -> ValueData*?:
     return none
 
 func evict_discard(inner: Inner*, identity: str, path: str, name: str):
-    pool.drop_entry(&inner.pool, identity, path, name)
+    drop_pool_entry(inner, identity, path, name)
 
 func page_out(inner: Inner*, journal: persist.Journal*, owned: tables.Tables*, identity: str, path: str, name: str, value: ValueData*, generation: u64) -> usize:
     if is_stub(value) or value.payload.used == 0:
@@ -237,7 +319,7 @@ func page_out(inner: Inner*, journal: persist.Journal*, owned: tables.Tables*, i
         var blob = value.payload.copy() catch failure:
             loc_id.close()
             return 0
-        let extent = inner.pool.next_extent
+        let extent = allocate_extent(inner)
         persist.write_extent(journal, identity, generation, extent, blob.bytes()) catch failure:
             blob.close()
             loc_id.close()
@@ -249,12 +331,9 @@ func page_out(inner: Inner*, journal: persist.Journal*, owned: tables.Tables*, i
         value.locator.generation = (usize)generation
         value.locator.extent = (usize)extent
         value.locator.size = size
-        inner.pool.next_extent += 1
     value.payload.close()
     value.payload = Buffer()
-    inner.pool.evictions += 1
-    if inner.table_charge >= size:
-        inner.table_charge -= size
+    record_eviction(inner, size)
     if owned.bytes >= size:
         owned.bytes -= size
     uncharge(inner, size)
@@ -267,7 +346,7 @@ func evict_from_state(inner: Inner*, journal: persist.Journal*, identity: str, s
     while j < n:
         if let node = tables.at(state.tables.by_path, j):
             if let element = node.element:
-                if not pool.pinned(&inner.pool, identity, element.path.view()):
+                if not pool_is_pinned(inner, identity, element.path.view()):
                     var p: usize = 0
                     while p < element.properties.count:
                         let value = &element.properties.items[p].value
@@ -282,36 +361,26 @@ func evict_from_state(inner: Inner*, journal: persist.Journal*, identity: str, s
 func evict_one(inner: Inner*) -> usize:
     let journal = inner.persist else return 0
     while true:
-        let index = pool.coldest(&inner.pool) else break
-        var identity = inner.pool.entries.items[index].identity.copy() catch failure:
-            return 0
-        var path = inner.pool.entries.items[index].path.copy() catch failure:
-            identity.close()
-            return 0
-        var name = inner.pool.entries.items[index].name.copy() catch failure:
-            path.close()
-            identity.close()
-            return 0
-        let found = find_state_opt(inner, identity.view())
+        var key = copy_coldest_pool_key(inner) else break
+        let identity = key.identity.view()
+        let path = key.path.view()
+        let name = key.name.view()
+        let found = find_state_opt(inner, identity)
         if found == none:
-            evict_discard(inner, identity.view(), path.view(), name.view())
-            name.close()
-            path.close()
-            identity.close()
+            evict_discard(inner, identity, path, name)
+            key.close()
             continue
         let state = found else trap("evict state")
         state.head_lock.lock()
         var freed: usize = 0
-        if not pool.pinned(&inner.pool, identity.view(), path.view()):
-            if let element = tables.find_element(state.tables, path.view()):
-                if let value = find_property(element, name.view()):
-                    freed = page_out(inner, journal, state.tables, identity.view(), path.view(), name.view(), value, state.generation)
+        if not pool_is_pinned(inner, identity, path):
+            if let element = tables.find_element(state.tables, path):
+                if let value = find_property(element, name):
+                    freed = page_out(inner, journal, state.tables, identity, path, name, value, state.generation)
         state.head_lock.unlock()
         if freed == 0:
-            evict_discard(inner, identity.view(), path.view(), name.view())
-        name.close()
-        path.close()
-        identity.close()
+            evict_discard(inner, identity, path, name)
+        key.close()
         if freed > 0:
             return freed
     inner.catalog_lock.lock()
@@ -335,7 +404,7 @@ func evict_to_limit(inner: Inner*) -> !:
 func fault_property(inner: Inner*, identity: str, path: str, name: str, value: ValueData*) -> !:
     if not is_stub(value):
         if value.payload.used > 0:
-            pool.touch(&inner.pool, identity, path, name, value.payload.used) catch failure:
+            touch_pool(inner, identity, path, name, value.payload.used) catch failure:
                 discard(failure)
         return
     let journal = inner.persist else error(missing, "Prism payload is not resident")
@@ -345,12 +414,13 @@ func fault_property(inner: Inner*, identity: str, path: str, name: str, value: V
     var blob = try persist.read_extent(journal, value.locator.identity.view(), (u64)value.locator.generation, (u64)value.locator.extent)
     value.payload.close()
     value.payload = blob
-    inner.table_charge += size
-    inner.pool.faults += 1
-    pool.touch(&inner.pool, identity, path, name, size) catch failure:
+    record_fault(inner, size)
+    touch_pool(inner, identity, path, name, size) catch failure:
         discard(failure)
 
 func adjust_table_charge(inner: Inner*, new_bytes: usize) -> !:
+    inner.pool_lock.lock()
+    defer inner.pool_lock.unlock()
     if new_bytes > inner.table_charge:
         let added = new_bytes - inner.table_charge
         discard(inner.resident.add((u64)added, .acq_rel))
@@ -915,11 +985,11 @@ pub struct Session:
                         for p in 0..<element.properties.count:
                             try fault_property(inner, identity, element_path, element.properties.items[p].name.view(), &element.properties.items[p].value)
             i += 1
-        try pool.pin(&inner.pool, identity, path)
+        try pin_pool(inner, identity, path)
         var copy = try text_copy(path)
         self.pins.push(copy) catch failure:
             copy.close()
-            pool.unpin(&inner.pool, identity, path)
+            unpin_pool(inner, identity, path)
             error(failure.code, failure.message)
 
     pub mutating func unpin(path: str) -> !:
@@ -927,7 +997,7 @@ pub struct Session:
         if self.remote != none:
             return
         let inner = try self.require_inner()
-        pool.unpin(&inner.pool, self.identity.view(), path)
+        unpin_pool(inner, self.identity.view(), path)
         for i in 0..<self.pins.count:
             if self.pins.items[i].view() == path:
                 self.pins.items[i].close()
@@ -954,7 +1024,7 @@ pub struct Session:
                 unregister_view(inner, state, self.view_generation)
                 state.head_lock.unlock()
             for pin in self.pins.span():
-                pool.unpin(&inner.pool, self.identity.view(), pin.view())
+                unpin_pool(inner, self.identity.view(), pin.view())
             close_names(&self.pins)
             close_published(&self.unbaked)
             if let root = self.tables:
@@ -2354,10 +2424,11 @@ pub struct Store:
         let views = (i64)state.views.count
         state.head_lock.unlock()
         let admission = state.writer.statistics()
+        let cache = pool_statistics(inner)
         return Statistics(generation, elements, (i64)inner.resident.load(.acquire), (i64)inner.memory_limit, views,
             admission.waiting, admission.peak, admission.enqueued, admission.busy_returns, admission.timeouts,
-            (i64)inner.conflicted.load(.acquire), (i64)logical_bytes(inner), (i64)pool.pinned_bytes(&inner.pool),
-            (i64)inner.pool.faults, (i64)inner.pool.evictions)
+            (i64)inner.conflicted.load(.acquire), (i64)logical_bytes(inner), (i64)cache.pinned_bytes,
+            (i64)cache.faults, (i64)cache.evictions)
 
     pub func dump(path: str) -> !:
         try file_io.ensure_directory(path)
