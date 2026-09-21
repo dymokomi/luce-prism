@@ -46,4 +46,7 @@ jobs:
       - name: Run Windows contracts
         working-directory: luce-prism
         shell: msys2 {0}
-        run: python tests/run.py
+        run: >-
+          python tests/run.py
+          --base ../luce-base/build/luce-base.exe
+          --luce ../luce/build/luce.exe
