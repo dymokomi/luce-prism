@@ -21,8 +21,10 @@ def run(command, **kwargs):
 
 
 def run_ipc(binary, env):
-    # Short runner-owned paths also fit Unix socket path limits on macOS.
-    with tempfile.TemporaryDirectory(prefix='prism-ipc-', dir='/tmp') as temporary:
+    # Keep Unix socket paths short on macOS; Windows' native Python cannot open
+    # the MSYS-only /tmp alias, so use its runner-owned temporary directory.
+    socket_temp = None if os.name == 'nt' else '/tmp'
+    with tempfile.TemporaryDirectory(prefix='prism-ipc-', dir=socket_temp) as temporary:
         db = Path(temporary) / 'root.db'
         sock = Path(str(db) + '.sock')
         owner = subprocess.Popen([str(binary), 'owner', str(db), str(sock)], cwd=ROOT, env=env)
