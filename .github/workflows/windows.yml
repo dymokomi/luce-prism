@@ -18,6 +18,8 @@ jobs:
         run: |
           "base=$(Get-Content luce-prism/bootstrap/BASE)" >> $env:GITHUB_OUTPUT
           "luce=$(Get-Content luce-prism/bootstrap/LUCE)" >> $env:GITHUB_OUTPUT
+          "crypto=$(Get-Content luce-prism/bootstrap/CRYPTO)" >> $env:GITHUB_OUTPUT
+          "tls=$(Get-Content luce-prism/bootstrap/TLS)" >> $env:GITHUB_OUTPUT
       - uses: actions/checkout@v7
         with:
           repository: dymokomi/luce-base
@@ -28,6 +30,16 @@ jobs:
           repository: dymokomi/luce
           ref: ${{ steps.pins.outputs.luce }}
           path: luce
+      - uses: actions/checkout@v7
+        with:
+          repository: dymokomi/luce-crypto
+          ref: ${{ steps.pins.outputs.crypto }}
+          path: luce-crypto
+      - uses: actions/checkout@v7
+        with:
+          repository: dymokomi/luce-tls
+          ref: ${{ steps.pins.outputs.tls }}
+          path: luce-tls
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
