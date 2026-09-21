@@ -88,6 +88,9 @@ pub struct Journal:
             replacement = self.directory.open_file((c.str)self.filename, files.OpenMode.read_write,
                 follow_symlinks = false, nonblocking = true) catch failure:
                 error(uncertain, "checkpoint published but could not be reopened; reopen")
+            let positioned = replacement.seek(size) catch failure:
+                error(uncertain, "checkpoint published but append position could not be restored; reopen")
+            discard(positioned)
         ## Success means publication regardless of whether a custom hook set its flag.
         let published_metadata = self.directory.entry_metadata((c.str)self.filename, follow_symlinks = false) catch failure:
             error(uncertain, "checkpoint published pathname cannot be verified; reopen")
