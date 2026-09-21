@@ -136,8 +136,7 @@ pub func replace(context: void*?, directory: files.Directory*, source: c.str, ta
         # required while the journal and freshly-synced replacement handles are
         # still live. MoveFileEx can reject this valid checkpoint pattern with
         # a sharing violation even though both handles grant FILE_SHARE_DELETE.
-        if ReplaceFileW(target_path.data, source_path.data, none, 1, none, none) == 0:
-            print(f"ReplaceFileW failed with Windows error {windows_abi.GetLastError()}")
+        if ReplaceFileW(target_path.data, source_path.data, none, 0, none, none) == 0:
             error(io.failed, "checkpoint rename failed; publication may have occurred")
         return
     let descriptor = try directory.descriptor()

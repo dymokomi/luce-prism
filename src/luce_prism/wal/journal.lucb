@@ -4,6 +4,7 @@ import c
 import files
 import io
 import memory
+import platform
 import paths
 import strings
 import luce_prism.wal.tree as tree
@@ -73,11 +74,20 @@ pub struct Journal:
         try self.controls.sync(self.controls.context, &replacement)
         if (try replacement.metadata()).size != size: error(invalid, "checkpoint file size mismatch")
         try self.check_identity()
+        # ReplaceFileW deliberately opens the replacement with no sharing mode.
+        # Close our synced handle before publication, then reopen the published
+        # identity below. Unix rename keeps the open descriptor throughout.
+        if platform.windows:
+            try self.controls.close(self.controls.context, &replacement)
         var published = false
         self.controls.replace(self.controls.context, &self.directory, (c.str)name, (c.str)self.filename, &published) catch failure:
             if published: error(uncertain, "checkpoint replacement outcome uncertain; reopen")
             error(failure.code, failure.message)
         owned = false
+        if platform.windows:
+            replacement = self.directory.open_file((c.str)self.filename, files.OpenMode.read_write,
+                follow_symlinks = false, nonblocking = true) catch failure:
+                error(uncertain, "checkpoint published but could not be reopened; reopen")
         ## Success means publication regardless of whether a custom hook set its flag.
         let published_metadata = self.directory.entry_metadata((c.str)self.filename, follow_symlinks = false) catch failure:
             error(uncertain, "checkpoint published pathname cannot be verified; reopen")
