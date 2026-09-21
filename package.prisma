@@ -1,0 +1,32 @@
+#prisma 4.0
+def package "luce-prism" {
+    str owner = "dymokomi"
+    str version = "0.1.0"
+    str language = "luce-base"
+    str description = "Prism's native document engine, written in Luce Base and usable from Luce. It is self-contained: in-memory tables, WAL, an exclusive OS file lock, save/load, and a local owner socket. It does not depend on luce-db."
+    str readme = "README.md"
+
+    def export "prism" {
+        str module = "luce_prism.prism"
+    }
+
+    def export "tables" {
+        str module = "luce_prism.tables"
+    }
+
+    def export "persist" {
+        str module = "luce_prism.persist"
+    }
+
+    def dependency "luce-tls" {
+        str owner = "dymokomi"
+        str version = "^0.1.0"
+        str path = "../luce-tls"
+    }
+
+    def dependency "luce-crypto" {
+        str owner = "dymokomi"
+        str version = "^0.1.0"
+        str path = "../luce-crypto"
+    }
+}
