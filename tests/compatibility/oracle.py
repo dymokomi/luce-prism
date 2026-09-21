@@ -65,7 +65,13 @@ def run_codecs(native, oracle, scratch):
         if case.get('reject'):
             continue
         for document in documents:
-            assert hashlib.sha256(document.read_bytes()).hexdigest() == case['cpp_prism_sha256'], (context, 'decoded Prism differs from pinned C++')
+            model = document.read_bytes()
+            digest = hashlib.sha256(model).hexdigest()
+            assert digest == case['cpp_prism_sha256'], (
+                context, 'decoded Prism differs from pinned C++',
+                f'expected={case["cpp_prism_sha256"]}', f'actual={digest}',
+                f'bytes={model.hex()}',
+            )
         comparisons += 1
         outputs = [case['codec']]
         if case['codec'] in ('markdown', 'html'):

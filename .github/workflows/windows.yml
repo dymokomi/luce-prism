@@ -55,6 +55,15 @@ jobs:
         working-directory: luce
         shell: msys2 {0}
         run: python tools/build_windows.py
+      - name: Run Windows codec preflight
+        working-directory: luce-prism
+        shell: msys2 {0}
+        run: >-
+          python tests/run.py
+          --base ../luce-base/build/luce-base.exe
+          --luce ../luce/build/luce.exe
+          --opt 0
+          --codec-only
       - name: Run Windows contracts
         working-directory: luce-prism
         shell: msys2 {0}

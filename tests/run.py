@@ -52,6 +52,7 @@ def main():
     parser.add_argument('--base', type=Path, default=Path(os.environ.get('LUCE_BASE_COMPILER', ROOT / f'build/toolchain/luce-base{SUFFIX}')))
     parser.add_argument('--luce', type=Path, default=Path(os.environ.get('LUCE_COMPILER', ROOT / f'build/toolchain/luce{SUFFIX}')))
     parser.add_argument('--opt', type=int, choices=range(4))
+    parser.add_argument('--codec-only', action='store_true', help='Run only the foreign-codec compatibility fixtures')
     parser.add_argument('--oracle', type=Path, help='Optional C++ oracle built against kinogaki-core')
     args = parser.parse_args()
     audit(require_complete=True)
@@ -80,6 +81,14 @@ def main():
     ]
     with tempfile.TemporaryDirectory(prefix='luce-prism-test-') as temporary:
         scratch = Path(temporary)
+        if args.codec_only:
+            for flags in modes:
+                print('Testing codec preflight', ' '.join(flags), flush=True)
+                codec = scratch / ('codec' + SUFFIX)
+                run([args.base.resolve(), 'build', ROOT / 'tests/codec.lucb', *flags, '-o', codec], env=env)
+                run_codecs(codec, args.oracle.resolve() if args.oracle else None, scratch)
+            print('PASS requested Prism codec preflight modes', flush=True)
+            return
         for index, flags in enumerate(modes):
             print('Testing', ' '.join(flags), flush=True)
             for compiler, source in consumers:
