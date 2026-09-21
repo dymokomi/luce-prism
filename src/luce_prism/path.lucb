@@ -3,10 +3,11 @@ from luce_prism.storage import Buffer
 from luce_prism.types import invalid
 
 pub func name_byte(byte: u8) -> bool:
-    return (byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z') or (byte >= '0' and byte <= '9') or byte == '_'
+    return (byte >= 'A' and byte <= 'Z') or (byte >= 'a' and byte <= 'z') or (byte >= '0' and byte <= '9') or byte == '_' or byte == '-'
 
+## A hyphen may not lead, so a name never reads as a negative number or a flag.
 pub func valid_name(name: str) -> bool:
-    if name.length == 0:
+    if name.length == 0 or name.bytes[0] == '-':
         return false
     for byte in name.bytes:
         if not name_byte(byte):

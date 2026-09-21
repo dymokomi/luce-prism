@@ -22,7 +22,7 @@ func root() -> !:
     assert(value.is_root() and value.text() == "/" and value.name() == none and try value.parent() == none)
 
 func malformed_rejected() -> !:
-    let bad: str[9] = ["world/sphere", "", "/world//sphere", "/world/", "/world/a.b/c", "/world/a.b.c", "/world/a b", "/.x", "/world/a."]
+    let bad: str[11] = ["world/sphere", "", "/world//sphere", "/world/", "/world/a.b/c", "/world/a.b.c", "/world/a b", "/.x", "/world/a.", "/world/-lead", "/world/a.-lead"]
     for text in bad:
         assert(not prism.valid_path(text))
         var value = prism.Path(text) catch failure:
@@ -30,6 +30,15 @@ func malformed_rejected() -> !:
             continue
         value.close()
         assert(false)
+
+## Hyphens are name bytes anywhere but first, for identifiers such as package names.
+func hyphenated_accepted() -> !:
+    let good: str[3] = ["/luced/luce-ui", "/a-b/c-d.e-f", "/x/trailing-"]
+    for text in good:
+        assert(prism.valid_path(text))
+    var value = try prism.Path("/luced/luce-ui.version")
+    defer value.close()
+    assert(value.name() == "luce-ui" and value.property() == "version")
 
 func hierarchy_helpers() -> !:
     var value = try prism.Path("/a/b/c")
@@ -127,6 +136,7 @@ pub func run() -> !:
     try parse_element_and_property()
     try root()
     try malformed_rejected()
+    try hyphenated_accepted()
     try hierarchy_helpers()
     try ancestry_reflexive_and_slot_ignoring()
     try reparent_prefix_substitution()

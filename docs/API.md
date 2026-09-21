@@ -35,8 +35,8 @@ from a string Value contains length prefixes, not concatenated text.
   `append` chooses a unique name; `add_child` allocates an anonymous child.
   `define(document, path, kind)` and `edit(document, path)` return stable, chainable
   handles with typed `get_*` defaults and `require_*` checked getters.
-  `/` is the pseudo-root, not a stored element. Names use ASCII letters, digits
-  and underscores or anonymous `[N]` segments. Type tokens and property names may
+  `/` is the pseudo-root, not a stored element. Names use ASCII letters, digits,
+  underscores and non-leading hyphens, or anonymous `[N]` segments. Type tokens and property names may
   be arbitrary text. Slots must use the path grammar's single name component.
 - `set(path, name, value, type_name="")` sets the default; existing animation stays.
   The optional catalog label must match the dtype/shape when encoding text.
