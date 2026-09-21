@@ -132,10 +132,9 @@ pub func replace(context: void*?, directory: files.Directory*, source: c.str, ta
         let target_path = try windows_path(directory, target)
         defer free(target_path)
         *possibly_published = true
-        # ReplaceFile opens both names with read/write/delete sharing, which is
-        # required while the journal and freshly-synced replacement handles are
-        # still live. MoveFileEx can reject this valid checkpoint pattern with
-        # a sharing violation even though both handles grant FILE_SHARE_DELETE.
+        # ReplaceFile opens the destination with read/write/delete sharing, so
+        # the live journal handle remains valid. Its replacement open is
+        # exclusive; Journal.compact closes that synced handle before this call.
         if ReplaceFileW(target_path.data, source_path.data, none, 0, none, none) == 0:
             error(io.failed, "checkpoint rename failed; publication may have occurred")
         return
