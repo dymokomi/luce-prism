@@ -1,7 +1,7 @@
 # luce-prism
 
 Prism's native document engine, written in **Luce Base** and usable from **Luce**.
-It is self-contained: in-memory tables, WAL, flock, save/load, and a Unix owner
+It is self-contained: in-memory tables, WAL, an exclusive OS file lock, save/load, and a local owner
 socket. It does not depend on luce-db. A document holds path-addressed elements,
 typed multidimensional values, metadata, animation and connections. Documents,
 images, vectors, scenes and bundles can share this substrate without the container

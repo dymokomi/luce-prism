@@ -19,6 +19,7 @@ extern func unlinkat(directory: i32, name: c.str, flags: i32) -> i32
 extern func renameat2(source_directory: i32, source: c.str, target_directory: i32, target: c.str, flags: u32) -> i32
 extern func renameatx_np(source_directory: i32, source: c.str, target_directory: i32, target: c.str, flags: u32) -> i32
 extern func win_handle as "_get_osfhandle"(descriptor: i32) -> isize
+extern func flock(descriptor: i32, flags: i32) -> i32
 extern func GetFinalPathNameByHandleW(handle: void*, output: u16*, capacity: u32, flags: u32) -> u32
 extern func MoveFileExW(source: u16*, destination: u16*, flags: u32) -> i32
 extern func DeleteFileW(path: u16*) -> i32
@@ -49,7 +50,7 @@ inline func windows_path(directory: files.Directory*, name: c.str) -> u16[]!:
 
 ## O_CREAT without O_EXCL can race another creator and report ENOENT on the
 ## tested host. Open existing or create exclusively; retry only a creation loser.
-## Never remove/recreate a published lock inode. Caller validates it and flocks it.
+## Never remove/recreate a published lock inode. Caller validates and locks it.
 pub func open_lock_file(directory: files.Directory*, name: c.str) -> files.File!:
     for attempt in 0..<128:
         let existing: files.File? = directory.open_file(name, files.OpenMode.read_write, follow_symlinks = false, nonblocking = true) catch failure:
@@ -61,6 +62,21 @@ pub func open_lock_file(directory: files.Directory*, name: c.str) -> files.File!
             error(failure.code, failure.message)
         return created
     error(busy, "database lock creation retry bound reached")
+
+## Acquire the process-lifetime exclusive lock held by `file`. Both APIs release
+## the lock when the owned descriptor/handle closes, including every error path.
+pub func lock_file(file: files.File*) -> !:
+    let descriptor = file.descriptor() else error(invalid, "database lock is closed")
+    if platform.windows:
+        let native = win_handle(descriptor)
+        if native < 0:
+            error(invalid, "database lock handle is unavailable")
+        var overlapped = windows_abi.Overlapped()
+        if windows_abi.LockFileEx((void*)native, 3, 0, 4294967295, 4294967295, &overlapped) == 0:
+            error(busy, "database already has an owner or locking failed")
+        return
+    if flock(descriptor, 6) != 0:
+        error(busy, "database already has an owner or locking failed")
 
 ## Atomic no-replace; unsupported platforms/filesystems fail without a fallback.
 pub func publish(context: void*?, directory: files.Directory*, source: c.str, target: c.str, possibly_published: bool*) -> !:

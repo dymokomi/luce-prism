@@ -164,8 +164,8 @@ evicting that working set. Layers stay pinned until bake or the view dies.
 
 `Store.open(path, token="")` is the durable owner: it takes `{basename}.lock` using
 Prism's own WAL. A nonempty `token` is required on `Store.connect`. After open,
-`Store.listen()` binds `{dbpath}.sock` (unlinking a stale socket only after flock
-succeeded). `Store.serve()` waits while the accept loop runs. In-process workers
+`Store.listen()` binds `{dbpath}.sock` (unlinking a stale socket only after the
+exclusive OS lock succeeds). `Store.serve()` waits while the accept loop runs. In-process workers
 still borrow `Store*`. Other processes use `Store.connect(socket)` — they must not
 `engine.open` the journal. IPC is length-prefixed; tokens are owner-side
 `snap_id`/`tx_id`. v1 verbs: snapshot, get, children, lookup, begin, set, add,

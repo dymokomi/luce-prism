@@ -5,14 +5,11 @@ import files
 import io
 import memory
 import paths
-import platform
 import strings
 import luce_prism.wal.tree as tree
 import luce_prism.wal.storage_io as storage_io
 import luce_prism.wal.checkpoint as checkpoint
 from luce_prism.wal.bytes import Buffer, Reader, checksum, compare, valid_key, max_key, max_value, max_frame, corrupt, invalid, busy, limit, uncertain
-
-extern func flock(descriptor: i32, flags: i32) -> i32
 
 pub let header: str = "PRISM-WAL-001\n"
 pub let max_journal: i64 = 268435456
@@ -120,8 +117,6 @@ func cleanup_if_owned(directory: files.Directory*, controls: storage_io.Controls
             discard(failure) ## Original error wins; an owned orphan may remain.
 
 pub func open(path: str, controls: storage_io.Controls = storage_io.Controls()) -> Journal!:
-    if platform.windows:
-        error(invalid, "database file locking is currently supported on POSIX only")
     if path.length == 0 or strings.contains(path, "\0"):
         error(invalid, "invalid database path")
     let directory_name = try strings.copy(paths.directory(path))
@@ -140,9 +135,7 @@ pub func open(path: str, controls: storage_io.Controls = storage_io.Controls()) 
     errdefer lock_file.destroy()
     if (try lock_file.metadata()).kind != files.FileKind.regular:
         error(invalid, "database lock is not a regular file")
-    let lock_fd = lock_file.descriptor() else error(invalid, "database lock is closed")
-    if flock(lock_fd, 6) != 0:
-        error(busy, "database already has an owner or locking failed")
+    try storage_io.lock_file(&lock_file)
     var created = false
     var file = directory.open_file((c.str)file_name, files.OpenMode.read_write, follow_symlinks = false, nonblocking = true) catch failure:
         if failure.code != files.missing: error(failure.code, failure.message)

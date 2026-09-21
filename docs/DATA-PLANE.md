@@ -14,7 +14,7 @@
 
 LuciaOS needs one in-memory data plane. That plane is Prism: a document is the database, its elements are the tables, and a **layer is a small pending-write map**, not a second copy of the document. Querying means probing that map for the keys the query actually touches, then the tables. Baking a layer is the write a database already does: mutate those entries in the tables, then drop the layer. A Store-wide **`memory_limit`** caps resident RAM; published payloads page under that ceiling instead of the OS swap file.
 
-`luce-prism` is self-contained: in-memory tables plus its own WAL, flock, and save/load. `luce-db` is database *server* software that uses `prism.Store` as storage (networking, workers, authentication). It is not the typed data model and not the WAL owner.
+`luce-prism` is self-contained: in-memory tables plus its own WAL, exclusive OS file lock (`flock`/`LockFileEx`), and save/load. `luce-db` is database *server* software that uses `prism.Store` as storage (networking, workers, authentication). It is not the typed data model and not the WAL owner.
 
 `luce-prism` is the **main technology**: typed elements and properties, sparse layers, read-through queries, schema, persistent in-memory tables, `namei` across document identities, and the multi-user / multi-thread **service** (native `Store*`, worker-local handles, per-identity admission). Files-on-disk versus RAM is a storage backend. The composition model is not “a pile of `.prism` files that we flatten,” and live `get` is not `graft`.
 
@@ -94,7 +94,7 @@ Bounds (`src/luce_prism/types.lucb`): `max_bytes = 256 MiB`, `max_items = 1,048,
 
 ## Key Decisions
 
-1. **Prism is the self-contained document engine; luce-db is the database server on top of it.** Prism owns RAM tables, layers, query, WAL (`luce_prism/wal`), flock, checkpoint, dump/load, and the Unix owner socket. It does **not** `import db`. Durable `Store.open` uses the in-tree WAL; RAM `Store.memory()` still does not open a journal. luce-db (`db.Database`) holds a `prism.Store` and adds process, listen/connect, and a required shared-secret token. After WAL replay, Prism **never** treats log keys as elements. The WAL AVL holds snapshot cookies/chunks plus the **unbaked tail**.
+1. **Prism is the self-contained document engine; luce-db is the database server on top of it.** Prism owns RAM tables, layers, query, WAL (`luce_prism/wal`), its exclusive OS file lock, checkpoint, dump/load, and the local owner socket. It does **not** `import db`. Durable `Store.open` uses the in-tree WAL; RAM `Store.memory()` still does not open a journal. luce-db (`db.Database`) holds a `prism.Store` and adds process, listen/connect, and a required shared-secret token. After WAL replay, Prism **never** treats log keys as elements. The WAL AVL holds snapshot cookies/chunks plus the **unbaked tail**.
 
 2. **`luce-prism` is the data plane and the multi-user service.** Typed elements, sparse layers, queries, schema, persistent `Tables`, per-identity admission, and worker-local `Session` handles live here. Copy `engine.Store`’s publication pattern (`head_lock` + FIFO + `hold` of a root). Do not reuse `luce_db.writers.Queue` — copy the 32-slot / 0–60s / fail-fast contract into `luce_prism/store.lucb` (or a tiny `luce_prism/admit.lucb`).
 
@@ -198,7 +198,7 @@ Document                             façade over Session for codecs /
 
 ```mermaid
 flowchart TB
-  subgraph process["One OS process (flock owner when durable)"]
+  subgraph process["One OS process (exclusive lock owner when durable)"]
     Store["prism.Store*\ncatalog of DocumentState\nper-identity tables + layer"]
     Journal["optional engine.Store*\nWAL of complete Prism frames\nbasename.lock"]
     Store -->|"append encoded Layer / checkpoint"| Journal
@@ -788,7 +788,7 @@ fn catalog_identities(db) -> set[str]:
     return ids
 
 fn open(path):
-    db = engine.open(path)                    # flock {basename}.lock
+    db = engine.open(path)                    # exclusive {basename}.lock
     if tree.count(db.root) == 0:
         initialize_schema(db, "prism/encoding", "luce-prism")  # version 0
         empty catalog, empty root DocumentState
@@ -1205,7 +1205,7 @@ Prism is the filesystem. Host POSIX is dump/journal. Path spelling stays `/`-sep
 
 - `DocumentState.head_lock`: publish `(tables*, unbaked, retired, generation)`. Not held across fsync. `lookup` takes it per hopped identity.
 - `DocumentState.writer`: copied 32-slot FIFO. One writer **per identity**.
-- `engine.Store`: flock + journal, durable path only.
+- `engine.Store`: exclusive OS lock + journal, durable path only.
 
 ### Shared vs worker-local
 
@@ -1224,7 +1224,7 @@ Prism is the filesystem. Host POSIX is dump/journal. Path spelling stays `/`-sep
 ```text
 Embedded:  process owns Store*; workers borrow; optional journal
 OS v1:     long-lived owner process
-           Store.open(path) → flock {basename}.lock, in-memory tables
+           Store.open(path) → exclusive {basename}.lock, in-memory tables
            Unix socket {dbpath}.sock (or well-known path)
            in-process workers borrow Store*
            other processes Store.connect(socket) — clients, no WAL
@@ -1234,9 +1234,9 @@ Poison: journal `uncertain` → store poisoned; snapshots remain; new commits fa
 
 ### IPC client protocol (v1)
 
-Local Unix-domain socket only. **Not** a shared WAL, **not** mmap of live `Tables*`, **not** a network filesystem. The owner process is the only `engine.open` / flock holder.
+Local socket only. **Not** a shared WAL, **not** mmap of live `Tables*`, **not** a network filesystem. The owner process is the only `engine.open` / file-lock holder.
 
-**Bind:** after `Store.open(path)` succeeds, listen on `{dbpath}.sock` (sidecar next to the journal, same directory as `{basename}.lock`). Unlink a stale socket only if flock was acquired. Second process `Store.open` still fails on flock; it must `Store.connect`.
+**Bind:** after `Store.open(path)` succeeds, listen on `{dbpath}.sock` (sidecar next to the journal, same directory as `{basename}.lock`). Unlink a stale socket only if the exclusive lock was acquired. A second process still fails `Store.open`; it must `Store.connect`.
 
 **Framing:** little-endian `u32` payload length, then payload bytes. One request, one response. Max payload = `max_frame` (16 MiB). UTF-8 paths; `Value` as existing Prism binary (`ValueData`).
 
@@ -1297,7 +1297,7 @@ Rejected for the OS workload. luce-db aborts because commit replaces one AVL roo
 
 | Threat | Severity | Mitigation |
 | --- | --- | --- |
-| Two processes open one journal | High | `flock` on `{basename}.lock`; never delete the sidecar while an owner can exist (`journal.lucb`). |
+| Two processes open one journal | High | Exclusive `flock`/`LockFileEx` on `{basename}.lock`; never delete the sidecar while an owner can exist (`journal.lucb`). |
 | Fork of an open engine | High | Unsupported. Service must not `fork` after `open`. |
 | Network filesystem / shared disk | High | Unsupported. |
 | Uncertain commit as rollback | High | Poison + reopen; idempotency keys in the same Prism commit (`docs/STORAGE.md`). |

@@ -73,5 +73,5 @@ pub func main(arguments: str[]) -> i32!:
     else:
         assert(arguments[1] == "client")
         try run_client()
-        print("PASS ipc: owner listen, client begin/set/commit/lookup, second open fails flock")
+        print("PASS ipc: owner listen, client begin/set/commit/lookup, second open fails the process lock")
     return 0
