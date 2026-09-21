@@ -22,6 +22,7 @@ extern func win_handle as "_get_osfhandle"(descriptor: i32) -> isize
 extern func flock(descriptor: i32, flags: i32) -> i32
 extern func GetFinalPathNameByHandleW(handle: void*, output: u16*, capacity: u32, flags: u32) -> u32
 extern func MoveFileExW(source: u16*, destination: u16*, flags: u32) -> i32
+extern func ReplaceFileW(replaced: u16*, replacement: u16*, backup: u16*?, flags: u32, exclude: void*?, reserved: void*?) -> i32
 extern func DeleteFileW(path: u16*) -> i32
 
 ## A child path rooted at an already-open directory. The extended namespace path
@@ -131,7 +132,11 @@ pub func replace(context: void*?, directory: files.Directory*, source: c.str, ta
         let target_path = try windows_path(directory, target)
         defer free(target_path)
         *possibly_published = true
-        if MoveFileExW(source_path.data, target_path.data, 9) == 0:
+        # ReplaceFile opens both names with read/write/delete sharing, which is
+        # required while the journal and freshly-synced replacement handles are
+        # still live. MoveFileEx can reject this valid checkpoint pattern with
+        # a sharing violation even though both handles grant FILE_SHARE_DELETE.
+        if ReplaceFileW(target_path.data, source_path.data, none, 1, none, none) == 0:
             error(io.failed, "checkpoint rename failed; publication may have occurred")
         return
     let descriptor = try directory.descriptor()
