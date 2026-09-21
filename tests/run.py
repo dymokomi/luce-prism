@@ -53,6 +53,7 @@ def main():
     parser.add_argument('--luce', type=Path, default=Path(os.environ.get('LUCE_COMPILER', ROOT / f'build/toolchain/luce{SUFFIX}')))
     parser.add_argument('--opt', type=int, choices=range(4))
     parser.add_argument('--codec-only', action='store_true', help='Run only the foreign-codec compatibility fixtures')
+    parser.add_argument('--single-luce-mode', action='store_true', help='Run high-level Luce consumers only in the first requested mode')
     parser.add_argument('--oracle', type=Path, help='Optional C++ oracle built against kinogaki-core')
     args = parser.parse_args()
     audit(require_complete=True)
@@ -68,13 +69,14 @@ def main():
     env = dict(os.environ, LUCE_BASE=str(args.base.resolve()))
     env.setdefault('LUCE_STD', str(ROOT.parent / 'luce-base/src/std'))
     env.setdefault('LUCE_CACHE', str(cache))
-    consumers = [
+    base_consumers = [
         (args.base, name + '.lucb') for name in (
             'main', 'format', 'media', 'semantics', 'authoring',
             'logic', 'editor', 'query', 'foreign', 'store', 'store_workers', 'ipc',
         )
     ] + [(args.base, '../src/luce_prism/storage_empty_tests.lucb'),
-         (args.base, '../src/luce_prism/table_export_tests.lucb')] + [
+         (args.base, '../src/luce_prism/table_export_tests.lucb')]
+    luce_consumers = [
         (args.luce, name + '.luc') for name in (
             'consumer', 'advanced_consumer', 'editor_consumer',
         )
@@ -91,6 +93,7 @@ def main():
             return
         for index, flags in enumerate(modes):
             print('Testing', ' '.join(flags), flush=True)
+            consumers = base_consumers + ([] if args.single_luce_mode and index > 0 else luce_consumers)
             for compiler, source in consumers:
                 binary = scratch / ('consumer' + SUFFIX)
                 run([compiler.resolve(), 'build', ROOT / 'tests' / source, *flags, '-o', binary], env=env)
@@ -102,11 +105,12 @@ def main():
                     run([binary, store_scratch], env=env)
                 else:
                     run([binary, scratch] if source in ('semantics.lucb', 'editor.lucb') else [binary], env=env)
-            example = scratch / ('referenced-media' + SUFFIX)
-            output = scratch / f'referenced media {index}'
-            output.mkdir()
-            run([args.luce.resolve(), 'build', ROOT / 'examples/referenced_media.luc', *flags, '-o', example], env=env)
-            run([example, output], env=env)
+            if not args.single_luce_mode or index == 0:
+                example = scratch / ('referenced-media' + SUFFIX)
+                output = scratch / f'referenced media {index}'
+                output.mkdir()
+                run([args.luce.resolve(), 'build', ROOT / 'examples/referenced_media.luc', *flags, '-o', example], env=env)
+                run([example, output], env=env)
             codec = scratch / ('codec' + SUFFIX)
             run([args.base.resolve(), 'build', ROOT / 'tests/codec.lucb', *flags, '-o', codec], env=env)
             run_codecs(codec, args.oracle.resolve() if args.oracle and index == 0 else None, scratch)

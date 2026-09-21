@@ -71,3 +71,4 @@ jobs:
           python tests/run.py
           --base ../luce-base/build/luce-base.exe
           --luce ../luce/build/luce.exe
+          --single-luce-mode
