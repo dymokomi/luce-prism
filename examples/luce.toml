@@ -1,6 +1,0 @@
-[package]
-name = "luce_prism_examples"
-source = "."
-
-[dependencies]
-luce_prism = ".."

@@ -1,0 +1,7 @@
+#prisma 4.0
+def package "luce_prism_tests" {
+    str source = "."
+    def dependency "luce_prism" {
+        str path = ".."
+    }
+}
