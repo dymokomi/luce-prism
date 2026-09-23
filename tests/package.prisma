@@ -4,4 +4,9 @@ def package "luce_prism_tests" {
     def dependency "luce_prism" {
         str path = ".."
     }
+    def dependency "luce-std" {
+        str owner = "dymokomi"
+        str version = "^0.1.0"
+        str path = "../../luce-std"
+    }
 }
