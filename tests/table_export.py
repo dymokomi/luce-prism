@@ -5,6 +5,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import heap_process
+
 ROOT = Path(__file__).resolve().parents[1]
 base = ROOT / 'build/toolchain/luce-base'
 source = ROOT / 'src/luce_prism/table_export_tests.lucb'
@@ -27,7 +29,10 @@ for name, flags in modes:
     run([base, 'build', source, *flags, '-o', binary])
     run([binary])
     if sys.platform == 'darwin':
-        run(['/usr/bin/leaks', '--quiet', '--noContent', '--atExit', '--', binary])
+        # macOS leaks can leave its child stopped holding inherited pipes: wait for the
+        # tool itself and clean up its process group (tests/heap_process.py)
+        result = heap_process.run(['/usr/bin/leaks', '--quiet', '--noContent', '--atExit', '--', binary], env=env, timeout=300)
+        assert result.returncode == 0 and '0 leaks for 0 total leaked bytes' in result.stdout + result.stderr, result.stdout + result.stderr
     print(f'PASS table export {name}', flush=True)
 generated = output / 'sanitize.c'
 run([base, 'build', source, '--emit=c', '-o', generated])
