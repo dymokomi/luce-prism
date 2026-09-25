@@ -408,6 +408,11 @@ pub func generation_frame(generation: i64) -> Buffer!:
     try put_i64(&out, generation)
     return out
 
+## A remote failure's message, copied out of the reply that carried it: every caller
+## frees its reply on return, which would leave the error's message dangling. One per
+## thread, valid until the next remote failure on that thread; longer text is cut.
+local var remote_message: u8[512]
+
 pub func expect_tag(body: const u8[], tag: u8) -> Reader!:
     if body.length == 0:
         error(closed, "Prism IPC response is empty")
@@ -415,7 +420,9 @@ pub func expect_tag(body: const u8[], tag: u8) -> Reader!:
         var reader = Reader(data = body, pos = 1)
         let code = error_code((u32)try reader.uint(4))
         let message = try reader.text()
-        error(code, message)
+        let count = message.length if message.length < remote_message.length else remote_message.length
+        for i in 0..<count: remote_message[i] = message.bytes[i]
+        error(code, (str)remote_message[..<count])
     if body[0] != tag:
         error(closed, "Prism IPC response tag mismatch")
     return Reader(data = body, pos = 1)

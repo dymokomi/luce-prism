@@ -1,6 +1,7 @@
 ## Owner listen + Store.connect. The client never opens the journal.
 import prism
 import interop
+import memory
 
 var db_path: str
 var socket_path: str
@@ -47,6 +48,27 @@ func run_client() -> !:
     let got = try snap.value().get("/notes", "text")
     defer got.release()
     assert(try got.value().text_at() == "hello")
+    # A remote failure's message outlives the reply that carried it.
+    var reported = false
+    let absent: interop.Reference[prism.Value]? = snap.value().get("/notes", "absent") catch failure:
+        assert(failure.code == prism.missing)
+        # Reuse freed memory of every small size class first, as the next request on a
+        # busy server would, before reading the message.
+        var intact = true
+        var size: usize = 16
+        while size <= 4096:
+            let scrub = try alloc u8[size] in memory.heap
+            for i in 0..<scrub.length: scrub[i] = '?'
+            if failure.message != "Prism property does not exist": intact = false
+            free(scrub) in memory.heap
+            size *= 2
+        assert(intact)
+        reported = true
+        recover none
+    if let extra = absent:
+        extra.release()
+        assert(false)
+    assert(reported)
     let kids = try snap.value().children("/")
     defer kids.release()
     assert(kids.value().count() == 1)
