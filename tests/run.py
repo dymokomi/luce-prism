@@ -75,7 +75,8 @@ def main():
             'logic', 'editor', 'query', 'foreign', 'store', 'store_workers', 'ipc',
         )
     ] + [(args.base, '../src/luce_prism/storage_empty_tests.lucb'),
-         (args.base, '../src/luce_prism/table_export_tests.lucb')]
+         (args.base, '../src/luce_prism/table_export_tests.lucb'),
+         (args.base, '../src/luce_prism/pool_index_tests.lucb')]
     luce_consumers = [
         (args.luce, name + '.luc') for name in (
             'consumer', 'advanced_consumer', 'editor_consumer',

@@ -75,6 +75,8 @@ pub func own_element(source: const model.Element*) -> Element*!:
 pub struct ChildList:
     var references: @u64
     pub var paths: List[Buffer]
+    ## The `apply_cow` that created this list, 0 for none; see append_existing_child.
+    var stamp: u64
 
     pub func init():
         return
@@ -309,6 +311,8 @@ pub func validate(root: Node*?) -> bool:
 
 pub struct Tables:
     var references: @u64
+    ## Nonzero while `apply_cow` builds these tables: the stamp of the lists it creates.
+    var stamp: u64
     pub var by_path: Node*?
     var by_parent: Node*?
     var by_id: Node*?
@@ -512,8 +516,9 @@ func parent_node(parent: str, path: str) -> Node*!:
     pending = none
     return node
 
-func copied_parent_node(parent: str, existing: ChildList*, path: str) -> Node*!:
+func copied_parent_node(parent: str, existing: ChildList*, path: str, stamp: u64 = 0) -> Node*!:
     let list = try copy_child_list(existing)
+    list.stamp = stamp
     var pending: ChildList*? = list
     errdefer drop_pending_children(pending)
     if child_index(list, path) == none:
@@ -559,9 +564,13 @@ func append_child(tables: Tables*, parent: str, path: str, cow: bool) -> !:
     let next = try put(tables.by_parent, node)
     replace_root(tables, 1, next)
 
+## Copy-on-write copies a list the source tables may share. A list this same apply
+## already copied (its stamp) is private to the new tables and grows in place, so a
+## layer adding k children to a directory of n costs O(n + k) copies, not O(k * n).
 func append_existing_child(tables: Tables*, parent: str, path: str, existing: ChildList*, cow: bool) -> !:
-    if cow or existing.references.load(.relaxed) > 1:
-        let node = try copied_parent_node(parent, existing, path)
+    let private = tables.stamp != 0 and existing.stamp == tables.stamp
+    if (cow and not private) or existing.references.load(.relaxed) > 1:
+        let node = try copied_parent_node(parent, existing, path, tables.stamp)
         defer drop(node)
         let next = try put(tables.by_parent, node)
         replace_root(tables, 1, next)
@@ -898,8 +907,12 @@ pub func apply_in_place(tables: Tables*, layer: const delta.Layer*) -> !:
         error(limit_exceeded, "in-place table apply requires a unique owner")
     try apply_one(tables, layer, false)
 
+var apply_stamps: @u64
+
 pub func apply_cow(tables: Tables*, layer: const delta.Layer*) -> Tables*!:
     let out = try fork(tables)
     errdefer drop_tables(out)
+    out.stamp = apply_stamps.add(1, .relaxed) + 1
     try apply_one(out, layer, true)
+    out.stamp = 0
     return out

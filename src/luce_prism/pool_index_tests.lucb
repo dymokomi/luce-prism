@@ -1,0 +1,63 @@
+## Internal regression: the pool's hash index stays exact through inserts, updates,
+## growth and removals (backward-shift deletion plus moving the last entry into the
+## hole), and the snapshot writer's string table interns each string once.
+import memory
+import luce_prism.pool as pool
+import luce_prism.serialization.binary as binary
+
+func key(buffer: u8[], index: usize) -> str!:
+    return try format(buffer, f"/r/owner/objects/{index}")
+
+func present(held: const pool.Pool*, index: usize) -> bool!:
+    var buffer: u8[96]
+    let path = try key(buffer, index)
+    for item in held.entries.span():
+        if item.identity.view() == "root" and item.path.view() == path and item.name.view() == "size": return true
+    return false
+
+pub func main(arguments: str[]) -> i32!:
+    discard(arguments)
+    var held = pool.Pool()
+    defer pool.close_pool(&held)
+    let count: usize = 5000
+    for i in 0..<count:
+        var buffer: u8[96]
+        try pool.touch(&held, "root", try key(buffer, i), "size", i)
+    assert(held.entries.count == count)
+    # Touching again updates in place.
+    for i in 0..<count:
+        var buffer: u8[96]
+        try pool.touch(&held, "root", try key(buffer, i), "size", i + 1)
+    assert(held.entries.count == count)
+    for item in held.entries.span(): assert(item.size >= 1)
+    # Drop every third key, then every key twice (the second is a no-op).
+    for i in 0..<count:
+        if i % 3 != 0: continue
+        var buffer: u8[96]
+        pool.drop_entry(&held, "root", try key(buffer, i), "size")
+        pool.drop_entry(&held, "root", try key(buffer, i), "size")
+    assert(held.entries.count == count - (count + 2) // 3)
+    for i in 0..<count: assert(try present(&held, i) == (i % 3 != 0))
+    # Every survivor is still found through the index: touching adds nothing.
+    for i in 0..<count:
+        var buffer: u8[96]
+        try pool.touch(&held, "root", try key(buffer, i), "size", 7)
+    assert(held.entries.count == count)
+    for i in 0..<count:
+        var buffer: u8[96]
+        pool.drop_entry(&held, "root", try key(buffer, i), "size")
+    assert(held.entries.count == 0)
+    # The table holds views, so its strings must outlive it, as a document's do.
+    let arena = try alloc u8[count * 64] in memory.heap
+    defer free(arena) in memory.heap
+    var table = binary.StringTable()
+    defer table.close()
+    for round in 0..<(usize)2:
+        for i in 0..<count:
+            let text = try key(arena[i * 64..<i * 64 + 64], i)
+            assert(try binary.intern(&table, text) == i)
+    assert(table.strings.count == count)
+    var probe: u8[64]
+    assert(binary.string_index(&table, try key(probe, 1234)) == 1234)
+    print("PASS pool index and writer string table stay exact through growth and removal")
+    return 0

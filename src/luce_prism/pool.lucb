@@ -1,4 +1,7 @@
 ## LRU of unpinned published payloads and compositor pins. Evict/fault I/O lives in store.
+## Entries are found through a hash index: every bake and every open touches each
+## property once, so a linear search made them quadratic in the property count.
+import memory
 from luce_prism.path import is_descendant
 from luce_prism.storage import Buffer, List, close_names, text_copy
 
@@ -31,6 +34,9 @@ pub struct Pin:
 
 pub struct Pool:
     pub var entries: List[Entry]
+    ## Open addressing over `entries`: 0 is empty, otherwise an entry index plus one.
+    ## The capacity is a power of two, at least twice the entry count.
+    var slots: usize[]
     pub var pins: List[Pin]
     pub var clock: u64
     pub var next_extent: u64
@@ -44,6 +50,7 @@ pub func close_pool(pool: Pool*):
     for i in 0..<pool.entries.count:
         pool.entries.items[i].close()
     pool.entries.close()
+    if pool.slots.length > 0: free(pool.slots) in memory.heap
     for i in 0..<pool.pins.count:
         pool.pins.items[i].close()
     pool.pins.close()
@@ -79,14 +86,50 @@ pub func unpin(pool: Pool*, identity: str, path: str):
             pool.pins.remove(i)
             return
 
-pub func touch(pool: Pool*, identity: str, path: str, name: str, size: usize) -> !:
-    pool.clock += 1
+func key_hash(identity: str, path: str, name: str) -> usize:
+    var value: u64 = 14695981039346656037
+    for part in [identity, path, name]:
+        for byte in part.bytes:
+            value = (value ^ (u64)byte) *% 1099511628211
+        value = (value ^ 0xff) *% 1099511628211
+    return (usize)value
+
+func matches(item: const Entry*, identity: str, path: str, name: str) -> bool:
+    return item.identity.view() == identity and item.path.view() == path and item.name.view() == name
+
+## The slot holding the entry for this key, or the empty slot where it would go.
+func slot_for(pool: const Pool*, identity: str, path: str, name: str) -> usize:
+    let mask = pool.slots.length - 1
+    var at = key_hash(identity, path, name) & mask
+    while pool.slots[at] != 0 and not matches(&pool.entries.items[pool.slots[at] - 1], identity, path, name):
+        at = (at + 1) & mask
+    return at
+
+func find(pool: const Pool*, identity: str, path: str, name: str) -> usize?:
+    if pool.slots.length == 0: return none
+    let index = pool.slots[slot_for(pool, identity, path, name)]
+    if index == 0: return none
+    return index - 1
+
+## Rebuild the index for the current entries, at least twice their count.
+func reindex(pool: Pool*, minimum: usize) -> !:
+    var capacity: usize = 16
+    while capacity < minimum * 2: capacity *= 2
+    let slots = try alloc usize[capacity] in memory.heap
+    for i in 0..<capacity: slots[i] = 0
+    if pool.slots.length > 0: free(pool.slots) in memory.heap
+    pool.slots = slots
     for i in 0..<pool.entries.count:
         let item = &pool.entries.items[i]
-        if item.identity.view() == identity and item.path.view() == path and item.name.view() == name:
-            item.tick = pool.clock
-            item.size = size
-            return
+        pool.slots[slot_for(pool, item.identity.view(), item.path.view(), item.name.view())] = i + 1
+
+pub func touch(pool: Pool*, identity: str, path: str, name: str, size: usize) -> !:
+    pool.clock += 1
+    if let index = find(pool, identity, path, name):
+        pool.entries.items[index].tick = pool.clock
+        pool.entries.items[index].size = size
+        return
+    if (pool.entries.count + 1) * 2 > pool.slots.length: try reindex(pool, pool.entries.count + 1)
     var item = Entry()
     item.size = size
     item.tick = pool.clock
@@ -100,14 +143,33 @@ pub func touch(pool: Pool*, identity: str, path: str, name: str, size: usize) ->
     pool.entries.push(item) catch failure:
         item.close()
         error(failure.code, failure.message)
+    pool.slots[slot_for(pool, identity, path, name)] = pool.entries.count
 
+## Remove an entry: the last entry moves into its place, and the index is rebuilt
+## around the hole so probing stays correct (backward-shift deletion).
 pub func drop_entry(pool: Pool*, identity: str, path: str, name: str):
-    for i in 0..<pool.entries.count:
-        let item = &pool.entries.items[i]
-        if item.identity.view() == identity and item.path.view() == path and item.name.view() == name:
-            item.close()
-            pool.entries.remove(i)
-            return
+    let index = find(pool, identity, path, name) else return
+    let mask = pool.slots.length - 1
+    var hole = slot_for(pool, identity, path, name)
+    pool.slots[hole] = 0
+    var next = (hole + 1) & mask
+    while pool.slots[next] != 0:
+        let item = &pool.entries.items[pool.slots[next] - 1]
+        let home = key_hash(item.identity.view(), item.path.view(), item.name.view()) & mask
+        # Move it into the hole unless its home lies cyclically in (hole, next].
+        let stays = (home > hole and home <= next) if hole <= next else (home > hole or home <= next)
+        if not stays:
+            pool.slots[hole] = pool.slots[next]
+            pool.slots[next] = 0
+            hole = next
+        next = (next + 1) & mask
+    pool.entries.items[index].close()
+    let last = pool.entries.count - 1
+    if index != last:
+        pool.entries.items[index] = pool.entries.items[last]
+        let moved = &pool.entries.items[index]
+        pool.slots[slot_for(pool, moved.identity.view(), moved.path.view(), moved.name.view())] = index + 1
+    pool.entries.count = last
 
 pub func coldest(pool: const Pool*) -> usize?:
     var best: usize? = none

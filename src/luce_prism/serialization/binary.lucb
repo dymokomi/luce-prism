@@ -1,4 +1,5 @@
 ## Serialization binary.
+import memory
 from luce_prism.animation import Sample
 from luce_prism.model import DocumentData
 from luce_prism.path import require_element, require_slot
@@ -7,20 +8,59 @@ from luce_prism.storage import Buffer, List, Reader, add_name, set_pair, text_co
 from luce_prism.types import Interpolation, invalid, limit_exceeded, unsupported
 from luce_prism.value import read_value, write_value
 
-pub func intern(table: List[str]*, text: str) -> usize!:
-    for i in 0..<table.count:
-        if table.items[i] == text:
-            return i
-    try table.push(text)
-    return table.count - 1
+## The writer's string table: each distinct string once, found through a hash index
+## (a linear search made writing a snapshot quadratic in its element count).
+pub struct StringTable:
+    pub var strings: List[str]
+    ## Open addressing: 0 is empty, otherwise a string index plus one.
+    var slots: usize[]
 
-pub func string_index(table: const List[str]*, text: str) -> usize:
-    for i in 0..<table.count:
-        if table.items[i] == text:
-            return i
-    trap("Prism writer missed an interned string")
+    pub func init():
+        return
 
-pub func write_index(out: Buffer*, table: const List[str]*, text: str) -> !:
+    pub mutating func close():
+        self.strings.close()
+        if self.slots.length > 0: free(self.slots) in memory.heap
+
+    func slot_for(text: str) -> usize:
+        var value: u64 = 14695981039346656037
+        for byte in text.bytes: value = (value ^ (u64)byte) *% 1099511628211
+        let mask = self.slots.length - 1
+        var at = (usize)value & mask
+        while self.slots[at] != 0 and self.strings.items[self.slots[at] - 1] != text:
+            at = (at + 1) & mask
+        return at
+
+    mutating func grow() -> !:
+        var capacity: usize = 64
+        while capacity < (self.strings.count + 1) * 2: capacity *= 2
+        let slots = try alloc usize[capacity] in memory.heap
+        for i in 0..<capacity: slots[i] = 0
+        if self.slots.length > 0: free(self.slots) in memory.heap
+        self.slots = slots
+        for i in 0..<self.strings.count: self.slots[self.slot_for(self.strings.items[i])] = i + 1
+
+    pub mutating func intern(text: str) -> usize!:
+        if (self.strings.count + 1) * 2 > self.slots.length: try self.grow()
+        let at = self.slot_for(text)
+        if self.slots[at] != 0: return self.slots[at] - 1
+        try self.strings.push(text)
+        self.slots[at] = self.strings.count
+        return self.strings.count - 1
+
+    pub func index(text: str) -> usize:
+        if self.slots.length > 0:
+            let at = self.slot_for(text)
+            if self.slots[at] != 0: return self.slots[at] - 1
+        trap("Prism writer missed an interned string")
+
+pub func intern(table: StringTable*, text: str) -> usize!:
+    return try table.intern(text)
+
+pub func string_index(table: const StringTable*, text: str) -> usize:
+    return table.index(text)
+
+pub func write_index(out: Buffer*, table: const StringTable*, text: str) -> !:
     try out.uint((u64)string_index(table, text), 4)
 
 pub func read_index(reader: Reader*, table: const List[str]*) -> str!:
@@ -33,11 +73,11 @@ pub func read_index(reader: Reader*, table: const List[str]*) -> str!:
     reader.budget -= text.length
     return text
 
-pub func intern_names(table: List[str]*, names: const List[Buffer]*) -> !:
+pub func intern_names(table: StringTable*, names: const List[Buffer]*) -> !:
     for name in names.span():
         discard(try intern(table, name.view()))
 
-pub func write_names(out: Buffer*, table: const List[str]*, names: const List[Buffer]*) -> !:
+pub func write_names(out: Buffer*, table: const StringTable*, names: const List[Buffer]*) -> !:
     try out.uint((u64)names.count, 4)
     for name in names.span():
         try write_index(out, table, name.view())
@@ -52,7 +92,7 @@ pub func read_names(reader: Reader*, table: const List[str]*, names: List[Buffer
             error(invalid, "duplicate Prism tombstone")
 
 pub func write_binary(document: const DocumentData*, compressed: bool = false) -> Buffer!:
-    var table: List[str]
+    var table = StringTable()
     defer table.close()
     for element in document.elements.span():
         discard(try intern(&table, element.path.view()))
@@ -77,8 +117,8 @@ pub func write_binary(document: const DocumentData*, compressed: bool = false) -
         discard(try intern(&table, glob.value.view()))
     var body: Buffer
     defer body.close()
-    try body.uint((u64)table.count, 4)
-    for text in table.span():
+    try body.uint((u64)table.strings.count, 4)
+    for text in table.strings.span():
         try body.sized(text)
     try body.uint((u64)document.elements.count, 4)
     for element in document.elements.span():
