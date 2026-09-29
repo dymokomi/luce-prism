@@ -78,6 +78,12 @@ Entries are sorted by name; payloads are concatenated. The scene is named `scene
 Asset names are owning element paths. Exactly one scene is required; nested
 package scenes, unknown entry kinds, duplicate names and overlapping blobs fail.
 
+luce-geocore has its own streaming writer and reader for this crate format,
+for large geometry column data (`luce_geocore/io/crate.lucb`). They write
+payloads from, and read them into, column memory without building a document.
+Its files follow this layout, and luce-prism opens those under the 256 MiB
+input limit as ordinary documents.
+
 ## Compatibility caveats
 
 Finite values in the checked-in fixture have byte-identical v4 crates across
