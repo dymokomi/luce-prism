@@ -441,7 +441,8 @@ func hydrate_data(journal: Journal*, data: DocumentData*) -> !:
         for p in 0..<element.properties.count:
             let value = &element.properties.items[p].value
             if is_stub(value):
-                var blob = try read_extent(journal, value.locator.identity.view(), (u64)value.locator.generation, (u64)value.locator.extent)
+                let place = value.locator else continue
+                var blob = try read_extent(journal, place.identity.view(), (u64)place.generation, (u64)place.extent)
                 value.payload.close()
                 value.payload = blob
 

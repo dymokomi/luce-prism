@@ -416,7 +416,8 @@ pub func logical_payload_bytes(tables: const Tables*) -> usize:
             if let element = node.element:
                 for prop in element.properties.span():
                     if is_stub(&prop.value):
-                        total += prop.value.locator.size
+                        if let found = prop.value.locator:
+                            total += found.size
                     else:
                         total += prop.value.payload.used
         i += 1

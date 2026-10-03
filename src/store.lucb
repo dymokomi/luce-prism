@@ -24,7 +24,7 @@ from lookup import Look, LookKind, join_element, own_look, split_components
 from path import is_descendant, parent_path, path_name, require_element, valid_name, valid_path
 from storage import Buffer, List, Reader, close_names, copied, has_name, text_copy
 from types import DType, closed, conflict, invalid, limit_exceeded, max_bytes, max_depth, max_items, missing, unsupported
-from value import Value, ValueData, own_value, read_value, is_stub
+from value import Value, ValueData, Locator, own_value, own_locator, read_value, is_stub
 
 pub let max_ops: usize = 65536
 pub let max_views: usize = 1024
@@ -311,11 +311,17 @@ func find_property(element: tables.Element*, name: str) -> ValueData*?:
 func evict_discard(inner: Inner*, identity: str, path: str, name: str):
     drop_pool_entry(inner, identity, path, name)
 
+## Whether `value`'s payload already has a place on disk it can be paged out to again.
+func is_written(value: const ValueData*) -> bool:
+    let place = value.locator else return false
+    return place.size > 0 and place.identity.used > 0
+
 func page_out(inner: Inner*, journal: persist.Journal*, owned: tables.Tables*, identity: str, path: str, name: str, value: ValueData*, generation: u64) -> usize:
     if is_stub(value) or value.payload.used < pool.min_paged:
         return 0
     let size = value.payload.used
-    if value.locator.size == 0 or value.locator.identity.used == 0:
+    let written = is_written(value)
+    if not written:
         var loc_id = text_copy(identity) catch failure:
             return 0
         var blob = value.payload.copy() catch failure:
@@ -327,12 +333,18 @@ func page_out(inner: Inner*, journal: persist.Journal*, owned: tables.Tables*, i
             loc_id.close()
             return 0
         blob.close()
-        value.locator.close()
-        value.locator.identity = loc_id
+        var written_at = Locator()
+        written_at.identity = loc_id
+        written_at.generation = (usize)generation
+        written_at.extent = (usize)extent
+        written_at.size = size
         loc_id = Buffer()
-        value.locator.generation = (usize)generation
-        value.locator.extent = (usize)extent
-        value.locator.size = size
+        let place = own_locator(written_at) catch failure:
+            return 0
+        if let previous = value.locator:
+            previous.close()
+            free(previous) in memory.heap
+        value.locator = place
     value.payload.close()
     value.payload = Buffer()
     record_eviction(inner, size)
@@ -410,10 +422,11 @@ func fault_property(inner: Inner*, identity: str, path: str, name: str, value: V
                 discard(failure)
         return
     let journal = inner.persist else error(missing, "Prism payload is not resident")
-    let size = value.locator.size
+    let place = value.locator else error(missing, "Prism payload is not resident")
+    let size = place.size
     try charge(inner, size)
     errdefer uncharge(inner, size)
-    var blob = try persist.read_extent(journal, value.locator.identity.view(), (u64)value.locator.generation, (u64)value.locator.extent)
+    var blob = try persist.read_extent(journal, place.identity.view(), (u64)place.generation, (u64)place.extent)
     value.payload.close()
     value.payload = blob
     record_fault(inner, size)

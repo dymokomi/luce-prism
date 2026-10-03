@@ -55,14 +55,30 @@ pub struct Locator:
     pub mutating func close():
         self.identity.close()
 
+## `locator` on the heap, owned by the value that carries it.
+pub func own_locator(locator: Locator) -> Locator*!:
+    var owned = locator
+    let out = new Locator() in memory.heap catch failure:
+        owned.close()
+        error(failure.code, failure.message)
+    out[0] = owned
+    return out
+
+func drop_locator(locator: Locator*):
+    locator.close()
+    free(locator) in memory.heap
+
 pub func is_stub(value: const ValueData*) -> bool:
-    return value.payload.used == 0 and value.locator.size > 0 and value.locator.identity.used > 0
+    let found = value.locator else return false
+    return value.payload.used == 0 and found.size > 0 and found.identity.used > 0
 
 pub struct ValueData:
     pub var kind: DType = DType.boolean
     pub var shape: List[u32]
     pub var payload: Buffer
-    pub var locator: Locator = Locator()
+    ## Where the payload was written when paged out; only such a value has one, so
+    ## the rest do not carry its 48 bytes.
+    pub var locator: Locator*?
 
     pub func count() -> usize:
         var result: usize = 1
@@ -74,7 +90,8 @@ pub struct ValueData:
         var out = try value_header(self.kind, self.shape.span())
         errdefer out.close()
         out.payload = try self.payload.copy()
-        out.locator = try self.locator.copy()
+        if let found = self.locator:
+            out.locator = try own_locator(try found.copy())
         return out
 
     pub func bits(index: usize) -> u64:
@@ -111,11 +128,13 @@ pub struct ValueData:
     pub mutating func close():
         self.shape.close()
         self.payload.close()
-        self.locator.close()
+        if let found = self.locator:
+            drop_locator(found)
+        self.locator = none
 
 pub func value_header(dtype: DType, shape: const u32[]) -> ValueData!:
     discard(try shape_count(shape))
-    var out = ValueData(kind = dtype, locator = Locator())
+    var out = ValueData(kind = dtype)
     errdefer out.close()
     for dimension in shape:
         try out.shape.push(dimension)
@@ -157,7 +176,7 @@ pub func write_value(out: Buffer*, value: const ValueData*) -> !:
         try out.put(value.payload.bytes())
 
 pub func scalar_bits(dtype: DType, bits: u64) -> ValueData!:
-    var out = ValueData(kind = dtype, locator = Locator())
+    var out = ValueData(kind = dtype)
     errdefer out.close()
     try out.payload.uint(bits, dtype_width(dtype))
     return out
@@ -257,7 +276,7 @@ pub struct Value:
         return try own_value(try scalar_bits(DType.boolean, 1 if value else 0))
 
     pub static func text(value: str) -> interop.Reference[Value]!:
-        var data = ValueData(kind = DType.string, locator = Locator())
+        var data = ValueData(kind = DType.string)
         data.payload.sized(value) catch failure:
             data.close()
             error(failure.code, failure.message)
