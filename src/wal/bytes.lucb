@@ -1,6 +1,6 @@
 ## Bounded owned buffers; checksums detect accidents, not malicious rewriting.
 import memory
-import luce_std.utf8
+from luce_std import utf8
 
 pub let invalid: ErrorCode = ErrorCode.package(1)
 pub let limit: ErrorCode = ErrorCode.package(2)

@@ -1,5 +1,4 @@
-import luce_prism.prism
-import luce_prism.tables
+from luce_prism import prism, tables
 
 pub func run() -> !:
     try hold_drop_and_cow_put()

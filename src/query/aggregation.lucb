@@ -1,5 +1,5 @@
 ## Numeric terminals and exact group labels for row queries.
-import luce_std.math
+from luce_std import math
 import strings
 import c
 import query.scalars

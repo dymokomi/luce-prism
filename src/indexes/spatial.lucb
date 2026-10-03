@@ -1,6 +1,6 @@
 ## Uniform-grid point index. Large search bounds fall back to the occupied points.
 import interop
-import luce_std.math
+from luce_std import math
 import indexes.ranked
 from query.results import Selection
 from collections.index import Index

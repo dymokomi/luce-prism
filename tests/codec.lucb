@@ -1,7 +1,7 @@
-import luce_prism.prism
+from luce_prism import prism
 import strings
 import memory
-import luce_std.files
+from luce_std import files
 import c
 
 pub func main(arguments: str[]) -> i32!:

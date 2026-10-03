@@ -1,6 +1,6 @@
 ## Inverted text index with legacy ASCII tokenization and smoothed tf-idf ranking.
 import interop
-import luce_std.math
+from luce_std import math
 import indexes.ranked
 from collections.index import Index
 from query.results import Selection

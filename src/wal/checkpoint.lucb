@@ -1,6 +1,6 @@
 ## Format 002: complete checksummed base + ordinary format-001 TXN1 suffix.
 ## The base is never a recoverable torn tail. All integers are little-endian.
-import luce_std.files
+from luce_std import files
 import io
 import memory
 import wal.tree

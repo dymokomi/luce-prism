@@ -1,5 +1,5 @@
 ## Original Prism float32 affine transforms and inherited visibility.
-import luce_std.math32
+from luce_std import math32
 import interop
 from document import Document
 from model import DocumentData

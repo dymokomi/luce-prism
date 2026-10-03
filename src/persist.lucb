@@ -1,6 +1,6 @@
 ## Durable layer blobs in a Prism-owned WAL. RAM Store.memory() does not open this.
 import memory
-import luce_std.files
+from luce_std import files
 import composition.delta
 import file_access as file_io
 import tables

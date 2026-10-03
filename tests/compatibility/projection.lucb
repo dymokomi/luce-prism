@@ -1,4 +1,4 @@
-import luce_prism.prism
+from luce_prism import prism
 
 func textprojection_starts_as_empty_prisma() -> !:
     var projection = try prism.TextProjection()

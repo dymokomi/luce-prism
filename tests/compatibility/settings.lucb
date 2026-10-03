@@ -1,5 +1,5 @@
-import luce_prism.prism
-import luce_std.files
+from luce_prism import prism
+from luce_std import files
 import strings
 import memory
 import c

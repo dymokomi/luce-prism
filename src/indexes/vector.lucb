@@ -1,6 +1,6 @@
 ## Exact vector search over float32 arrays, with cosine, dot and L2 metrics.
 import interop
-import luce_std.math
+from luce_std import math
 import indexes.ranked
 from query.results import Selection
 from document import Document, assemble_element, walk_document

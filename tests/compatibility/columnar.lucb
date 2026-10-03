@@ -1,7 +1,7 @@
-import luce_prism.prism
+from luce_prism import prism
 import interop
 import memory
-import luce_std.math
+from luce_std import math
 
 func table() -> prism.ColumnTable!:
     let doc = try prism.Document.parse("#prisma 4.0\ndef table \"sales\" { float[5] amount = [10,20,30,40,50] int64[5] region = [0,1,0,1,0] str label = \"sales\" }")

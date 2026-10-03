@@ -4,7 +4,7 @@
 ## Never change controls/context concurrently with those operations. Not exported
 ## through the owning Luce facade; no global test switch or foreign storage engine.
 import c
-import luce_std.files
+from luce_std import files
 import io
 import memory
 import os

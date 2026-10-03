@@ -2,7 +2,7 @@ from serialization.location import Location, capture
 ## Serialization text reader.
 import memory
 import strings
-import luce_std.math
+from luce_std import math
 from animation import Sample, insert_sample
 from model import DocumentData
 from path import joined, parent_path, require_slot, valid_name

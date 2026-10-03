@@ -1,6 +1,6 @@
 ## Owned document records and authoring operations. No serialization or external I/O.
 import interop
-import luce_std.math
+from luce_std import math
 import memory
 from animation import Property, Sample, insert_sample, resolve_property
 from collections.topology import Topology

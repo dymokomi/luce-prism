@@ -1,4 +1,4 @@
-import luce_prism.prism
+from luce_prism import prism
 import memory
 
 pub func main(arguments: str[]) -> i32!:

@@ -1,4 +1,4 @@
-import luce_prism.prism
+from luce_prism import prism
 import interop
 
 func read(source: str, field: str = "a") -> interop.Reference[prism.Value]!:

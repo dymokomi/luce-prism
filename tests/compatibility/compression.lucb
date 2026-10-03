@@ -1,4 +1,4 @@
-import luce_prism.prism
+from luce_prism import prism
 import memory
 
 func roundtrip(bytes: const u8[]) -> usize!:

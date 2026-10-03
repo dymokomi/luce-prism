@@ -1,5 +1,5 @@
 ## Ports of the original named query cases, using the original shared fixture.
-import luce_prism.prism
+from luce_prism import prism
 import interop
 import memory
 import ownership

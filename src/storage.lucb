@@ -1,7 +1,7 @@
 ## Internal bounded collections and byte buffers shared by model and codecs.
 import memory
 import interop
-import luce_std.math
+from luce_std import math
 from types import invalid, limit_exceeded, max_bytes, max_items
 
 pub struct List[T]:

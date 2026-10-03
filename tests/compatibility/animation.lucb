@@ -1,6 +1,6 @@
-import luce_prism.prism
+from luce_prism import prism
 import interop
-import luce_std.math
+from luce_std import math
 
 var no_handles: f64[]
 var no_shape: i64[]

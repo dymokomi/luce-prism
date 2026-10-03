@@ -1,5 +1,5 @@
 ## Keyframe storage and value interpolation.
-import luce_std.math
+from luce_std import math
 from storage import Buffer, List, copy_list, equal_bytes
 from types import DType, Interpolation, invalid
 from value import ValueData, equal_values, append_number, floating, same_shape, value_header

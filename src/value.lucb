@@ -1,7 +1,7 @@
 ## Value.
 import memory
 import interop
-import luce_std.math
+from luce_std import math
 from storage import equal_bytes, Buffer, List, Reader, copied
 from types import DType, invalid, limit_exceeded, max_bytes
 

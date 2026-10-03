@@ -3,8 +3,7 @@
 ## the first top-level child; lookup treats a missing referencePath as "/".
 import memory
 import interop
-import luce_std.files
-import luce_std.paths
+from luce_std import files, paths
 import strings
 import c
 import pattern as patterns

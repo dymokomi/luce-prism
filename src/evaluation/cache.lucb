@@ -1,7 +1,7 @@
 ## One owned derived value keyed by revision and time; failed producers retain it.
 import interop
 import ownership
-import luce_std.math
+from luce_std import math
 from types import invalid
 
 pub struct EvalKey:

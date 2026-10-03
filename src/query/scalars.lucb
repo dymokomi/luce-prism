@@ -1,6 +1,6 @@
 ## Exact scalar identity shared by predicates, joins, indexes and schema checks.
 import strings
-import luce_std.math
+from luce_std import math
 import memory
 from value import ValueData, floating, equal_values
 from storage import Buffer, Reader, text_copy, less

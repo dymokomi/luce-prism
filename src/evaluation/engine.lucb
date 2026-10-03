@@ -2,7 +2,7 @@
 import interop
 import memory
 import ownership
-import luce_std.math
+from luce_std import math
 from model import DocumentData, Element
 from document import Document, own_document, snapshot_document
 from animation import Property, resolve_property

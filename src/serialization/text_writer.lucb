@@ -1,6 +1,6 @@
 ## Serialization text writer.
 import strings
-import luce_std.math
+from luce_std import math
 import c
 import memory
 from animation import Property

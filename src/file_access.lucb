@@ -1,5 +1,5 @@
 ## Explicit bounded file access and durable atomic replacement.
-import luce_std.files
+from luce_std import files
 import strings
 import memory
 import c

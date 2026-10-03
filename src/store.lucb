@@ -3,13 +3,13 @@ import memory
 import interop
 import sync
 import thread
-import luce_std.files
+from luce_std import files
 import c
 import platform
 import admit
 import ipc
 import tls_pipe
-import luce_std.net
+from luce_std import net
 import composition.delta
 from document import Document, own_document, own_view
 from model import DocumentData, own_data

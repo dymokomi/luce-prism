@@ -1,6 +1,6 @@
 ## Insertion-ordered JSON syntax tree. One arena owns nodes; indices survive growth.
 import strings
-import luce_std.math
+from luce_std import math
 from storage import Buffer, List
 from types import invalid, limit_exceeded
 from codecs.common import utf8

@@ -1,7 +1,7 @@
-import luce_prism.prism
+from luce_prism import prism
 import memory
 import interop
-import luce_std.files
+from luce_std import files
 
 func equal(a: const u8[], b: const u8[]) -> bool:
     if a.length != b.length:

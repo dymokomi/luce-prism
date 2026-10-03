@@ -1,7 +1,7 @@
 ## Column scans dispatch once by dtype and preserve legacy selection semantics.
 import interop
 import memory
-import luce_std.math
+from luce_std import math
 from query.predicates import Comparison
 from query.aggregation import Aggregate, calculate, sort_numbers
 from document import Document, assemble_element
