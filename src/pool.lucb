@@ -5,6 +5,10 @@ import memory
 from path import is_descendant
 from storage import Buffer, List, close_names, text_copy
 
+## Payloads smaller than this stay resident and out of the LRU: an extent and an entry
+## cost more than paging them out could free. They still count toward the limit.
+pub let min_paged: usize = 4096
+
 pub struct Entry:
     pub var identity: Buffer
     pub var path: Buffer

@@ -222,6 +222,8 @@ struct PoolStatistics:
     var evictions: u64
 
 func touch_pool(inner: Inner*, identity: str, path: str, name: str, size: usize) -> !:
+    if size < pool.min_paged:
+        return
     inner.pool_lock.lock()
     defer inner.pool_lock.unlock()
     try pool.touch(&inner.pool, identity, path, name, size)
@@ -294,7 +296,7 @@ func register_tables(inner: Inner*, identity: str, owned: tables.Tables*):
         if let node = tables.at(owned.by_path, i):
             if let element = node.element:
                 for prop in element.properties.span():
-                    if not is_stub(&prop.value) and prop.value.payload.used > 0:
+                    if not is_stub(&prop.value) and prop.value.payload.used >= pool.min_paged:
                         touch_pool(inner, identity, element.path.view(), prop.name.view(), prop.value.payload.used) catch failure:
                             discard(failure)
         i += 1
@@ -310,7 +312,7 @@ func evict_discard(inner: Inner*, identity: str, path: str, name: str):
     drop_pool_entry(inner, identity, path, name)
 
 func page_out(inner: Inner*, journal: persist.Journal*, owned: tables.Tables*, identity: str, path: str, name: str, value: ValueData*, generation: u64) -> usize:
-    if is_stub(value) or value.payload.used == 0:
+    if is_stub(value) or value.payload.used < pool.min_paged:
         return 0
     let size = value.payload.used
     if value.locator.size == 0 or value.locator.identity.used == 0:
