@@ -1,0 +1,56 @@
+## A stored element read in place, borrowed for one visit of Session.each_child: typed
+## getters over its properties that make no Value per property, for readers that take
+## every row of a large parent. A view and the text it returns last only for the visit.
+import tables
+import query.scalars
+from value import ValueData
+from types import DType
+
+pub struct RowView:
+    var element: const tables.Element*
+
+    pub func path() -> str:
+        return self.element.path.view()
+
+    pub func type_name() -> str:
+        return self.element.kind.view()
+
+    ## The value of property `name`, or none.
+    pub func value(name: str) -> const ValueData*?:
+        for i in 0..<self.element.properties.count:
+            if self.element.properties.items[i].name.view() == name:
+                return &self.element.properties.items[i].value
+        return none
+
+    pub func has(name: str) -> bool:
+        return self.value(name) != none
+
+    ## A scalar integer or boolean property as an i64; none when it is absent, not a
+    ## whole number, or does not fit.
+    pub func integer(name: str) -> i64?:
+        let found = self.value(name) else return none
+        let whole = scalars.integer(found) else return none
+        if whole.negative:
+            return -(i64)(whole.magnitude - 1) - 1 if whole.magnitude <= 9223372036854775808 else none
+        return (i64)whole.magnitude if whole.magnitude <= 9223372036854775807 else none
+
+    ## A scalar numeric property as an f64, or none.
+    pub func number(name: str) -> f64?:
+        let found = self.value(name) else return none
+        return scalars.numeric(found)
+
+    ## A scalar boolean property, or none.
+    pub func boolean(name: str) -> bool?:
+        let found = self.value(name) else return none
+        if found.kind != DType.boolean or found.shape.count != 0:
+            return none
+        return found.bits(0) != 0
+
+    ## A scalar string property, borrowed for the visit, or none.
+    pub func text(name: str) -> str?:
+        let found = self.value(name) else return none
+        return scalars.string(found)
+
+## A view of `element`, which must outlive it.
+pub func view_of(element: const tables.Element*) -> RowView:
+    return RowView(element = element)

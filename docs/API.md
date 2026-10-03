@@ -156,6 +156,12 @@ journal frame (`max_frame - 32`).
 `Store.dump(dir)` writes one atomic crate per catalog identity as `dir/{identity}`.
 `Store.load(dir)` installs those basenames (valid identities only) as tables.
 
+`Session.each_child(parent, visit, context)` is a Base bulk read: it calls
+`visit(context, row)` for each child of `parent`, in order, with a `RowView` borrowed for
+the call (`path`, `type_name`, `has`, `integer`, `number`, `boolean`, `text`, `value`),
+making no `Value` per property. It reads committed tables in place, paging payloads
+in first, so a session with uncommitted writes of its own, or a remote one, refuses it.
+
 `memory_limit` is Store-wide (default 256 MiB). RAM `Store.memory()` refuses when
 resident would exceed it. Durable `Store.open` LRU-evicts unpinned published
 payloads to `{dbpath}.ext` and `get`/`read` fault them back. `children` / `lookup`

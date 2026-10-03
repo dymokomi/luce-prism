@@ -30,6 +30,7 @@ pub func run(scratch: str) -> !:
     try mount_rejects_bad_identity()
     try document_facade_sees_unbaked()
     try session_query_reads_tables_in_place()
+    try each_child_reads_rows_in_place()
     try persist_budget_counts_chunked_keys()
     try persist_reopen_sees_unbaked_commit()
     try persist_schema_only_root_then_commit()
@@ -100,6 +101,63 @@ func session_query_reads_tables_in_place() -> !:
     var everything = try snap.value().query()
     defer everything.close()
     assert(try everything.count() == 7)
+
+## What each_child saw: paths, then each row's fields joined.
+struct Seen:
+    var paths: u8[512]
+    var used: usize
+
+func note_row(context: void*?, row: const prism.RowView*) -> !:
+    let seen = (Seen*)(context else error(prism.invalid, "no context"))
+    var line: u8[128]
+    let date = row.integer("date") else -1
+    let read = row.boolean("read") else false
+    let subject = row.text("subject") else "-"
+    let text = try format(line, f"{row.path()}:{date}:{read}:{subject};")
+    for i in 0..<text.length:
+        seen.paths[seen.used + i] = text.bytes[i]
+    seen.used += text.length
+
+## each_child visits the children of a parent in order, baked and unbaked alike, with
+## typed getters and no Value per property.
+func each_child_reads_rows_in_place() -> !:
+    var store = try prism.Store()
+    defer store.close()
+    let tx = try store.begin()
+    defer tx.release()
+    try tx.value().add("/box", "folder")
+    for uid in 1..<(usize)3:
+        var name: u8[32]
+        let path = try format(name, f"/box/m{uid}")
+        try tx.value().add(path, "message")
+        let date = try prism.Value.integer(100 + (i64)uid)
+        defer date.release()
+        try tx.value().set(path, "date", date)
+        var label: u8[32]
+        let subject = try prism.Value.text(try format(label, f"hello {uid}"))
+        defer subject.release()
+        try tx.value().set(path, "subject", subject)
+    let read = try prism.Value.boolean(true)
+    defer read.release()
+    try tx.value().set("/box/m2", "read", read)
+    discard(try tx.value().commit())
+    discard(try store.bake())
+    let late = try store.begin()
+    defer late.release()
+    try late.value().add("/box/m3", "message")
+    discard(try late.value().commit())
+    let snap = try store.snapshot()
+    defer snap.release()
+    var seen = Seen()
+    try snap.value().each_child("/box", note_row, &seen)
+    assert((str)seen.paths[..<seen.used] == "/box/m1:101:false:hello 1;/box/m2:102:true:hello 2;/box/m3:-1:false:-;")
+    # A write session with changes of its own reads its document instead.
+    try late.value().add("/box/m4", "message")
+    var refused = false
+    late.value().each_child("/box", note_row, &seen) catch failure:
+        assert(failure.code == prism.unsupported)
+        refused = true
+    assert(refused)
 
 func snapshot_does_not_see_later_commits() -> !:
     var store = try prism.Store()

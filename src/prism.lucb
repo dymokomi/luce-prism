@@ -25,6 +25,7 @@ import columnar
 import query.query as querying
 import query.predicates
 import query.results
+import rows
 import query.aggregation
 import query.groups as grouping
 import query.field_index as indexing
@@ -168,6 +169,7 @@ pub type Comparison = predicates.Comparison
 pub let predicate_type = predicates.predicate_type
 pub type Selection = results.Selection
 pub type Row = results.Row
+pub type RowView = rows.RowView
 pub let selection_type = results.selection_type
 pub let row_type = results.row_type
 pub type Aggregate = aggregation.Aggregate

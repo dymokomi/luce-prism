@@ -14,6 +14,7 @@ import composition.delta
 from document import Document, own_document, own_view
 from model import DocumentData, own_data
 import query.query as querying
+import rows
 import persist
 import tables
 import pool
@@ -1002,14 +1003,7 @@ pub struct Session:
             defer doc.release()
             return try querying.Query(doc, pattern)
         let inner = try self.require_inner()
-        var held = try self.require_tables()
-        tables.hold_tables(held)
-        for i in 0..<self.unbaked.count:
-            let next = tables.apply_cow(held, &self.unbaked.items[i].frozen.layer) catch failure:
-                tables.drop_tables(held)
-                error(failure.code, failure.message)
-            tables.drop_tables(held)
-            held = next
+        let held = try self.committed_tables()
         let context = new QueryContext(inner = inner) in memory.heap catch failure:
             tables.drop_tables(held)
             error(failure.code, failure.message)
@@ -1021,6 +1015,40 @@ pub struct Session:
         let source = try querying.own_source(held, context, fault_for_query, finish_query_context)
         defer querying.drop_source(source)
         return try querying.Query.over(source, pattern)
+
+    ## The tables this session reads: the published ones with its unbaked commits
+    ## applied, held for the caller to drop.
+    func committed_tables() -> tables.Tables*!:
+        var held = try self.require_tables()
+        tables.hold_tables(held)
+        for i in 0..<self.unbaked.count:
+            let next = tables.apply_cow(held, &self.unbaked.items[i].frozen.layer) catch failure:
+                tables.drop_tables(held)
+                error(failure.code, failure.message)
+            tables.drop_tables(held)
+            held = next
+        return held
+
+    ## Visit each child of `parent`, in order, as a RowView borrowed for the call: a bulk
+    ## read that makes no Value per property. Paged-out payloads are paged back in
+    ## first. A session with uncommitted writes of its own, or a remote one, cannot
+    ## read in place.
+    pub func each_child(parent: str, visit: func(void*?, const rows.RowView*) -> unit!, context: void*?) -> !:
+        try self.ensure_open()
+        if self.remote != none or self.tls_link != none or (self.write and self.private.count() > 0):
+            error(unsupported, "Prism each_child reads committed tables in place")
+        let inner = try self.require_inner()
+        let held = try self.committed_tables()
+        defer tables.drop_tables(held)
+        let kids = tables.children_of(held, parent) else return
+        for child in kids.paths.span():
+            let element = tables.find_element(held, child.view()) else continue
+            for i in 0..<element.properties.count:
+                let property = &element.properties.items[i]
+                if is_stub(&property.value):
+                    try fault_property(inner, self.identity.view(), element.path.view(), property.name.view(), &property.value)
+            let row = rows.view_of(element)
+            try visit(context, &row)
 
     pub mutating func pin(path: str) -> !:
         try self.ensure_open()
