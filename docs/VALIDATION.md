@@ -50,6 +50,15 @@ expired bake views, query mutation guards, partial codec lenses, and closing
 projections/caches during callback execution. Allocation tests check cleanup after
 every failure and state preservation for transactional mutations.
 
+## Store performance
+
+`tests/bench_store.lucb` is a manual benchmark, not part of the gate. It writes 50k
+messages into one folder of a durable Store, eight small properties each, then
+reopens the store and queries the newest 100 by date. Its header gives the
+commands. On an Apple M-series laptop with Luce 0.9.2, it measured about 1.2 s to
+insert, 0.9 s to bake, 350 ms to reopen and 30 ms for the query. A query over a
+session reads its tables in place and builds no document.
+
 ## What the numbers mean
 
 The inventory is a behavioral test mapping, not line/branch instrumentation.

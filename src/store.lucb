@@ -648,6 +648,21 @@ func assign_ids(state: DocumentState*, private: delta.Layer*):
         entry.op.identifier = next_id
     state.last_id = next_id
 
+## What a query over a session's tables needs to page an evicted property back in.
+struct QueryContext:
+    var inner: Inner*
+    var identity: Buffer
+
+func fault_for_query(context: void*?, path: str, name: str, value: ValueData*) -> !:
+    let held = (QueryContext*)(context else error(invalid, "Prism query has no store"))
+    try fault_property(held.inner, held.identity.view(), path, name, value)
+
+func finish_query_context(context: void*?):
+    let held = (QueryContext*)(context else return)
+    held.identity.close()
+    drop_inner(held.inner)
+    free(held) in memory.heap
+
 pub struct Statistics:
     pub let generation: i64
     pub let elements: i64
@@ -965,10 +980,34 @@ pub struct Session:
             return try own_view(heap, extra)
         return try own_document(rebuilt)
 
+    ## A query over this session's tables, read in place. A session with writes of
+    ## its own not yet committed, or a remote one, queries its document instead.
     pub func query(pattern: str = "") -> querying.Query!:
-        let doc = try self.document()
-        defer doc.release()
-        return try querying.Query(doc, pattern)
+        try self.ensure_open()
+        if self.remote != none or self.tls_link != none or (self.write and self.private.count() > 0):
+            let doc = try self.document()
+            defer doc.release()
+            return try querying.Query(doc, pattern)
+        let inner = try self.require_inner()
+        var held = try self.require_tables()
+        tables.hold_tables(held)
+        for i in 0..<self.unbaked.count:
+            let next = tables.apply_cow(held, &self.unbaked.items[i].frozen.layer) catch failure:
+                tables.drop_tables(held)
+                error(failure.code, failure.message)
+            tables.drop_tables(held)
+            held = next
+        let context = new QueryContext(inner = inner) in memory.heap catch failure:
+            tables.drop_tables(held)
+            error(failure.code, failure.message)
+        hold_inner(inner)
+        context.identity = self.identity.copy() catch failure:
+            finish_query_context(context)
+            tables.drop_tables(held)
+            error(failure.code, failure.message)
+        let source = try querying.own_source(held, context, fault_for_query, finish_query_context)
+        defer querying.drop_source(source)
+        return try querying.Query.over(source, pattern)
 
     pub mutating func pin(path: str) -> !:
         try self.ensure_open()

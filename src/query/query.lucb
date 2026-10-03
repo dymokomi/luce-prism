@@ -1,17 +1,105 @@
-## Lazy immutable query plans; terminals read the current document.
+## Lazy immutable query plans; terminals read the current document, or a store's
+## tables in place (see TableSource).
 import interop
 import memory
 import ownership
+import strings
+import tables
 import query.sort as sorting
 import query.aggregation
 import query.groups as grouping
 from query.predicates import Predicate
 from query.results import Selection, own_selection
-from document import Document, assemble_element, walk_document
+from document import Document, assemble_element, walk_document, own_document
 from model import DocumentData, Element, close_elements
-from storage import List, Buffer, text_copy
-from pattern import valid_pattern, matches
-from types import invalid
+from storage import List, Buffer, text_copy, close_names
+from pattern import valid_pattern, matches, matches_valid, prefix
+from value import ValueData, is_stub
+from types import invalid, unsupported
+
+## A store's published tables that queries read in place, instead of a document the
+## store would have to build from them, with the store's way to page an evicted
+## payload back in. Session.query makes one; the last query holding it calls `finish`.
+pub struct TableSource:
+    var references: @u64
+    pub var tables: tables.Tables*?
+    pub var context: void*?
+    pub var fault: func(void*?, str, str, ValueData*) -> unit!
+    pub var finish: func(void*?) -> unit
+
+## A source over `held` (whose reference it takes). `fault(context, path, name,
+## value)` pages one property in; `finish(context)` runs when the source goes.
+pub func own_source(held: tables.Tables*, context: void*?, fault: func(void*?, str, str, ValueData*) -> unit!,
+                    finish: func(void*?) -> unit) -> TableSource*!:
+    let out = new TableSource(fault = fault, finish = finish) in memory.heap catch failure:
+        tables.drop_tables(held)
+        finish(context)
+        error(failure.code, failure.message)
+    out.references.store(1, .relaxed)
+    out.tables = held
+    out.context = context
+    return out
+
+func hold_source(source: TableSource*):
+    discard(source.references.add(1, .relaxed))
+
+pub func drop_source(source: TableSource*):
+    if source.references.sub(1, .acq_rel) == 1:
+        if let held = source.tables:
+            tables.drop_tables(held)
+        source.finish(source.context)
+        free(source) in memory.heap
+
+## The rows a plan selected, in order. Rows of a document or of tables are borrowed
+## views that `close` leaves alone; rows assembled from a layered view are owned.
+struct Matched:
+    var rows: List[Element]
+    var owned: bool
+
+    mutating func close():
+        if self.owned:
+            close_elements(&self.rows)
+        else:
+            self.rows.close()
+
+    func positions() -> List[usize]!:
+        var out: List[usize]
+        errdefer out.close()
+        try out.reserve(self.rows.count)
+        for i in 0..<self.rows.count:
+            try out.push(i)
+        return out
+
+## The properties a plan reads from a stored row, which a store pages in; `all` when
+## a callback may read anything.
+struct Wanted:
+    var names: List[Buffer]
+    var all: bool
+
+    func has(name: str) -> bool:
+        if self.all:
+            return true
+        for wanted in self.names.span():
+            if wanted.view() == name:
+                return true
+        return false
+
+    mutating func close():
+        close_names(&self.names)
+
+## A view of a stored element as a document row: it borrows the element's storage
+## and is never closed.
+func borrowed_row(element: const tables.Element*) -> Element:
+    return Element(identifier = element.identifier, path = element.path, kind = element.kind,
+                   properties = element.properties, metadata = element.metadata)
+
+## The number of segments in `path`: "/" has none, "/a/b" two.
+func segments(path: str) -> usize:
+    var count: usize = 0
+    for byte in path.bytes:
+        if byte == '/':
+            count += 1
+    return 0 if path == "/" else count
 
 pub struct Query:
     var document: interop.Reference[Document]
@@ -22,6 +110,7 @@ pub struct Query:
     var ordered: bool
     var reversed: bool
     var maximum: usize?
+    var source: TableSource*?
 
     pub func init(document: interop.Reference[Document], pattern: str = "") -> !:
         let copied_pattern = try text_copy(pattern)
@@ -33,6 +122,16 @@ pub struct Query:
         self.ordered = false
         self.reversed = false
         self.maximum = none
+        self.source = none
+
+    ## A plan over a store's tables (see TableSource), holding `source`.
+    pub static func over(source: TableSource*, pattern: str = "") -> Query!:
+        let placeholder = try own_document(DocumentData())
+        defer placeholder.release()
+        var output = try Query(placeholder, pattern)
+        hold_source(source)
+        output.source = source
+        return output
 
     pub func view_document() -> interop.Reference[Document]:
         return self.document.clone()
@@ -44,6 +143,9 @@ pub struct Query:
         output.ordered = self.ordered
         output.reversed = self.reversed
         output.maximum = self.maximum
+        if let source = self.source:
+            hold_source(source)
+            output.source = source
         try output.filters.reserve(self.filters.count)
         for predicate in self.filters.span():
             try output.filters.push(try predicate.copy())
@@ -81,6 +183,10 @@ pub struct Query:
     func accepts(element: const Element*) -> bool!:
         if not self.source_valid or (self.pattern.used > 0 and not matches(self.pattern.view(), element.path.view())):
             return false
+        return try self.accepts_filters(element)
+
+    ## Whether `element` passes every filter; the pattern is checked by the caller.
+    func accepts_filters(element: const Element*) -> bool!:
         var has_callback = false
         for predicate in self.filters.span():
             has_callback = has_callback or predicate.has_callback()
@@ -101,7 +207,11 @@ pub struct Query:
                 return false
         return true
 
+    ## Row indices into the document, for document plans; a store plan has no rows to
+    ## index and answers through select, count, first and the aggregates.
     pub func rows() -> List[usize]!:
+        if self.source != none:
+            error(unsupported, "Query.rows indexes a document; a store query has none")
         var output: List[usize]
         errdefer output.close()
         if self.maximum == 0:
@@ -115,14 +225,135 @@ pub struct Query:
         if self.ordered:
             try sorting.order(doc, output.span(), self.order.view())
         if self.reversed:
-            for i in 0..<output.count // 2:
-                let previous = output.items[i]
-                output.items[i] = output.items[output.count - i - 1]
-                output.items[output.count - i - 1] = previous
+            reverse_positions(output.span())
         if let maximum = self.maximum:
             if output.count > maximum:
                 output.count = maximum
         return output
+
+    ## The rows this plan selects, ordered and limited, at most `cap` when given;
+    ## `planned` false ignores the plan's own limit. `reading` names properties the
+    ## caller reads besides the filters' and the order's; a store pages exactly those in.
+    func matched(cap: usize? = none, reading: const str[]? = none, planned: bool = true) -> Matched!:
+        var found = Matched()
+        errdefer found.close()
+        var limit = self.maximum if planned else none
+        if let most = cap:
+            if let current = limit:
+                if most < current:
+                    limit = most
+            else:
+                limit = most
+        if limit == 0:
+            return found
+        if self.source == none and (try self.document.get()).is_layered():
+            found.rows = try self.collect_layered()
+            found.owned = true
+            if let most = limit:
+                while found.rows.count > most:
+                    found.rows.count -= 1
+                    found.rows.items[found.rows.count].close()
+            return found
+        let early = limit if not self.ordered and not self.reversed else none
+        if let source = self.source:
+            var wanted = try self.wanted(reading)
+            defer wanted.close()
+            try self.walk_tables(source, &found, &wanted, early)
+        else:
+            let doc = (try self.document.get()).view_data()
+            for element in doc.elements.span():
+                if try self.accepts(&element):
+                    try found.rows.push(element)
+                    if let most = early:
+                        if found.rows.count == most:
+                            break
+        try self.arrange(&found.rows, limit)
+        return found
+
+    ## Order, reverse and limit borrowed rows in place.
+    func arrange(rows: List[Element]*, limit: usize?) -> !:
+        if self.ordered or self.reversed:
+            var positions: List[usize]
+            defer positions.close()
+            try positions.reserve(rows.count)
+            for i in 0..<rows.count:
+                try positions.push(i)
+            if self.ordered:
+                try sorting.order_rows(rows.span(), positions.span(), self.order.view())
+            if self.reversed:
+                reverse_positions(positions.span())
+            var arranged: List[Element]
+            errdefer arranged.close()
+            try arranged.reserve(rows.count)
+            for position in positions.span():
+                try arranged.push(rows.items[position])
+            rows.close()
+            rows[0] = arranged
+        if let most = limit:
+            if rows.count > most:
+                rows.count = most
+
+    func wanted(reading: const str[]?) -> Wanted!:
+        var out = Wanted()
+        errdefer out.close()
+        for predicate in self.filters.span():
+            if try predicate.reads(&out.names):
+                out.all = true
+        if self.ordered:
+            try out.names.push(try self.order.copy())
+        if let names = reading:
+            for name in names:
+                try out.names.push(try text_copy(name))
+        return out
+
+    ## Walk the stored elements the pattern can reach, in document order: below its
+    ## literal prefix, no deeper than its segments unless it has `**`.
+    func walk_tables(source: TableSource*, found: Matched*, wanted: const Wanted*, early: usize?) -> !:
+        let held = source.tables else error(invalid, "Prism query source is closed")
+        let pattern = self.pattern.view()
+        let root = "/" if pattern.length == 0 else prefix(pattern)
+        let deepest: usize? = none if pattern.length == 0 or strings.contains(pattern, "**") else segments(pattern)
+        if root != "/":
+            if let element = tables.find_element(held, root):
+                try self.take(source, element, found, wanted)
+        var stack: List[str]
+        defer stack.close()
+        try push_children(&stack, held, root)
+        while stack.count > 0:
+            if let most = early:
+                if found.rows.count >= most:
+                    return
+            stack.count -= 1
+            let path = stack.items[stack.count]
+            if let most_segments = deepest:
+                if segments(path) > most_segments:
+                    continue
+            let element = tables.find_element(held, path) else continue
+            try self.take(source, element, found, wanted)
+            try push_children(&stack, held, path)
+
+    ## Page in what the plan reads from `element`, then keep it when it is accepted.
+    func take(source: TableSource*, element: tables.Element*, found: Matched*, wanted: const Wanted*) -> !:
+        if not self.source_valid or (self.pattern.used > 0 and not matches_valid(self.pattern.view(), element.path.view())):
+            return
+        for i in 0..<element.properties.count:
+            let property = &element.properties.items[i]
+            if is_stub(&property.value) and wanted.has(property.name.view()):
+                try source.fault(source.context, element.path.view(), property.name.view(), &property.value)
+        let row = borrowed_row(element)
+        if try self.accepts_filters(&row):
+            try found.rows.push(row)
+
+    ## Page in every property of the stored rows `found` holds, which a selection copies.
+    func page_in_rows(found: const Matched*) -> !:
+        let source = self.source else return
+        let held = source.tables else return
+        for row in found.rows.span():
+            let element = tables.find_element(held, row.path.view()) else continue
+            for i in 0..<element.properties.count:
+                let property = &element.properties.items[i]
+                if is_stub(&property.value):
+                    try source.fault(source.context, element.path.view(), property.name.view(), &property.value)
 
     func collect_layered() -> List[Element]!:
         var accepted: List[Element]
@@ -151,10 +382,7 @@ pub struct Query:
         if self.ordered:
             try sorting.order_rows(accepted.span(), indices.span(), self.order.view())
         if self.reversed:
-            for i in 0..<indices.count // 2:
-                let previous = indices.items[i]
-                indices.items[i] = indices.items[indices.count - i - 1]
-                indices.items[indices.count - i - 1] = previous
+            reverse_positions(indices.span())
         if let maximum = self.maximum:
             if indices.count > maximum:
                 indices.count = maximum
@@ -167,164 +395,90 @@ pub struct Query:
         return output
 
     pub func select() -> interop.Reference[Selection]!:
+        var found = try self.matched()
+        defer found.close()
+        try self.page_in_rows(&found)
         var selection = Selection()
         errdefer selection.close()
-        if (try self.document.get()).is_layered():
-            var rows = try self.collect_layered()
-            defer close_elements(&rows)
-            for element in rows.span():
-                try selection.append(&element)
-        else:
-            var rows = try self.rows()
-            defer rows.close()
-            let doc = (try self.document.get()).view_data()
-            for index in rows.span():
-                try selection.append(&doc.elements.items[index])
+        for element in found.rows.span():
+            try selection.append(&element)
         let owned = selection
         selection = Selection()
         return try own_selection(owned)
 
     pub func count() -> usize!:
-        if (try self.document.get()).is_layered():
-            var rows = try self.collect_layered()
-            defer close_elements(&rows)
-            return rows.count
-        var rows = try self.rows()
-        defer rows.close()
-        return rows.count
+        var found = try self.matched()
+        defer found.close()
+        return found.rows.count
 
     pub func first() -> str?!:
-        let view = try self.document.get()
-        if view.is_layered():
-            if self.ordered or self.reversed:
-                var rows = try self.collect_layered()
-                defer close_elements(&rows)
-                if rows.count == 0:
-                    return none
-                return view.intern_path(rows.items[0].path.view())
-            if self.maximum == 0:
-                return none
-            var paths = try walk_document(view)
-            defer paths.close()
-            for path in paths.span():
-                var row = try assemble_element(view, path)
-                defer row.close()
-                if try self.accepts(&row):
-                    return view.intern_path(path)
+        var found = try self.matched(cap = 1)
+        defer found.close()
+        if found.rows.count == 0:
             return none
-        let doc = view.view_data()
-        if self.ordered or self.reversed:
-            var rows = try self.rows()
-            defer rows.close()
-            return doc.elements.items[rows.items[0]].path.view() if rows.count > 0 else none
-        if self.maximum == 0:
-            return none
-        for element in doc.elements.span():
-            if try self.accepts(&element):
-                return element.path.view()
-        return none
+        return try self.lasting(&found)
 
     pub func any() -> bool!:
-        if self.maximum == 0:
-            return false
-        let view = try self.document.get()
-        if view.is_layered():
-            var paths = try walk_document(view)
-            defer paths.close()
-            for path in paths.span():
-                var row = try assemble_element(view, path)
-                defer row.close()
-                if try self.accepts(&row):
-                    return true
-            return false
-        let doc = view.view_data()
-        for element in doc.elements.span():
-            if try self.accepts(&element):
-                return true
-        return false
+        var found = try self.matched(cap = 1)
+        defer found.close()
+        return found.rows.count > 0
 
     pub func one() -> str!:
-        let view = try self.document.get()
-        if view.is_layered():
-            var result: str? = none
-            var paths = try walk_document(view)
-            defer paths.close()
-            for path in paths.span():
-                var row = try assemble_element(view, path)
-                defer row.close()
-                if try self.accepts(&row):
-                    if result != none:
-                        error(invalid, "Query.one matched more than one row")
-                    result = view.intern_path(path)
-            return result else error(invalid, "Query.one matched no rows")
-        let doc = view.view_data()
-        var result: str? = none
-        for element in doc.elements.span():
-            if try self.accepts(&element):
-                if result != none:
-                    error(invalid, "Query.one matched more than one row")
-                result = element.path.view()
-        return result else error(invalid, "Query.one matched no rows")
+        var found = try self.matched(cap = 2, planned = false)
+        defer found.close()
+        if found.rows.count > 1:
+            error(invalid, "Query.one matched more than one row")
+        if found.rows.count == 0:
+            error(invalid, "Query.one matched no rows")
+        return (try self.lasting(&found)) else error(invalid, "Query.one matched no rows")
+
+    ## The first row's path in storage that outlives `found`: a borrowed row's path is
+    ## the document's or the stored tables' already; an assembled row's is interned.
+    func lasting(found: const Matched*) -> str?!:
+        let path = found.rows.items[0].path.view()
+        if not found.owned:
+            return path
+        return (try self.document.get()).intern_path(path)
 
     pub func aggregate(field: str, operation: aggregation.Aggregate) -> f64?!:
-        if (try self.document.get()).is_layered():
-            var rows = try self.collect_layered()
-            defer close_elements(&rows)
-            var indices: List[usize]
-            defer indices.close()
-            try indices.reserve(rows.count)
-            for i in 0..<rows.count:
-                try indices.push(i)
-            return try aggregation.numeric_rows(rows.span(), indices.span(), field, operation)
-        var rows = try self.rows()
-        defer rows.close()
-        return try aggregation.numeric((try self.document.get()).view_data(), rows.span(), field, operation)
+        var found = try self.matched(reading = [field])
+        defer found.close()
+        var positions = try found.positions()
+        defer positions.close()
+        return try aggregation.numeric_rows(found.rows.span(), positions.span(), field, operation)
 
     pub func distinct_count(field: str) -> usize!:
-        if (try self.document.get()).is_layered():
-            var rows = try self.collect_layered()
-            defer close_elements(&rows)
-            var indices: List[usize]
-            defer indices.close()
-            try indices.reserve(rows.count)
-            for i in 0..<rows.count:
-                try indices.push(i)
-            return try aggregation.distinct_rows(rows.span(), indices.span(), field)
-        var rows = try self.rows()
-        defer rows.close()
-        return try aggregation.distinct((try self.document.get()).view_data(), rows.span(), field)
+        var found = try self.matched(reading = [field])
+        defer found.close()
+        var positions = try found.positions()
+        defer positions.close()
+        return try aggregation.distinct_rows(found.rows.span(), positions.span(), field)
 
     pub func group_by(field: str) -> interop.Reference[grouping.Groups]!:
         let fields = [field]
-        if (try self.document.get()).is_layered():
-            var rows = try self.collect_layered()
-            defer close_elements(&rows)
-            var indices: List[usize]
-            defer indices.close()
-            try indices.reserve(rows.count)
-            for i in 0..<rows.count:
-                try indices.push(i)
-            return try grouping.build_rows(rows.span(), indices.span(), fields)
-        var rows = try self.rows()
-        defer rows.close()
-        return try grouping.build((try self.document.get()).view_data(), rows.span(), fields)
+        var found = try self.matched(reading = fields)
+        defer found.close()
+        var positions = try found.positions()
+        defer positions.close()
+        return try grouping.build_rows(found.rows.span(), positions.span(), fields)
 
     pub func aggregate_by(fields: const str[], value_field: str, operation: aggregation.Aggregate) -> interop.Reference[grouping.Groups]!:
-        if (try self.document.get()).is_layered():
-            var rows = try self.collect_layered()
-            defer close_elements(&rows)
-            var indices: List[usize]
-            defer indices.close()
-            try indices.reserve(rows.count)
-            for i in 0..<rows.count:
-                try indices.push(i)
-            return try grouping.build_rows(rows.span(), indices.span(), fields, value_field, operation)
-        var rows = try self.rows()
-        defer rows.close()
-        return try grouping.build((try self.document.get()).view_data(), rows.span(), fields, value_field, operation)
+        var reading: List[str]
+        defer reading.close()
+        for field in fields:
+            try reading.push(field)
+        try reading.push(value_field)
+        var found = try self.matched(reading = reading.span())
+        defer found.close()
+        var positions = try found.positions()
+        defer positions.close()
+        return try grouping.build_rows(found.rows.span(), positions.span(), fields, value_field, operation)
 
     pub mutating func close():
         self.document.release()
+        if let source = self.source:
+            drop_source(source)
+        self.source = none
         self.pattern.close()
         self.order.close()
         for i in 0..<self.filters.count:
@@ -348,7 +502,22 @@ func own_query(query: Query*) -> interop.Reference[Query]!:
     query.pattern = Buffer()
     query.order = Buffer()
     query.filters = List[Predicate]()
+    query.source = none
     let output = interop.Reference[Query].adopt(native, query_type, memory.heap) catch failure:
         error(failure.code, failure.message)
     query.document.release()
     return output
+
+func reverse_positions(positions: usize[]):
+    for i in 0..<positions.length // 2:
+        let previous = positions[i]
+        positions[i] = positions[positions.length - i - 1]
+        positions[positions.length - i - 1] = previous
+
+## Push `parent`'s children onto `stack` last first, so they pop in document order.
+func push_children(stack: List[str]*, held: const tables.Tables*, parent: str) -> !:
+    let kids = tables.children_of(held, parent) else return
+    var i = kids.paths.count
+    while i > 0:
+        i -= 1
+        try stack.push(kids.paths.items[i].view())

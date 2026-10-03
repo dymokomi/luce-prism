@@ -208,6 +208,17 @@ pub struct Predicate:
     pub func accepts_row(element: const Element*) -> bool!:
         return true if self.rules.count == 0 else try self.evaluate(element, self.rules.count - 1, 0)
 
+    ## Push the names of the properties whose values this predicate reads into
+    ## `names`. A callback may read any property: then the answer is true and the
+    ## caller treats every property as read.
+    pub func reads(names: List[Buffer]*) -> bool!:
+        for rule in self.rules.span():
+            if rule.operation == 14:
+                return true
+            if rule.operation >= 1 and rule.operation <= 3:
+                try names.push(try rule.name.copy())
+        return false
+
     pub func has_callback() -> bool:
         for rule in self.rules.span():
             if rule.operation == 14:

@@ -58,9 +58,15 @@ func segment(pattern: str, name: str) -> bool:
 pub func matches(pattern: str, path: str) -> bool:
     if not valid_pattern(pattern) or not valid_path(path):
         return false
+    return matches_valid(pattern, path)
+
+## `matches` for a pattern and a path already known to be valid, as a query's checked
+## pattern and a store's paths are: it skips validating both on every row.
+pub func matches_valid(pattern: str, path: str) -> bool:
     let name = element_path(path)
-    var starts: usize[2049]
-    var ends: usize[2049]
+    # Only the first count + 1 entries are read, and those are written first.
+    var starts: usize[2049] = ---
+    var ends: usize[2049] = ---
     var count: usize = 0
     var start: usize = 1
     while start < name.length:
@@ -71,9 +77,11 @@ pub func matches(pattern: str, path: str) -> bool:
         ends[count] = end
         count += 1
         start = end + 1
-    var previous: bool[2050]
-    var next: bool[2050]
+    var previous: bool[2050] = ---
+    var next: bool[2050] = ---
     previous[0] = true
+    for i in 1..<count + 1:
+        previous[i] = false
     start = 1
     while start < pattern.length:
         var end = start
