@@ -430,10 +430,10 @@ func load_unbaked_blob(snap: wal.View*, identity: str, generation: u64) -> Buffe
 
 func decode_crate(bytes: const u8[]) -> tables.Tables*!:
     var data = DocumentData()
-    # from_data clones document storage; release the parsed source on success too.
+    # adopt_data moves properties out; the rest of the parsed source is released here.
     defer data.close()
     try read_document(bytes, &data)
-    return try tables.from_data(&data)
+    return try tables.adopt_data(&data)
 
 func hydrate_data(journal: Journal*, data: DocumentData*) -> !:
     for i in 0..<data.elements.count:

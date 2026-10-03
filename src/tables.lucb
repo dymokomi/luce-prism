@@ -502,6 +502,24 @@ func element_node(source: const model.Element*) -> Node*!:
     pending = none
     return node
 
+## A node for `source` whose properties and metadata move out of it.
+func moved_element_node(source: model.Element*) -> Node*!:
+    let out = try new Element() in memory.heap
+    out.references.store(1, .relaxed)
+    var pending: Element*? = out
+    errdefer drop_pending_element(pending)
+    out.identifier = source.identifier
+    out.path = try source.path.copy()
+    out.kind = try source.kind.copy()
+    out.properties = source.properties
+    source.properties = List[Property]()
+    out.metadata = source.metadata
+    source.metadata = List[Pair]()
+    let node = try leaf_element(out.path.view(), out)
+    drop_element(out)
+    pending = none
+    return node
+
 func push_text(list: List[Buffer]*, path: str) -> !:
     var copy = try text_copy(path)
     errdefer copy.close()
@@ -694,6 +712,15 @@ func remove_incident(tables: Tables*, path: str, cow: bool) -> !:
 ## balanced from its keys in order, O(n log n) comparisons and one node per entry,
 ## instead of n inserts that each copy a path of nodes.
 pub func from_data(data: const DocumentData*) -> Tables*!:
+    return try build_tables(data, none)
+
+## `from_data` for a document its caller discards, as a load does: each element's
+## properties and metadata move into the tables instead of being copied, so the
+## load never holds them twice. Paths stay, for the trees built from them.
+pub func adopt_data(data: DocumentData*) -> Tables*!:
+    return try build_tables(data, data)
+
+func build_tables(data: const DocumentData*, moving: DocumentData*?) -> Tables*!:
     let out = try empty_tables()
     errdefer drop_tables(out)
     let count = data.elements.count
@@ -706,9 +733,14 @@ pub func from_data(data: const DocumentData*) -> Tables*!:
         built.paths = try alloc Node*[count] in memory.heap
         built.ids = try alloc Node*[count] in memory.heap
         built.scratch = try alloc Node*[count] in memory.heap
-    for element in data.elements.span():
-        let node = try element_node(&element)
-        built.paths[built.path_count] = node
+    for row in 0..<count:
+        let element = &data.elements.items[row]
+        var node: Node*? = none
+        if let source = moving:
+            node = try moved_element_node(&source.elements.items[row])
+        else:
+            node = try element_node(element)
+        built.paths[built.path_count] = node else trap("element node")
         built.path_count += 1
         if element.identifier != 0:
             built.ids[built.id_count] = try leaf_id(element.identifier, element.path.view())
