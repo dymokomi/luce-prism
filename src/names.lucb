@@ -1,0 +1,159 @@
+## Shared text for names that repeat across elements: property names and type labels.
+## Each distinct text is stored once in a process-wide table and counted, so 50k
+## messages with the same eight fields hold eight names, not 400k copies. A name
+## leaves the table when its last holder closes it.
+import memory
+import sync
+from storage import Buffer, copied
+from types import limit_exceeded
+
+struct Entry:
+    var references: @u64
+    var digest: u64
+    var text: Buffer
+
+## One shared name; the zero value is the empty name. Copies count, closes release.
+pub struct Name:
+    var entry: Entry*?
+
+    ## The name `text`, shared with every other holder of the same text.
+    pub static func of(text: str) -> Name!:
+        if text.length == 0:
+            return Name()
+        return Name(entry = try intern(text))
+
+    pub func view() -> str:
+        let held = self.entry else return ""
+        return held.text.view()
+
+    pub func length() -> usize:
+        let held = self.entry else return 0
+        return held.text.used
+
+    pub func is_empty() -> bool:
+        return self.entry == none
+
+    ## Whether `other` holds the same stored name, not merely equal text.
+    pub func shares(other: const Name*) -> bool:
+        return self.entry == other.entry
+
+    ## Another holder of this name. It never allocates; it is fallible so it reads
+    ## like the copies it replaces.
+    pub func copy() -> Name!:
+        if let held = self.entry:
+            discard(held.references.add(1, .relaxed))
+        return Name(entry = self.entry)
+
+    pub mutating func close():
+        if let held = self.entry:
+            release(held)
+        self.entry = none
+
+var lock: sync.Mutex
+## Open addressing over live entries; the capacity is a power of two, at least twice
+## the count, and the slots are freed when the last name goes.
+var slots: (Entry*?)[]
+var count: usize
+
+## How many distinct names are held now (for tests and statistics).
+pub func live_names() -> usize:
+    lock.lock()
+    defer lock.unlock()
+    return count
+
+func digest_of(text: str) -> u64:
+    var value: u64 = 0xcbf29ce484222325
+    for byte in text.bytes:
+        value = (value ^ (u64)byte) *% 0x100000001b3
+    return value
+
+func slot_of(digest: u64, text: str) -> usize:
+    let mask = slots.length - 1
+    var at = (usize)digest & mask
+    while let held = slots[at]:
+        if held.digest == digest and held.text.view() == text:
+            return at
+        at = (at + 1) & mask
+    return at
+
+func grow(minimum: usize) -> !:
+    var capacity: usize = 64
+    while capacity < minimum * 2:
+        capacity *= 2
+    let fresh = try alloc (Entry*?)[capacity] in memory.heap
+    for i in 0..<capacity:
+        fresh[i] = none
+    let previous = slots
+    slots = fresh
+    for held in previous:
+        if let entry = held:
+            slots[slot_of(entry.digest, entry.text.view())] = entry
+    if previous.length > 0:
+        free(previous) in memory.heap
+
+func intern(text: str) -> Entry*!:
+    let digest = digest_of(text)
+    lock.lock()
+    defer lock.unlock()
+    if slots.length > 0:
+        if let held = slots[slot_of(digest, text)]:
+            discard(held.references.add(1, .relaxed))
+            return held
+    # The entry comes first: a table grown for an entry that then failed would stay
+    # allocated with nothing in it.
+    let entry = try new Entry(digest = digest) in memory.heap
+    entry.text = copied(text.bytes) catch failure:
+        free(entry) in memory.heap
+        error(failure.code, failure.message)
+    if (count + 1) * 2 > slots.length:
+        grow(count + 1) catch failure:
+            entry.text.close()
+            free(entry) in memory.heap
+            error(failure.code, failure.message)
+    entry.references.store(1, .relaxed)
+    slots[slot_of(digest, text)] = entry
+    count += 1
+    return entry
+
+## Drop one holder; the last one removes the entry, and the table with it when empty.
+## While others hold the name, a compare-and-swap drops this one without the lock.
+## The last holder decrements under the lock, where `intern` cannot find the entry
+## and hold it again mid-removal.
+func release(entry: Entry*):
+    var current = entry.references.load(.acquire)
+    while current > 1:
+        let (done, seen) = entry.references.cas(current, current - 1, .acq_rel, .acquire)
+        if done:
+            return
+        current = seen
+    lock.lock()
+    defer lock.unlock()
+    if entry.references.sub(1, .acq_rel) != 1:
+        return
+    remove_slot(slot_of(entry.digest, entry.text.view()))
+    entry.text.close()
+    free(entry) in memory.heap
+    count -= 1
+    if count == 0:
+        free(slots) in memory.heap
+        var empty: (Entry*?)[]
+        slots = empty
+
+## Clear `at` and move later entries of its probe run back so lookups still find them
+## (backward-shift deletion).
+func remove_slot(at: usize):
+    let mask = slots.length - 1
+    var hole = at
+    slots[hole] = none
+    var next = (hole + 1) & mask
+    while let held = slots[next]:
+        let home = (usize)held.digest & mask
+        # Move `held` into the hole when its home is not between the hole and it.
+        let distance_home = (next -% home) & mask
+        let distance_hole = (next -% hole) & mask
+        if distance_home >= distance_hole:
+            slots[hole] = held
+            slots[next] = none
+            hole = next
+        next = (next + 1) & mask
+

@@ -1,0 +1,41 @@
+## Internal regression: names are shared by their holders, found again through
+## collisions after removals, and the table is freed with the last name.
+import names
+from names import Name
+
+pub func main(arguments: str[]) -> i32!:
+    discard(arguments)
+    let before = names.live_names()
+    var first = try Name.of("subject")
+    var second = try Name.of("subject")
+    var third = try second.copy()
+    assert(first.shares(&second) and second.shares(&third))
+    assert(first.view() == "subject" and first.length() == 7)
+    var empty = try Name.of("")
+    assert(empty.is_empty() and empty.view() == "")
+    first.close()
+    second.close()
+    assert(third.view() == "subject" and names.live_names() == before + 1)
+    third.close()
+    empty.close()
+    assert(names.live_names() == before)
+    var held: Name[300]
+    for i in 0..<(usize)300:
+        var scratch: u8[16]
+        held[i] = try Name.of(try format(scratch, f"n{i}"))
+    for i in 0..<(usize)300:
+        if i % 3 != 0:
+            held[i].close()
+    for i in 0..<(usize)300:
+        if i % 3 == 0:
+            var scratch: u8[16]
+            var again = try Name.of(try format(scratch, f"n{i}"))
+            assert(again.shares(&held[i]))
+            again.close()
+    assert(names.live_names() == before + 100)
+    for i in 0..<(usize)300:
+        if i % 3 == 0:
+            held[i].close()
+    assert(names.live_names() == before)
+    print("PASS names: shared holders, collision-safe removal, freed with the last name")
+    return 0

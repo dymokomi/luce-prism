@@ -8,6 +8,7 @@ from path import is_descendant, parent_path
 from storage import Buffer, List, Pair, close_names, copied, copy_pairs, text_copy
 from types import limit_exceeded, missing, max_items, invalid
 from value import is_stub
+from names import Name
 
 extern func memcmp(a: const void*, b: const void*, count: usize) -> i32
 
@@ -1011,8 +1012,8 @@ func apply_property(tables: Tables*, path: str, entry: const delta.Entry*, cow: 
         return
     var prop = Property()
     errdefer prop.close()
-    prop.name = try entry.key.name.copy()
-    prop.type_name = try entry.op.type_name.copy()
+    prop.name = try Name.of(entry.key.name.view())
+    prop.type_name = try Name.of(entry.op.type_name.view())
     prop.value = try entry.op.value.copy()
     try prop.samples.reserve(entry.op.samples.count)
     for sample in entry.op.samples.span():

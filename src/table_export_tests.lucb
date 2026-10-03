@@ -3,6 +3,7 @@ import model
 import tables
 import storage
 import animation
+from names import Name
 
 pub func main(arguments: str[]) -> i32!:
     discard(arguments)
@@ -12,8 +13,8 @@ pub func main(arguments: str[]) -> i32!:
     try source.add("/users/alice", "file")
     var prop = animation.Property()
     defer prop.close()
-    prop.name = try storage.text_copy("password-hash")
-    prop.type_name = try storage.text_copy("test-property")
+    prop.name = try Name.of("password-hash")
+    prop.type_name = try Name.of("test-property")
     try source.elements.items[1].put_property(&prop)
     let frozen = try tables.from_data(&source)
     defer tables.drop_tables(frozen)

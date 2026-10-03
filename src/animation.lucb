@@ -1,6 +1,7 @@
 ## Keyframe storage and value interpolation.
 from luce_std import math
 from storage import Buffer, List, copy_list, equal_bytes
+from names import Name
 from types import DType, Interpolation, invalid
 from value import ValueData, equal_values, append_number, floating, same_shape, value_header
 
@@ -26,9 +27,10 @@ pub struct Sample:
         self.right.close()
 
 pub struct Property:
-    pub var name: Buffer
+    ## Shared with every other property of the same name (see names).
+    pub var name: Name
     pub var value: ValueData = ValueData()
-    pub var type_name: Buffer
+    pub var type_name: Name
     pub var samples: List[Sample]
 
     pub func copy() -> Property!:

@@ -133,7 +133,7 @@ pub func write_literal(out: Buffer*, value: const ValueData*, named: bool = fals
     try write_nested(out, value, 0, &index, &reader)
 
 pub func write_type(out: Buffer*, prop: const Property*) -> !:
-    if prop.type_name.used > 0:
+    if prop.type_name.length() > 0:
         var spec = try type_spec(prop.type_name.view())
         defer spec.close()
         var declared = try value_header(spec.kind, spec.shape.span())
@@ -170,7 +170,7 @@ pub func write_handles(out: Buffer*, name: str, values: const List[f64]*) -> !:
 func compatible_sample(prop: const Property*, sample: const ValueData*) -> bool:
     if same_shape(&prop.value, sample):
         return true
-    if prop.type_name.used > 0 or prop.value.kind != sample.kind or prop.value.shape.count != sample.shape.count:
+    if prop.type_name.length() > 0 or prop.value.kind != sample.kind or prop.value.shape.count != sample.shape.count:
         return false
     let declared = role(&prop.value)
     if declared == "float[]" or declared == "int[]":
@@ -196,7 +196,7 @@ pub func write_element(out: Buffer*, document: const DocumentData*, element: con
         try out.byte(' ')
         try write_name(out, prop.name.view())
         try out.text(" = ")
-        try write_literal(out, &prop.value, prop.type_name.used > 0)
+        try write_literal(out, &prop.value, prop.type_name.length() > 0)
         try out.byte('\n')
         if prop.samples.count > 0:
             try indent(out, depth + 1)
@@ -213,7 +213,7 @@ pub func write_element(out: Buffer*, document: const DocumentData*, element: con
                 # Use the declared dynamic array syntax even when a sample has
                 # two/three components and would independently classify as a tuple.
                 let declared = role(&prop.value)
-                try write_literal(out, &sample.value, prop.type_name.used > 0 or declared == "float[]" or declared == "int[]")
+                try write_literal(out, &sample.value, prop.type_name.length() > 0 or declared == "float[]" or declared == "int[]")
                 if sample.interpolation != Interpolation.linear or sample.handle != 0 or sample.left.count > 0 or sample.right.count > 0:
                     try out.text(" (interp = ")
                     try out.text("held" if sample.interpolation == Interpolation.held else ("linear" if sample.interpolation == Interpolation.linear else "bezier"))

@@ -10,6 +10,7 @@ from value import Value, ValueData, scalar_bits, own_value
 from storage import List, Buffer, text_copy, find_pair, less
 from path import element_path, slot_name, require_slot
 from types import DType, invalid, missing, limit_exceeded
+from names import Name
 
 func zero() -> ValueData!:
     return try scalar_bits(DType.float32, 0)
@@ -17,7 +18,7 @@ func zero() -> ValueData!:
 func set_value(element: Element*, name: str, value: const ValueData*) -> !:
     var property = Property()
     defer property.close()
-    property.name = try text_copy(name)
+    property.name = try Name.of(name)
     property.value = try value.copy()
     try element.put_property(&property)
 

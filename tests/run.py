@@ -76,7 +76,8 @@ def main():
         )
     ] + [(args.base, '../src/storage_empty_tests.lucb'),
          (args.base, '../src/table_export_tests.lucb'),
-         (args.base, '../src/pool_index_tests.lucb')]
+         (args.base, '../src/pool_index_tests.lucb'),
+         (args.base, '../src/names_tests.lucb')]
     luce_consumers = [
         (args.luce, name + '.luc') for name in (
             'consumer', 'advanced_consumer', 'editor_consumer',

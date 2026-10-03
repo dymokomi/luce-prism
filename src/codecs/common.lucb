@@ -6,6 +6,7 @@ from animation import Property
 from storage import Buffer, Reader, List, text_copy
 from types import DType, invalid
 from path import parent_path
+from names import Name
 
 pub func whitespace(byte: u8) -> bool:
     return byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n' or byte == 11 or byte == 12
@@ -72,7 +73,7 @@ pub func put(doc: DocumentData*, path: str, name: str, value: const ValueData*) 
     # Property names deliberately allow arbitrary UTF-8, including an empty key.
     var prop = Property()
     defer prop.close()
-    prop.name = try text_copy(name)
+    prop.name = try Name.of(name)
     prop.value = try value.copy()
     try doc.elements.items[try doc.require(path)].put_property(&prop)
 

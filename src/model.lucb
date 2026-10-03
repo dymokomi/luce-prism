@@ -9,6 +9,7 @@ from path import element_path, is_descendant, parent_path, require_element, requ
 from storage import copy_list, copy_names, copy_pairs, find_pair, remove_pair, Blob, Buffer, List, Pair, add_name, close_names, copied, less, own_blob, pair, set_pair, sort_pairs, text_copy
 from types import DType, HandleType, Interpolation, invalid, limit_exceeded, missing
 from value import Value, ValueData, own_value, scalar_bits
+from names import Name
 
 pub struct Element:
     pub var identifier: usize
@@ -242,7 +243,7 @@ pub struct DocumentData:
         var owned = value
         errdefer owned.close()
         let index = try self.require(path)
-        var label = try text_copy(type_name)
+        var label = try Name.of(type_name)
         errdefer label.close()
         let element = &self.elements.items[index]
         if let position = element.property(name):
@@ -252,7 +253,7 @@ pub struct DocumentData:
             prop.value = owned
             prop.type_name = label
             return
-        var key = try text_copy(name)
+        var key = try Name.of(name)
         errdefer key.close()
         try element.properties.push(Property(name = key, value = owned, type_name = label))
         var position = element.properties.count - 1

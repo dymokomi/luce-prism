@@ -7,6 +7,7 @@ from serialization.compression import compress_bytes, decompress_bytes
 from storage import Buffer, List, Reader, add_name, set_pair, text_copy
 from types import Interpolation, invalid, limit_exceeded, unsupported
 from value import read_value, write_value
+from names import Name
 
 ## The writer's string table: each distinct string once, found through a hash index
 ## (a linear search made writing a snapshot quadratic in its element count).
@@ -240,7 +241,7 @@ pub func read_binary(bytes: const u8[], document: DocumentData*) -> !:
                     if s > 0 and sample.time <= prop.samples.items[s - 1].time:
                         error(invalid, "Prism keyframes must have increasing times")
                     try prop.samples.push(sample)
-            prop.type_name = try text_copy(try reader.text())
+            prop.type_name = try Name.of(try reader.text())
         let metadata_count = try reader.count(8)
         for m in 0..<metadata_count:
             let key = try read_index(&reader, &table)
