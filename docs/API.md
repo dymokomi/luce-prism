@@ -160,8 +160,10 @@ journal frame (`max_frame - 32`); payloads of 4 KiB or more count only as refere
 `Session.each_child(parent, visit, context)` is a Base bulk read: it calls
 `visit(context, row)` for each child of `parent`, in order, with a `RowView` borrowed for
 the call (`path`, `type_name`, `has`, `integer`, `number`, `boolean`, `text`, `value`),
-making no `Value` per property. It reads committed tables in place, paging payloads
-in first, so a session with uncommitted writes of its own, or a remote one, refuses it.
+making no `Value` per property and paging nothing in: a paged-out large payload
+reads as absent through the typed getters, and `get` reads it. It reads committed
+tables in place, so a session with uncommitted writes of its own, or a remote one,
+refuses it. `Session.has(path, name)` says whether a property exists without reading it.
 
 `memory_limit` is Store-wide (default 256 MiB). RAM `Store.memory()` refuses when
 resident would exceed it. In a durable `Store.open`, every payload of 4 KiB or more

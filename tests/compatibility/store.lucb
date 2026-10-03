@@ -153,6 +153,9 @@ func each_child_reads_rows_in_place() -> !:
     var seen = Seen()
     try snap.value().each_child("/box", note_row, &seen)
     assert((str)seen.paths[..<seen.used] == "/box/m1:101:false:hello 1;/box/m2:102:true:hello 2;/box/m3:-1:false:-;")
+    # has: through baked and unbaked commits, without reading the value.
+    assert(try snap.value().has("/box/m2", "read") and not try snap.value().has("/box/m1", "read"))
+    assert(not try snap.value().has("/box/m3", "date") and not try snap.value().has("/missing", "date"))
     # A write session with changes of its own reads its document instead.
     try late.value().add("/box/m4", "message")
     var refused = false

@@ -758,6 +758,29 @@ pub struct Session:
         let row = tables.find_element(try self.require_tables(), path) else error(missing, "Prism property does not exist")
         return try own_value(try table_property(try self.require_inner(), self.identity.view(), row, name))
 
+    ## Whether `path` has property `name`, through this session's own writes and its
+    ## unbaked commits, without reading the value or paging it in.
+    pub func has(path: str, name: str) -> bool!:
+        try self.ensure_open()
+        if self.remote != none or self.tls_link != none:
+            error(unsupported, "Prism has is not available over IPC")
+        if not visible(&self, path):
+            return false
+        var i = layer_count(&self)
+        while i > 0:
+            i -= 1
+            let layer = layer_at(&self, i)
+            if let op = layer.get(path, delta.Cell.property, name):
+                return not op.deleted
+            if let op = layer.get(path, delta.Cell.element):
+                if op.deleted:
+                    return false
+        let row = tables.find_element(try self.require_tables(), path) else return false
+        for property in row.properties.span():
+            if property.name.view() == name:
+                return true
+        return false
+
     pub func metadata(path: str, key: str) -> str!:
         try self.ensure_open()
         if not visible(&self, path):
@@ -1009,23 +1032,19 @@ pub struct Session:
         return held
 
     ## Visit each child of `parent`, in order, as a RowView borrowed for the call: a bulk
-    ## read that makes no Value per property. Paged-out payloads are paged back in
-    ## first. A session with uncommitted writes of its own, or a remote one, cannot
-    ## read in place.
+    ## read that makes no Value per property and pages nothing in. A large payload that
+    ## is paged out reads as absent through the typed getters (`has` still sees it);
+    ## read it with `get`. A session with uncommitted writes of its own, or a remote
+    ## one, cannot read in place.
     pub func each_child(parent: str, visit: func(void*?, const rows.RowView*) -> unit!, context: void*?) -> !:
         try self.ensure_open()
         if self.remote != none or self.tls_link != none or (self.write and self.private.count() > 0):
             error(unsupported, "Prism each_child reads committed tables in place")
-        let inner = try self.require_inner()
         let held = try self.committed_tables()
         defer tables.drop_tables(held)
         let kids = tables.children_of(held, parent) else return
         for child in kids.paths.span():
             let element = tables.find_element(held, child.view()) else continue
-            for i in 0..<element.properties.count:
-                let property = &element.properties.items[i]
-                if is_stub(&property.value):
-                    try fault_property(inner, self.identity.view(), element.path.view(), property.name.view(), &property.value)
             let row = rows.view_of(element)
             try visit(context, &row)
 
