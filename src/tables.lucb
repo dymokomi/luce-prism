@@ -6,16 +6,19 @@ import model
 from model import DocumentData
 from path import is_descendant, parent_path
 from storage import Buffer, List, Pair, close_names, copied, copy_pairs, text_copy
-from types import limit_exceeded, missing, max_items
+from types import limit_exceeded, missing, max_items, invalid
 from value import is_stub
 
+extern func memcmp(a: const void*, b: const void*, count: usize) -> i32
+
+## Keys order bytewise, then shorter first, as text does. Raw by_id keys are not UTF-8,
+## so this compares their bytes rather than going through `str`.
 func compare_keys(a: const u8[], b: const u8[]) -> i32:
     let n = a.length if a.length < b.length else b.length
-    for i in 0..<n:
-        if a[i] < b[i]:
-            return -1
-        if a[i] > b[i]:
-            return 1
+    if n > 0:
+        let order = memcmp(a.data, b.data, n)
+        if order != 0:
+            return -1 if order < 0 else 1
     return -1 if a.length < b.length else (1 if a.length > b.length else 0)
 
 pub func id_key(identifier: usize) -> Buffer!:
@@ -687,11 +690,39 @@ func remove_incident(tables: Tables*, path: str, cow: bool) -> !:
         let next = try remove(tables.assets, asset_path.bytes())
         replace_root(tables, 4, next)
 
+## Tables for a whole document at once, as a load builds them: each tree is built
+## balanced from its keys in order, O(n log n) comparisons and one node per entry,
+## instead of n inserts that each copy a path of nodes.
 pub func from_data(data: const DocumentData*) -> Tables*!:
     let out = try empty_tables()
     errdefer drop_tables(out)
+    let count = data.elements.count
+    if count > max_items:
+        error(limit_exceeded, "Prism table limit exceeded")
+    var built = Built()
+    defer built.close()
+    # Built frees what has a length, so an empty document allocates nothing.
+    if count > 0:
+        built.paths = try alloc Node*[count] in memory.heap
+        built.ids = try alloc Node*[count] in memory.heap
+        built.scratch = try alloc Node*[count] in memory.heap
     for element in data.elements.span():
-        try put_element(out, &element, false)
+        let node = try element_node(&element)
+        built.paths[built.path_count] = node
+        built.path_count += 1
+        if element.identifier != 0:
+            built.ids[built.id_count] = try leaf_id(element.identifier, element.path.view())
+            built.id_count += 1
+    sort_nodes(built.paths[..<built.path_count], built.scratch)
+    for row in 1..<built.path_count:
+        if compare_keys(built.paths[row - 1].key.bytes(), built.paths[row].key.bytes()) == 0:
+            error(invalid, "Prism document repeats an element path")
+    sort_nodes(built.ids[..<built.id_count], built.scratch)
+    out.by_id = link_balanced(built.ids, 0, built.id_count)
+    built.id_count = 0
+    out.by_parent = try children_tree(data, &built)
+    out.by_path = link_balanced(built.paths, 0, built.path_count)
+    built.path_count = 0
     for connection in data.connections.span():
         let node = try leaf_conn(connection.key.view(), connection.value.view())
         defer drop(node)
@@ -706,6 +737,126 @@ pub func from_data(data: const DocumentData*) -> Tables*!:
     out.globs = try copy_pairs(&data.globs)
     out.bytes += payload_bytes(out)
     return out
+
+## Nodes `from_data` has made and not yet linked into a tree; close drops them.
+struct Built:
+    var paths: Node*[]
+    var path_count: usize
+    var ids: Node*[]
+    var id_count: usize
+    var scratch: Node*[]
+
+    mutating func close():
+        for row in 0..<self.path_count:
+            drop(self.paths[row])
+        for row in 0..<self.id_count:
+            drop(self.ids[row])
+        if self.paths.length > 0: free(self.paths) in memory.heap
+        if self.ids.length > 0: free(self.ids) in memory.heap
+        if self.scratch.length > 0: free(self.scratch) in memory.heap
+
+## Each parent's list of children, in document order, as one balanced tree. The
+## parents are grouped by a stable sort of the elements' rows on their parent path.
+func children_tree(data: const DocumentData*, built: Built*) -> Node*?!:
+    let count = data.elements.count
+    if count == 0:
+        return none
+    let rows = try alloc usize[count] in memory.heap
+    defer free(rows) in memory.heap
+    let spare = try alloc usize[count] in memory.heap
+    defer free(spare) in memory.heap
+    for row in 0..<count:
+        rows[row] = row
+    sort_by_parent(data, rows, spare)
+    var parents: usize = 0
+    errdefer drop_nodes(built.scratch[..<parents])
+    var start: usize = 0
+    while start < count:
+        let parent = parent_path(data.elements.items[rows[start]].path.view())
+        var end = start + 1
+        while end < count and parent_path(data.elements.items[rows[end]].path.view()) == parent:
+            end += 1
+        let list = try own_children()
+        var pending: ChildList*? = list
+        errdefer drop_pending_children(pending)
+        try list.paths.reserve(end - start)
+        for row in start..<end:
+            try push_text(&list.paths, data.elements.items[rows[row]].path.view())
+        built.scratch[parents] = try leaf_children(parent, list)
+        drop_children(list)
+        pending = none
+        parents += 1
+        start = end
+    return link_balanced(built.scratch, 0, parents)
+
+func drop_nodes(nodes: Node*[]):
+    for node in nodes:
+        drop(node)
+
+## Order `rows` by their elements' parent paths, keeping document order within one
+## parent (a stable merge sort into `spare`).
+func sort_by_parent(data: const DocumentData*, rows: usize[], spare: usize[]):
+    var width: usize = 1
+    while width < rows.length:
+        var low: usize = 0
+        while low < rows.length:
+            let middle = low + width if low + width < rows.length else rows.length
+            let high = low + 2 * width if low + 2 * width < rows.length else rows.length
+            var left = low
+            var right = middle
+            for out in low..<high:
+                var take_left = right >= high
+                if not take_left and left < middle:
+                    let a = parent_path(data.elements.items[rows[left]].path.view())
+                    let b = parent_path(data.elements.items[rows[right]].path.view())
+                    take_left = compare_keys(a.bytes, b.bytes) <= 0
+                if take_left:
+                    spare[out] = rows[left]
+                    left += 1
+                else:
+                    spare[out] = rows[right]
+                    right += 1
+            low = high
+        for row in 0..<rows.length:
+            rows[row] = spare[row]
+        width *= 2
+
+## Order `nodes` by key (a merge sort into `scratch`).
+func sort_nodes(nodes: Node*[], scratch: Node*[]):
+    var width: usize = 1
+    while width < nodes.length:
+        var low: usize = 0
+        while low < nodes.length:
+            let middle = low + width if low + width < nodes.length else nodes.length
+            let high = low + 2 * width if low + 2 * width < nodes.length else nodes.length
+            var left = low
+            var right = middle
+            for out in low..<high:
+                if right >= high or (left < middle and compare_keys(nodes[left].key.bytes(), nodes[right].key.bytes()) <= 0):
+                    scratch[out] = nodes[left]
+                    left += 1
+                else:
+                    scratch[out] = nodes[right]
+                    right += 1
+            low = high
+        for row in 0..<nodes.length:
+            nodes[row] = scratch[row]
+        width *= 2
+
+## Link `nodes[low..<high]`, in key order and without subtrees, into one balanced
+## tree. Each node's reference moves into its parent; the root's is returned.
+func link_balanced(nodes: Node*[], low: usize, high: usize) -> Node*?:
+    if low >= high:
+        return none
+    let middle = low + (high - low) // 2
+    let node = nodes[middle]
+    node.left = link_balanced(nodes, low, middle)
+    node.right = link_balanced(nodes, middle + 1, high)
+    let hl = height_of(node.left)
+    let hr = height_of(node.right)
+    node.height = (hl if hl > hr else hr) + 1
+    node.count = node_count(node.left) + node_count(node.right) + 1
+    return node
 
 func emit_elements(tables: const Tables*, parent: str, output: DocumentData*) -> !:
     let kids = children_of(tables, parent) else return
