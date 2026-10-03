@@ -52,11 +52,15 @@ pub struct Buffer:
             error(limit_exceeded, "Prism byte limit exceeded (256 MiB)")
         if count <= self.data.length:
             return
-        var capacity = self.data.length * 2
-        if capacity < 64:
-            capacity = 64
-        if capacity < count:
-            capacity = count
+        # A first allocation fits the request: most buffers are written once (names,
+        # payloads). One that keeps growing doubles from 64 bytes.
+        var capacity = (count + 15) & ~(usize)15
+        if self.data.length > 0:
+            capacity = self.data.length * 2
+            if capacity < 64:
+                capacity = 64
+            if capacity < count:
+                capacity = count
         if capacity > max_bytes:
             capacity = max_bytes
         let grown = try alloc u8[capacity] in memory.heap
@@ -90,6 +94,7 @@ pub struct Buffer:
         try self.uint(memory.read[u64](&finite), 8)
 
     pub mutating func sized(value: str) -> !:
+        try self.reserve(self.used + 4 + value.length)
         try self.uint((u64)value.length, 4)
         try self.text(value)
 
@@ -112,10 +117,17 @@ pub struct Buffer:
         self.data = empty
         self.used = 0
 
+## An exact-size copy of `data`. Copies are names, paths and payloads that rarely
+## grow; a builder's 64-byte floor made each small one cost 64 bytes.
 pub func copied(data: const u8[]) -> Buffer!:
     var output: Buffer
-    errdefer output.close()
-    try output.put(data)
+    if data.length == 0:
+        return output
+    if data.length > max_bytes:
+        error(limit_exceeded, "Prism byte limit exceeded (256 MiB)")
+    output.data = try alloc u8[data.length] in memory.heap
+    memory.copy(output.data, data, data.length)
+    output.used = data.length
     return output
 
 pub func text_copy(value: str) -> Buffer!:
