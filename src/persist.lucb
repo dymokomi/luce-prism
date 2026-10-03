@@ -2,6 +2,7 @@
 import memory
 from luce_std import files
 import composition.delta
+import extents
 import file_access as file_io
 import tables
 import wal.engine as wal
@@ -14,7 +15,7 @@ from serialization.dispatch import read_document
 from serialization.package import write_package
 from storage import Buffer, List, Reader, close_names, copied, text_copy
 from types import Interpolation, invalid, limit_exceeded, unsupported, busy, closed, conflict, timed_out
-from value import ValueData, is_stub, read_value, write_value
+from value import ValueData, Locator, read_value, write_value
 import wal.bytes as wal_bytes
 
 pub let schema_key: str = "prism/encoding"
@@ -205,12 +206,18 @@ pub func encode_layer(layer: const delta.Layer*) -> Buffer!:
             flags |= 1
         if entry.op.override:
             flags |= 2
+        # A payload in an extent is journalled as a reference (see extents).
+        if entry.op.value.locator != none:
+            flags |= 4
         try out.byte(flags)
         try out.uint((u64)entry.op.identifier, 8)
         try out.sized(entry.op.type_name.view())
         try out.sized(entry.op.text.view())
         var encoded_value: Buffer
-        try write_value(&encoded_value, &entry.op.value)
+        if (flags & 4) != 0:
+            try extents.write_stub(&encoded_value, &entry.op.value)
+        else:
+            try write_value(&encoded_value, &entry.op.value)
         try out.uint((u64)encoded_value.used, 4)
         try out.put(encoded_value.bytes())
         encoded_value.close()
@@ -264,8 +271,11 @@ pub func decode_layer(bytes: const u8[]) -> delta.Layer!:
         let value_size = (usize)try reader.uint(4)
         let value_bytes = try reader.take(value_size)
         var value_reader = Reader(data = value_bytes)
-        op.value = read_value(&value_reader) catch failure:
-            recover ValueData()
+        if (flags & 4) != 0:
+            op.value = try extents.read_stub(&value_reader)
+        else:
+            op.value = read_value(&value_reader) catch failure:
+                recover ValueData()
         let children = try reader.count(0)
         try op.children.reserve(children)
         for c in 0..<children:
@@ -428,31 +438,35 @@ func load_unbaked_blob(snap: wal.View*, identity: str, generation: u64) -> Buffe
     defer key.close()
     return try load_chunked(snap, key.view())
 
-func decode_crate(bytes: const u8[]) -> tables.Tables*!:
+## Tables from a snapshot blob: its crate, with the values that live in extents put
+## back as stubs.
+func decode_snapshot(bytes: const u8[]) -> tables.Tables*!:
+    let (crate, places) = try extents.unwrap(bytes)
     var data = DocumentData()
     # adopt_data moves properties out; the rest of the parsed source is released here.
     defer data.close()
-    try read_document(bytes, &data)
-    return try tables.adopt_data(&data)
+    try read_document(crate, &data)
+    let owned = try tables.adopt_data(&data)
+    errdefer tables.drop_tables(owned)
+    try extents.restore(owned, places)
+    return owned
 
-func hydrate_data(journal: Journal*, data: DocumentData*) -> !:
-    for i in 0..<data.elements.count:
-        let element = &data.elements.items[i]
-        for p in 0..<element.properties.count:
-            let value = &element.properties.items[p].value
-            if is_stub(value):
-                let place = value.locator else continue
-                var blob = try read_extent(journal, place.identity.view(), (u64)place.generation, (u64)place.extent)
-                value.payload.close()
-                value.payload = blob
-
-func encode_tables(journal: Journal*, owned: const tables.Tables*) -> Buffer!:
+## A snapshot blob of `owned`: large payloads no commit wrote go to extents first,
+## then the crate carries references to every extent, not the payloads.
+func encode_tables(journal: Journal*, identity: str, owned: tables.Tables*, through: u64) -> Buffer!:
+    try extents.write_unwritten(journal.path.view(), identity, through, owned)
     var data = try tables.to_data(owned)
     defer data.close()
-    try hydrate_data(journal, &data)
+    var places: Buffer
+    defer places.close()
+    try extents.strip(&data, &places)
+    var crate: Buffer
+    defer crate.close()
     if data.assets.count > 0:
-        return try write_package(&data, false)
-    return try write_binary(&data)
+        crate = try write_package(&data, false)
+    else:
+        crate = try write_binary(&data)
+    return try extents.wrap(crate.bytes(), &places)
 
 func valid_basename(name: str) -> bool:
     if name.length == 0 or name == "." or name == "..":
@@ -467,45 +481,6 @@ func snap_dir(journal: Journal*) -> Buffer!:
     errdefer out.close()
     try out.text(".snap")
     return out
-
-pub func extents_dir(journal: Journal*) -> Buffer!:
-    var out = try journal.path.copy()
-    errdefer out.close()
-    try out.text(".ext")
-    return out
-
-func extent_basename(identity: str, generation: u64, id: u64) -> Buffer!:
-    var out: Buffer
-    errdefer out.close()
-    try out.text(identity)
-    try out.byte((u8)'.')
-    try put_decimal(&out, generation)
-    try out.byte((u8)'.')
-    try put_decimal(&out, id)
-    return out
-
-pub func write_extent(journal: Journal*, identity: str, generation: u64, id: u64, bytes: const u8[]) -> !:
-    var dir = try extents_dir(journal)
-    defer dir.close()
-    files.ensure_directory(dir.view()) catch failure:
-        if not try file_io.exists(dir.view()):
-            error(failure.code, failure.message)
-    var name = try extent_basename(identity, generation, id)
-    defer name.close()
-    if not valid_basename(name.view()):
-        error(invalid, "invalid Prism extent basename")
-    var path = try join_path(dir.view(), name.view())
-    defer path.close()
-    try file_io.write(path.view(), bytes)
-
-pub func read_extent(journal: Journal*, identity: str, generation: u64, id: u64) -> Buffer!:
-    var dir = try extents_dir(journal)
-    defer dir.close()
-    var name = try extent_basename(identity, generation, id)
-    defer name.close()
-    var path = try join_path(dir.view(), name.view())
-    defer path.close()
-    return try file_io.read(path.view())
 
 func join_path(dir: str, name: str) -> Buffer!:
     var out: Buffer
@@ -584,7 +559,7 @@ func load_one(snap: wal.View*, journal: Journal*, identity: str) -> LoadedIdenti
             defer path.close()
             var crate = try file_io.read(path.view())
             defer crate.close()
-            out.tables = try decode_crate(crate.bytes())
+            out.tables = try decode_snapshot(crate.bytes())
         elif text == "inline":
             var prefix: Buffer
             defer prefix.close()
@@ -592,7 +567,7 @@ func load_one(snap: wal.View*, journal: Journal*, identity: str) -> LoadedIdenti
             try prefix.text(identity)
             var crate = try load_chunked(snap, prefix.view())
             defer crate.close()
-            out.tables = try decode_crate(crate.bytes())
+            out.tables = try decode_snapshot(crate.bytes())
         else:
             out.tables = try tables.empty_tables()
             through = 0
@@ -655,7 +630,8 @@ pub func load_identities(journal: Journal*) -> List[LoadedIdentity]!:
         loaded = LoadedIdentity()
     return out
 
-pub func append_layer(journal: Journal*, identity: str, generation: u64, layer: const delta.Layer*, wait_ms: i64) -> !:
+pub func append_layer(journal: Journal*, identity: str, generation: u64, layer: delta.Layer*, wait_ms: i64) -> !:
+    try extents.externalize(journal.path.view(), identity, generation, layer)
     var blob = try encode_layer(layer)
     defer blob.close()
     let cost = try journal_bytes_for_layer(identity, generation, blob.used)
@@ -699,8 +675,8 @@ func remove_snap_chunks(tx: wal.Transaction*, snap: wal.View*, identity: str) ->
                 try tx.remove(key.view())
             index += 1
 
-pub func reclaim(journal: Journal*, identity: str, owned: const tables.Tables*, through: u64, wait_ms: i64) -> !:
-    var crate = try encode_tables(journal, owned)
+pub func reclaim(journal: Journal*, identity: str, owned: tables.Tables*, through: u64, wait_ms: i64) -> !:
+    var crate = try encode_tables(journal, identity, owned, through)
     defer crate.close()
     let store = try journal_store(journal)
     var snap = wal.snapshot(store) catch failure:
@@ -784,3 +760,18 @@ pub func snap_basename(identity: str, through: u64) -> Buffer!:
     try out.byte((u8)'.')
     try put_decimal(&out, through)
     return out
+
+## Delete the extents no loaded snapshot or unbaked commit references (see extents).
+pub func sweep_extents(journal: Journal*, loaded: const List[LoadedIdentity]*) -> !:
+    var keep: List[Buffer]
+    defer close_names(&keep)
+    for item in loaded.span():
+        if let owned = item.tables:
+            try extents.note_tables(owned, &keep)
+        for layer in item.unbaked.span():
+            try extents.note_layer(&layer.layer, &keep)
+    try extents.sweep(journal.path.view(), &keep)
+
+## Read the payload of `place` from its extent.
+pub func read_extent(journal: Journal*, place: const Locator*) -> Buffer!:
+    return try extents.read(journal.path.view(), place)

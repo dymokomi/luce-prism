@@ -1,6 +1,7 @@
 ## RAM Store plus durable open/reopen through Prism's journal.
 from luce_prism import prism, persist
 from luce_std import files
+import file_access as file_io
 import memory
 import interop
 
@@ -40,7 +41,8 @@ pub func run(scratch: str) -> !:
     try fs_delete_and_remove_directory_split()
     try fs_remove_all_does_not_follow_links()
     try fs_write_and_dump_per_identity()
-    try fs_set_refuses_oversized_value()
+    try large_value_lives_in_an_extent()
+    try replaced_extents_are_swept_on_open()
     try vm_evicts_baked_payloads_and_faults()
     try vm_pin_holds_subtree_and_set_refuses()
     try vm_reopen_pages_under_limit()
@@ -671,23 +673,76 @@ func fs_write_and_dump_per_identity() -> !:
     defer media.release()
     assert(try media.value().contains("/vacation"))
 
-func fs_set_refuses_oversized_value() -> !:
-    var store = try prism.Store()
-    defer store.close()
-    let tx = try store.begin()
-    defer tx.release()
+## A value larger than a journal frame commits: its payload goes to an extent once,
+## the journal and the snapshot carry a reference, and it reads back before and after
+## a bake and a reopen.
+func large_value_lives_in_an_extent() -> !:
+    try reset_persist()
+    let size = persist.payload_budget + 1
+    let first = try prism.Store.open(persist_db())
+    let tx = try first.value().begin()
     try tx.value().add("/blob", "file")
-    let n = persist.payload_budget + 1
-    let payload = try alloc u8[n] in memory.heap
-    defer free(payload) in memory.heap
-    let shape: i64[1] = [(i64)n]
-    let value = try prism.Value.array(prism.DType.uint8, shape, payload)
+    let value = try marked_blob(size, 7)
     defer value.release()
-    var refused = false
-    tx.value().set("/blob", "bytes", value) catch failure:
-        assert(failure.code == prism.limit_exceeded)
-        refused = true
-    assert(refused)
+    try tx.value().set("/blob", "bytes", value)
+    discard(try tx.value().commit())
+    tx.release()
+    let unbaked = try first.value().snapshot()
+    let early = try unbaked.value().get("/blob", "bytes")
+    assert(early.value().bytes().length == size and early.value().bytes()[size - 1] == 7)
+    early.release()
+    unbaked.release()
+    first.release()
+    # Reopened unbaked: the journal held only a reference.
+    let second = try prism.Store.open(persist_db())
+    let reopened = try second.value().snapshot()
+    let again = try reopened.value().get("/blob", "bytes")
+    assert(again.value().bytes().length == size and again.value().bytes()[0] == 7)
+    again.release()
+    reopened.release()
+    discard(try second.value().bake(wait_ms = 1000))
+    second.release()
+    let third = try prism.Store.open(persist_db())
+    defer third.release()
+    let baked = try third.value().snapshot()
+    defer baked.release()
+    let last = try baked.value().get("/blob", "bytes")
+    defer last.release()
+    assert(last.value().bytes().length == size and last.value().bytes()[size - 1] == 7)
+    # Neither the journal nor the snapshot copied the payload.
+    var journal = try file_io.read(persist_db())
+    defer journal.close()
+    assert(journal.used < 1048576)
+
+## An extent nothing references any more goes on the next open.
+func replaced_extents_are_swept_on_open() -> !:
+    try reset_persist()
+    let first = try prism.Store.open(persist_db())
+    for round in 0..<(usize)2:
+        let tx = try first.value().begin()
+        if round == 0:
+            try tx.value().add("/blob", "file")
+        let value = try marked_blob(8192, (u8)(round + 1))
+        try tx.value().set("/blob", "bytes", value)
+        value.release()
+        discard(try tx.value().commit())
+        tx.release()
+        discard(try first.value().bake(wait_ms = 1000))
+    first.release()
+    var name_buffer: u8[2048]
+    let old_extent = try format(name_buffer, f"{persist_db()}.ext/root.1.0")
+    assert(try file_io.exists(old_extent))
+    let second = try prism.Store.open(persist_db())
+    defer second.release()
+    var again_buffer: u8[2048]
+    assert(not try file_io.exists(try format(again_buffer, f"{persist_db()}.ext/root.1.0")))
+    var kept_buffer: u8[2048]
+    assert(try file_io.exists(try format(kept_buffer, f"{persist_db()}.ext/root.2.0")))
+    let snap = try second.value().snapshot()
+    defer snap.release()
+    let value = try snap.value().get("/blob", "bytes")
+    defer value.release()
+    assert(value.value().bytes()[0] == 2)
 
 func marked_blob(count: usize, mark: u8) -> interop.Reference[prism.Value]!:
     let payload = try alloc u8[count] in memory.heap

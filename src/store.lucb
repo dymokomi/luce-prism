@@ -254,13 +254,6 @@ func copy_coldest_pool_key(inner: Inner*) -> PoolKey?:
         return none
     return PoolKey(identity = identity, path = path, name = name)
 
-func allocate_extent(inner: Inner*) -> u64:
-    inner.pool_lock.lock()
-    defer inner.pool_lock.unlock()
-    let extent = inner.pool.next_extent
-    inner.pool.next_extent += 1
-    return extent
-
 func record_eviction(inner: Inner*, size: usize):
     inner.pool_lock.lock()
     defer inner.pool_lock.unlock()
@@ -317,35 +310,12 @@ func is_written(value: const ValueData*) -> bool:
     let place = value.locator else return false
     return place.size > 0 and place.identity.used > 0
 
-func page_out(inner: Inner*, journal: persist.Journal*, owned: tables.Tables*, identity: str, path: str, name: str, value: ValueData*, generation: u64) -> usize:
-    if is_stub(value) or value.payload.used < pool.min_paged:
+## Drop the resident payload of `value`, whose extent already holds it: every large
+## payload of a durable store is written once, by its commit or its snapshot.
+func page_out(inner: Inner*, owned: tables.Tables*, identity: str, path: str, name: str, value: ValueData*) -> usize:
+    if is_stub(value) or value.payload.used < pool.min_paged or not is_written(value):
         return 0
     let size = value.payload.used
-    let written = is_written(value)
-    if not written:
-        var loc_id = text_copy(identity) catch failure:
-            return 0
-        var blob = value.payload.copy() catch failure:
-            loc_id.close()
-            return 0
-        let extent = allocate_extent(inner)
-        persist.write_extent(journal, identity, generation, extent, blob.bytes()) catch failure:
-            blob.close()
-            loc_id.close()
-            return 0
-        blob.close()
-        var written_at = Locator()
-        written_at.identity = loc_id
-        written_at.generation = (usize)generation
-        written_at.extent = (usize)extent
-        written_at.size = size
-        loc_id = Buffer()
-        let place = own_locator(written_at) catch failure:
-            return 0
-        if let previous = value.locator:
-            previous.close()
-            free(previous) in memory.heap
-        value.locator = place
     value.payload.close()
     value.payload = Buffer()
     record_eviction(inner, size)
@@ -366,7 +336,7 @@ func evict_from_state(inner: Inner*, journal: persist.Journal*, identity: str, s
                     while p < element.properties.count:
                         let value = &element.properties.items[p].value
                         if not is_stub(value) and value.payload.used > 0:
-                            let size = page_out(inner, journal, state.tables, identity, element.path.view(), element.properties.items[p].name.view(), value, state.generation)
+                            let size = page_out(inner, state.tables, identity, element.path.view(), element.properties.items[p].name.view(), value)
                             if size > 0:
                                 return size
                         p += 1
@@ -391,7 +361,7 @@ func evict_one(inner: Inner*) -> usize:
         if not pool_is_pinned(inner, identity, path):
             if let element = tables.find_element(state.tables, path):
                 if let value = find_property(element, name):
-                    freed = page_out(inner, journal, state.tables, identity, path, name, value, state.generation)
+                    freed = page_out(inner, state.tables, identity, path, name, value)
         state.head_lock.unlock()
         if freed == 0:
             evict_discard(inner, identity, path, name)
@@ -427,7 +397,7 @@ func fault_property(inner: Inner*, identity: str, path: str, name: str, value: V
     let size = place.size
     try charge(inner, size)
     errdefer uncharge(inner, size)
-    var blob = try persist.read_extent(journal, place.identity.view(), (u64)place.generation, (u64)place.extent)
+    var blob = try persist.read_extent(journal, place)
     value.payload.close()
     value.payload = blob
     record_fault(inner, size)
@@ -662,6 +632,17 @@ func assign_ids(state: DocumentState*, private: delta.Layer*):
         entry.op.identifier = next_id
     state.last_id = next_id
 
+## A copy of `value` with its payload, read from its extent when `value` is a stub: an
+## unbaked commit loaded on open keeps large payloads in their extents.
+func readable_copy(inner: Inner*, value: const ValueData*) -> ValueData!:
+    var copy = try value.copy()
+    errdefer copy.close()
+    if is_stub(&copy):
+        let journal = inner.persist else error(missing, "Prism payload is not resident")
+        let place = copy.locator else error(missing, "Prism payload is not resident")
+        copy.payload = try persist.read_extent(journal, place)
+    return copy
+
 ## What a query over a session's tables needs to page an evicted property back in.
 struct QueryContext:
     var inner: Inner*
@@ -770,7 +751,7 @@ pub struct Session:
             if let op = layer.get(path, delta.Cell.property, name):
                 if op.deleted:
                     error(missing, "Prism property does not exist")
-                return try own_value(try op.value.copy())
+                return try own_value(try readable_copy(try self.require_inner(), &op.value))
             if let op = layer.get(path, delta.Cell.element):
                 if op.deleted:
                     error(missing, "Prism property does not exist")
@@ -849,8 +830,6 @@ pub struct Session:
         if self.private.count() >= max_ops:
             error(limit_exceeded, "Prism layer operation limit exceeded")
         let data = (try value.get()).view_data()
-        if data.payload.used > persist.payload_budget:
-            error(limit_exceeded, "Prism value exceeds the journal frame")
         let bytes = estimate(path, name, data.payload.used)
         let inner = try self.require_inner()
         try charge(inner, bytes)
@@ -966,24 +945,24 @@ pub struct Session:
 
     pub func document() -> interop.Reference[Document]!:
         try self.ensure_open()
-        if let inner = self.inner:
-            let owned = try self.require_tables()
-            var i: usize = 0
-            let n = tables.node_count(owned.by_path)
-            while i < n:
-                if let node = tables.at(owned.by_path, i):
-                    if let element = node.element:
-                        for p in 0..<element.properties.count:
-                            try fault_property(inner, self.identity.view(), element.path.view(), element.properties.items[p].name.view(), &element.properties.items[p].value)
-                i += 1
         var current = try self.require_tables()
         var owned: tables.Tables*? = none
-        errdefer drop_owned_tables(owned)
+        defer drop_owned_tables(owned)
         for i in 0..<self.unbaked.count:
             let next = try tables.apply_cow(current, &self.unbaked.items[i].frozen.layer)
             drop_owned_tables(owned)
             owned = next
             current = next
+        # Page in every payload, baked or from an unbaked commit, before copying.
+        if let inner = self.inner:
+            var i: usize = 0
+            let n = tables.node_count(current.by_path)
+            while i < n:
+                if let node = tables.at(current.by_path, i):
+                    if let element = node.element:
+                        for p in 0..<element.properties.count:
+                            try fault_property(inner, self.identity.view(), element.path.view(), element.properties.items[p].name.view(), &element.properties.items[p].value)
+                i += 1
         var rebuilt = try tables.to_data(current)
         errdefer rebuilt.close()
         if self.write and self.private.count() > 0:
@@ -2000,6 +1979,10 @@ func create_open(path: str, limit_bytes: usize, token: str) -> Inner*!:
         persist.close_journal(journal)
         error(failure.code, failure.message)
     errdefer persist.close_loaded(&loaded)
+    # No session holds an older reference yet: extents nothing loaded names can go.
+    persist.sweep_extents(journal, &loaded) catch failure:
+        persist.close_journal(journal)
+        error(failure.code, failure.message)
     let inner = new Inner() in memory.heap catch failure:
         persist.close_journal(journal)
         error(failure.code, failure.message)

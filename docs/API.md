@@ -150,8 +150,9 @@ creates missing parents and is idempotent if the path is already a directory;
 a terminal link. `remove_directory` requires an empty directory that is not a
 link. `remove_all` is idempotent on a missing path and **does not follow** links
 (the link node is removed; the target identity is left alone). There is no public
-`kind_nofollow` and no `mode`. `Session.set` refuses a value larger than one
-journal frame (`max_frame - 32`).
+`kind_nofollow` and no `mode`. A single commit's journalled layer must fit one
+journal frame (`max_frame - 32`); payloads of 4 KiB or more count only as references
+(see the memory limit below).
 
 `Store.dump(dir)` writes one atomic crate per catalog identity as `dir/{identity}`.
 `Store.load(dir)` installs those basenames (valid identities only) as tables.
@@ -163,8 +164,13 @@ making no `Value` per property. It reads committed tables in place, paging paylo
 in first, so a session with uncommitted writes of its own, or a remote one, refuses it.
 
 `memory_limit` is Store-wide (default 256 MiB). RAM `Store.memory()` refuses when
-resident would exceed it. Durable `Store.open` LRU-evicts unpinned published
-payloads to `{dbpath}.ext` and `get`/`read` fault them back. `children` / `lookup`
+resident would exceed it. In a durable `Store.open`, every payload of 4 KiB or more
+is written once to an extent file, `{dbpath}.ext/<identity>.<generation>.<id>`, when
+its commit is journalled. The journal and the snapshots carry references, so a
+value can be larger than a journal frame and a bake does not rewrite payloads.
+Unpinned published payloads are LRU-evicted by dropping them from memory, and
+`get`/`read` fault them back from their extents. An open deletes extents that no
+snapshot or unbaked commit references. `children` / `lookup`
 / `kind` do not fault. `Session.pin(path)` holds a subtree; pin fails rather than
 evicting that working set. Layers stay pinned until bake or the view dies.
 

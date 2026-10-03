@@ -1,0 +1,330 @@
+## Large payloads, kept once in extent files beside a durable store and referenced
+## from its journal and its snapshots instead of copied into them:
+##
+##     {store}.ext/<identity>.<generation>.<id>
+##
+## A commit writes each payload of at least `minimum` bytes to an extent first, so
+## its journal frame carries a reference and a value can be larger than a frame. A
+## bake's snapshot lists the references (a `PRSN` container: the crate, then the
+## locators), so baking costs the identity's structure, not its payloads. An open
+## loads references as stubs that page in on first read, and sweeps away extents
+## nothing references any more.
+##
+## Commit extents are named by the commit's generation and the entry's place in it.
+## Payloads a snapshot writes that no commit did (written before this scheme) take
+## ids from 2^32 up under the bake's generation, so the two never collide.
+from luce_std import files
+import composition.delta
+import file_access as file_io
+import tables
+from model import DocumentData
+from storage import Buffer, List, Reader, close_names, text_copy, less
+from types import DType, invalid
+from value import ValueData, Locator, own_locator, is_stub, value_header, dtype_from
+
+## Payloads at least this large live in extents; smaller ones stay inline.
+pub let minimum: usize = 4096
+## Where snapshot-written ids start, above any commit's entry count.
+let snapshot_ids: u64 = 4294967296
+let snapshot_magic: str = "PRSN"
+let snapshot_version: u8 = 1
+
+func directory(base: str) -> Buffer!:
+    var out = try text_copy(base)
+    errdefer out.close()
+    try out.text(".ext")
+    return out
+
+func basename(identity: str, generation: u64, id: u64) -> Buffer!:
+    var out = try text_copy(identity)
+    errdefer out.close()
+    try out.byte('.')
+    try decimal(&out, generation)
+    try out.byte('.')
+    try decimal(&out, id)
+    return out
+
+func decimal(out: Buffer*, value: u64) -> !:
+    var digits: u8[20]
+    var count: usize = 0
+    var rest = value
+    while true:
+        digits[count] = (u8)(48 + rest % 10)
+        count += 1
+        rest = rest // 10
+        if rest == 0:
+            break
+    while count > 0:
+        count -= 1
+        try out.byte(digits[count])
+
+func path_of(base: str, identity: str, generation: u64, id: u64) -> Buffer!:
+    var out = try directory(base)
+    errdefer out.close()
+    var name = try basename(identity, generation, id)
+    defer name.close()
+    for byte in name.bytes():
+        if byte == '/' or byte == 0:
+            error(invalid, "invalid Prism extent name")
+    try out.byte('/')
+    try out.put(name.bytes())
+    return out
+
+## Write extent `id` of `identity`'s commit `generation` for a durable store at `base`.
+pub func write(base: str, identity: str, generation: u64, id: u64, bytes: const u8[]) -> !:
+    var dir = try directory(base)
+    defer dir.close()
+    files.ensure_directory(dir.view()) catch failure:
+        if not try file_io.exists(dir.view()):
+            error(failure.code, failure.message)
+    var path = try path_of(base, identity, generation, id)
+    defer path.close()
+    try file_io.write(path.view(), bytes)
+
+pub func read(base: str, place: const Locator*) -> Buffer!:
+    var path = try path_of(base, place.identity.view(), (u64)place.generation, (u64)place.extent)
+    defer path.close()
+    return try file_io.read(path.view())
+
+func locate(identity: str, generation: u64, id: u64, size: usize) -> Locator*!:
+    var place = Locator()
+    errdefer place.close()
+    place.identity = try text_copy(identity)
+    place.generation = (usize)generation
+    place.extent = (usize)id
+    place.size = size
+    return try own_locator(place)
+
+## Write every large payload `layer` sets to an extent, keeping the payload resident
+## and recording where it went, before the layer is journalled.
+pub func externalize(base: str, identity: str, generation: u64, layer: delta.Layer*) -> !:
+    var id: u64 = 0
+    for i in 0..<layer.items.count:
+        let op = &layer.items.items[i].op
+        if op.deleted or op.value.locator != none or op.value.payload.used < minimum:
+            continue
+        try write(base, identity, generation, id, op.value.payload.bytes())
+        op.value.locator = try locate(identity, generation, id, op.value.payload.used)
+        id += 1
+
+## Write the large payloads of `owned` that no commit wrote, under bake `generation`,
+## and record where in place: values loaded from snapshots older than extents.
+pub func write_unwritten(base: str, identity: str, generation: u64, owned: tables.Tables*) -> !:
+    var id = snapshot_ids
+    var i: usize = 0
+    let count = tables.node_count(owned.by_path)
+    while i < count:
+        if let node = tables.at(owned.by_path, i):
+            if let element = node.element:
+                for p in 0..<element.properties.count:
+                    let value = &element.properties.items[p].value
+                    if value.locator == none and value.payload.used >= minimum:
+                        try write(base, identity, generation, id, value.payload.bytes())
+                        value.locator = try locate(identity, generation, id, value.payload.used)
+                        id += 1
+        i += 1
+
+## A value that lives in an extent, as its kind, shape and locator.
+pub func write_stub(out: Buffer*, value: const ValueData*) -> !:
+    let place = value.locator else error(invalid, "a Prism stub needs a locator")
+    try out.uint((u64)value.kind, 1)
+    try out.uint((u64)value.shape.count, 1)
+    for dimension in value.shape.span():
+        try out.uint((u64)dimension, 4)
+    try out.sized(place.identity.view())
+    try out.uint((u64)place.generation, 8)
+    try out.uint((u64)place.extent, 8)
+    try out.uint((u64)place.size, 8)
+
+## A stub read back: kind and shape with an empty payload, and where it lives.
+pub func read_stub(reader: Reader*) -> ValueData!:
+    let kind = try dtype_from(try reader.uint(1))
+    let rank = (usize)try reader.uint(1)
+    if rank > 16:
+        error(invalid, "invalid Prism stub rank")
+    var shape: u32[16]
+    for i in 0..<rank:
+        shape[i] = (u32)try reader.uint(4)
+    var out = try value_header(kind, shape[..<rank])
+    errdefer out.close()
+    let identity = try reader.text()
+    let generation = try reader.uint(8)
+    let id = try reader.uint(8)
+    let size = (usize)try reader.uint(8)
+    out.locator = try locate(identity, generation, id, size)
+    return out
+
+## Swap every value of `data` that lives in an extent for an empty placeholder, and
+## list it in `places`: the snapshot then carries references, not payloads.
+pub func strip(data: DocumentData*, places: Buffer*) -> !:
+    var count: u32 = 0
+    var entries: Buffer
+    defer entries.close()
+    for i in 0..<data.elements.count:
+        let element = &data.elements.items[i]
+        for p in 0..<element.properties.count:
+            let value = &element.properties.items[p].value
+            if value.locator == none:
+                continue
+            try entries.sized(element.path.view())
+            try entries.sized(element.properties.items[p].name.view())
+            try write_stub(&entries, value)
+            count += 1
+            let empty: u32[1] = [0]
+            var placeholder = try value_header(DType.uint8, empty)
+            value.close()
+            value[0] = placeholder
+            placeholder = ValueData()
+    try places.uint((u64)count, 4)
+    try places.put(entries.bytes())
+
+## A snapshot blob: the crate, then the places of its stripped values.
+pub func wrap(crate: const u8[], places: const Buffer*) -> Buffer!:
+    var out: Buffer
+    errdefer out.close()
+    try out.text(snapshot_magic)
+    try out.byte(snapshot_version)
+    try out.uint((u64)crate.length, 8)
+    try out.put(crate)
+    try out.put(places.bytes())
+    return out
+
+## The crate of snapshot blob `bytes` and its places; a blob without the container
+## is a bare crate from before extents, with none.
+pub func unwrap(bytes: const u8[]) -> (const u8[], const u8[])!:
+    if bytes.length < 13 or (str)bytes[..<4] != snapshot_magic:
+        return (bytes, bytes[..<0])
+    if bytes[4] != snapshot_version:
+        error(invalid, "unsupported Prism snapshot container")
+    var reader = Reader(data = bytes[5..])
+    let size = (usize)try reader.uint(8)
+    let crate = try reader.take(size)
+    return (crate, bytes[5 + 8 + size..])
+
+## Put the stubs `places` lists back into freshly loaded `owned`.
+pub func restore(owned: tables.Tables*, places: const u8[]) -> !:
+    if places.length == 0:
+        return
+    var reader = Reader(data = places)
+    let count = try reader.count(1)
+    for i in 0..<count:
+        let path = try reader.text()
+        let name = try reader.text()
+        var stub = try read_stub(&reader)
+        errdefer stub.close()
+        let element = tables.find_element(owned, path) else error(invalid, "a Prism snapshot place names no element")
+        var found = false
+        for p in 0..<element.properties.count:
+            if element.properties.items[p].name.view() == name:
+                element.properties.items[p].value.close()
+                element.properties.items[p].value = stub
+                stub = ValueData()
+                found = true
+                break
+        if not found:
+            error(invalid, "a Prism snapshot place names no property")
+    if reader.pos != places.length:
+        error(invalid, "trailing Prism snapshot places")
+
+## Add the extent names `value` keeps alive to `into`.
+func note(value: const ValueData*, into: List[Buffer]*) -> !:
+    let place = value.locator else return
+    var name = try basename(place.identity.view(), (u64)place.generation, (u64)place.extent)
+    errdefer name.close()
+    try into.push(name)
+
+pub func note_tables(owned: const tables.Tables*, into: List[Buffer]*) -> !:
+    var i: usize = 0
+    let count = tables.node_count(owned.by_path)
+    while i < count:
+        if let node = tables.at(owned.by_path, i):
+            if let element = node.element:
+                for property in element.properties.span():
+                    try note(&property.value, into)
+        i += 1
+
+pub func note_layer(layer: const delta.Layer*, into: List[Buffer]*) -> !:
+    for entry in layer.items.span():
+        try note(&entry.op.value, into)
+
+## Delete the extents of a durable store at `base` that `keep` does not name. Run on
+## open, before any session can hold an older reference. `keep` is sorted here.
+pub func sweep(base: str, keep: List[Buffer]*) -> !:
+    var dir = try directory(base)
+    defer dir.close()
+    if not try file_io.exists(dir.view()):
+        return
+    try sort_names(keep)
+    var names = try file_io.list_names(dir.view())
+    defer close_names(&names)
+    for name in names.span():
+        if not looks_like_extent(name.view()) or listed(keep, name.view()):
+            continue
+        var path = try text_copy(dir.view())
+        defer path.close()
+        try path.byte('/')
+        try path.put(name.bytes())
+        files.delete_path(path.view()) catch failure:
+            discard(failure)
+
+## Whether sorted `names` holds `name`.
+func listed(names: const List[Buffer]*, name: str) -> bool:
+    var low: usize = 0
+    var high = names.count
+    while low < high:
+        let middle = (low + high) // 2
+        let found = names.items[middle].view()
+        if found == name:
+            return true
+        if less(found, name):
+            low = middle + 1
+        else:
+            high = middle
+    return false
+
+## Sort `names` (a merge sort into a scratch list).
+func sort_names(names: List[Buffer]*) -> !:
+    var scratch: List[Buffer]
+    defer scratch.close()
+    try scratch.reserve(names.count)
+    scratch.count = names.count
+    var width: usize = 1
+    while width < names.count:
+        var low: usize = 0
+        while low < names.count:
+            let middle = low + width if low + width < names.count else names.count
+            let high = low + 2 * width if low + 2 * width < names.count else names.count
+            var left = low
+            var right = middle
+            for out in low..<high:
+                if right >= high or (left < middle and not less(names.items[right].view(), names.items[left].view())):
+                    scratch.items[out] = names.items[left]
+                    left += 1
+                else:
+                    scratch.items[out] = names.items[right]
+                    right += 1
+            low = high
+        for i in 0..<names.count:
+            names.items[i] = scratch.items[i]
+        width *= 2
+
+## Whether `name` ends in `.<digits>.<digits>`, as extent names do.
+func looks_like_extent(name: str) -> bool:
+    var dots: usize = 0
+    var digits: usize = 0
+    var at = name.length
+    while at > 0:
+        at -= 1
+        let byte = name.bytes[at]
+        if byte == '.':
+            if digits == 0:
+                return false
+            dots += 1
+            digits = 0
+            if dots == 2:
+                return at > 0
+        elif byte >= '0' and byte <= '9':
+            digits += 1
+        else:
+            return false
+    return false

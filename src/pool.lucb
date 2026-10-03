@@ -43,7 +43,6 @@ pub struct Pool:
     var slots: usize[]
     pub var pins: List[Pin]
     pub var clock: u64
-    pub var next_extent: u64
     pub var evictions: u64
     pub var faults: u64
 
