@@ -132,7 +132,7 @@ these APIs and callback signatures without manual reference management.
 
 ## Store lookup
 
-`Store.mount(identity)` inserts a catalog entry; `identity` is the `reference`
+`Store.mount(identity)` inserts a catalog entry (`Store.mounted(identity)` says whether one is there, from this open or an earlier one of a durable store); `identity` is the `reference`
 metadata string (1–200 bytes, ASCII `[A-Za-z0-9._-]`, not `"."` / `".."`).
 `Store.lookup(path, follow=true)` walks `/` components and switches identity at a
 `link` without copying elements. A missing `referencePath` is the mount root

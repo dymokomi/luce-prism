@@ -2427,6 +2427,17 @@ pub struct Store:
         try tx.value().set(dest.view(), slot, value)
         discard(try tx.value().commit())
 
+    ## Whether `identity` is in the catalog: mounted now, or by an earlier open of this
+    ## durable store.
+    pub func mounted(identity: str) -> bool!:
+        let inner = try self.require()
+        inner.catalog_lock.lock()
+        defer inner.catalog_lock.unlock()
+        for i in 0..<inner.catalog.count:
+            if inner.catalog.items[i].name.view() == identity:
+                return true
+        return false
+
     pub func mount(identity: str) -> !:
         let inner = try self.require()
         if not valid_identity(identity):
