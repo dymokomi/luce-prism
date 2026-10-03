@@ -35,6 +35,9 @@ pub struct Element:
     pub var kind: Buffer
     pub var properties: List[Property]
     pub var metadata: List[Pair]
+    ## The `apply_cow` that created this copy, 0 for none: such an element is private
+    ## to the tables being built, so later writes of the same apply edit it in place.
+    var stamp: u64
 
     pub func init():
         return
@@ -516,12 +519,12 @@ func parent_node(parent: str, path: str) -> Node*!:
     pending = none
     return node
 
-func copied_parent_node(parent: str, existing: ChildList*, path: str, stamp: u64 = 0) -> Node*!:
+func copied_parent_node(parent: str, existing: ChildList*, path: str, stamp: u64 = 0, fresh: bool = false) -> Node*!:
     let list = try copy_child_list(existing)
     list.stamp = stamp
     var pending: ChildList*? = list
     errdefer drop_pending_children(pending)
-    if child_index(list, path) == none:
+    if fresh or child_index(list, path) == none:
         try push_text(&list.paths, path)
     let node = try leaf_children(parent, list)
     drop_children(list)
@@ -555,9 +558,12 @@ func copy_child_list(children: const ChildList*) -> ChildList*!:
         try push_buffer(&out.paths, &path)
     return out
 
-func append_child(tables: Tables*, parent: str, path: str, cow: bool) -> !:
+## `fresh` says `path` had no element before this put. A child list holds exactly the
+## paths of existing elements, so a fresh path cannot be listed yet and the scan for
+## it is skipped: adding k children to a directory of n is O(k), not O(k * n).
+func append_child(tables: Tables*, parent: str, path: str, cow: bool, fresh: bool = false) -> !:
     if let existing = children_of(tables, parent):
-        try append_existing_child(tables, parent, path, existing, cow)
+        try append_existing_child(tables, parent, path, existing, cow, fresh)
         return
     let node = try parent_node(parent, path)
     defer drop(node)
@@ -567,15 +573,15 @@ func append_child(tables: Tables*, parent: str, path: str, cow: bool) -> !:
 ## Copy-on-write copies a list the source tables may share. A list this same apply
 ## already copied (its stamp) is private to the new tables and grows in place, so a
 ## layer adding k children to a directory of n costs O(n + k) copies, not O(k * n).
-func append_existing_child(tables: Tables*, parent: str, path: str, existing: ChildList*, cow: bool) -> !:
+func append_existing_child(tables: Tables*, parent: str, path: str, existing: ChildList*, cow: bool, fresh: bool = false) -> !:
     let private = tables.stamp != 0 and existing.stamp == tables.stamp
     if (cow and not private) or existing.references.load(.relaxed) > 1:
-        let node = try copied_parent_node(parent, existing, path, tables.stamp)
+        let node = try copied_parent_node(parent, existing, path, tables.stamp, fresh)
         defer drop(node)
         let next = try put(tables.by_parent, node)
         replace_root(tables, 1, next)
         return
-    if child_index(existing, path) == none:
+    if fresh or child_index(existing, path) == none:
         try push_text(&existing.paths, path)
     let node = try leaf_children(parent, existing)
     defer drop(node)
@@ -621,8 +627,11 @@ func drop_copied_child(tables: Tables*, parent: str, existing: ChildList*, path:
 
 pub func put_element(tables: Tables*, source: const model.Element*, cow: bool) -> !:
     let path = source.path.view()
+    let fresh = find(tables.by_path, path.bytes) == none
     let node = try element_node(source)
     defer drop(node)
+    if let element = node.element:
+        element.stamp = tables.stamp
     let next = try put(tables.by_path, node)
     replace_root(tables, 0, next)
     if source.identifier != 0:
@@ -630,7 +639,7 @@ pub func put_element(tables: Tables*, source: const model.Element*, cow: bool) -
         defer drop(id_node)
         let ids = try put(tables.by_id, id_node)
         replace_root(tables, 2, ids)
-    try append_child(tables, parent_path(path), path, cow)
+    try append_child(tables, parent_path(path), path, cow, fresh)
 
 pub func remove_path(tables: Tables*, path: str, cow: bool) -> !:
     if let kids = children_of(tables, path):
@@ -784,6 +793,8 @@ func apply_one(tables: Tables*, layer: const delta.Layer*, cow: bool) -> !:
 
 func unique_element(tables: Tables*, path: str, cow: bool) -> Element*!:
     let current = find_element(tables, path) else error(missing, "Prism element does not exist")
+    if tables.stamp != 0 and current.stamp == tables.stamp:
+        return current
     if not cow and current.references.load(.relaxed) == 1:
         return current
     var source = model.Element(identifier = current.identifier)
@@ -800,7 +811,9 @@ func unique_element(tables: Tables*, path: str, cow: bool) -> Element*!:
     defer drop(node)
     let root = try put(tables.by_path, node)
     replace_root(tables, 0, root)
-    return find_element(tables, path) else error(missing, "Prism element does not exist")
+    let copy = find_element(tables, path) else error(missing, "Prism element does not exist")
+    copy.stamp = tables.stamp
+    return copy
 
 func set_kind(tables: Tables*, path: str, name: str, cow: bool) -> !:
     let element = try unique_element(tables, path, cow)
