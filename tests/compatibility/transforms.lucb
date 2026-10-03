@@ -1,7 +1,7 @@
-import prism
+import luce_prism.prism
 import interop
 import memory
-import math
+import luce_std.math
 
 func near(point: prism.Vec2, x: f64, y: f64):
     assert(math.abs((f64)point.x - x) < 0.0001)

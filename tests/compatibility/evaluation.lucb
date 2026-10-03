@@ -1,8 +1,8 @@
-import prism
+import luce_prism.prism
 import interop
 import memory
 import ownership
-import math
+import luce_std.math
 
 func close_number(value: interop.Reference[prism.Value], expected: f64, tolerance: f64 = 0.001) -> !:
     defer value.release()

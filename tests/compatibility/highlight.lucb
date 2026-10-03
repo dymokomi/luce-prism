@@ -1,4 +1,4 @@
-import prism
+import luce_prism.prism
 
 func check(text: str, codec: prism.Codec, column: usize, expected: prism.TokenClass) -> !:
     let spans = try prism.highlight_line(text, codec)

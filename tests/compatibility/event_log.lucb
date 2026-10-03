@@ -1,4 +1,4 @@
-import prism
+import luce_prism.prism
 import interop
 
 func state(value: f64) -> interop.Reference[prism.Document]!:

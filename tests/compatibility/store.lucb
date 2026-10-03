@@ -1,7 +1,7 @@
 ## RAM Store plus durable open/reopen through Prism's journal.
-import prism
-import persist
-import files
+import luce_prism.prism
+import luce_prism.persist
+import luce_std.files
 import memory
 import interop
 

@@ -1,6 +1,6 @@
-import prism
+import luce_prism.prism
 import interop
-import math
+import luce_std.math
 
 func expect(rows: interop.Reference[prism.Selection], paths: const str[]) -> !:
     defer rows.release()

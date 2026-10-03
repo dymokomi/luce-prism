@@ -1,8 +1,8 @@
-import prism
+import luce_prism.prism
 import memory
 import ownership
 import interop
-import files
+import luce_std.files
 import compatibility.tables as table_tests
 
 func rejected(bytes: const u8[]) -> !:

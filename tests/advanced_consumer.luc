@@ -1,9 +1,9 @@
-from prism import Document, Value, Codec, Encoding, Bundle, NodeRegistry, Evaluator, BakeContext, ReferenceLibrary, LayerStack
-from prism import decode, encode, compute, merge, set_document_lens, document_lens
-from prism import Query, Predicate, Comparison, Aggregate, FieldIndex, Schema, DType, ColumnTable, RowMask, Row, JoinType, join_on
-from prism import SpatialIndex, Vec3, TextIndex, VectorIndex, Metric
-from prism import Vec2, Affine2, world_matrix, Scene
-from prism import renames, Atom, Atoms, Logic, RuleKind, ProofTag, parse_surface, serialize_surface, conclude, why, derive
+from luce_prism.prism import Document, Value, Codec, Encoding, Bundle, NodeRegistry, Evaluator, BakeContext, ReferenceLibrary, LayerStack
+from luce_prism.prism import decode, encode, compute, merge, set_document_lens, document_lens
+from luce_prism.prism import Query, Predicate, Comparison, Aggregate, FieldIndex, Schema, DType, ColumnTable, RowMask, Row, JoinType, join_on
+from luce_prism.prism import SpatialIndex, Vec3, TextIndex, VectorIndex, Metric
+from luce_prism.prism import Vec2, Affine2, world_matrix, Scene
+from luce_prism.prism import renames, Atom, Atoms, Logic, RuleKind, ProofTag, parse_surface, serialize_surface, conclude, why, derive
 
 class EditDuringQuery:
     var source: Document? = none

@@ -1,4 +1,4 @@
-import prism
+import luce_prism.prism
 import interop
 import memory
 import compatibility.query as queries

@@ -1,5 +1,5 @@
 ## Share the Store façade pointer across Base workers; each thread begin()s locally.
-import prism
+import luce_prism.prism
 import thread
 import interop
 

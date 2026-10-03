@@ -1,5 +1,5 @@
 ## Closing an idle owner must interrupt accept and release the socket/journal.
-import prism
+import luce_prism.prism
 import thread
 
 pub func main(arguments: str[]) -> i32!:

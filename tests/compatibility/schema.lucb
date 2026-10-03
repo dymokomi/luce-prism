@@ -1,4 +1,4 @@
-import prism
+import luce_prism.prism
 import interop
 
 func validate(source: str) -> interop.Reference[prism.Violations]!:

@@ -1,4 +1,4 @@
-from prism import Document, Blob, Encoding, Codec, CodecAdapter, TextProjection, EventLog, decode, encode, Value, ValueCache, EvalKey, AppSettings, TokenClass, highlight_line, Path, define, edit
+from luce_prism.prism import Document, Blob, Encoding, Codec, CodecAdapter, TextProjection, EventLog, decode, encode, Value, ValueCache, EvalKey, AppSettings, TokenClass, highlight_line, Path, define, edit
 
 class NativeCodec:
     pub func encode(self, document: Document) -> Blob!:

@@ -1,0 +1,222 @@
+## Internal per-store OS I/O boundary for deterministic durability-failure tests.
+## Controls are copied into the journal; context is borrowed until the LAST store
+## reference closes. Callbacks run under open/replay or serialized writer ownership.
+## Never change controls/context concurrently with those operations. Not exported
+## through the owning Luce facade; no global test switch or foreign storage engine.
+import c
+import luce_std.files
+import io
+import memory
+import os
+import platform
+import windows_abi
+import windows_text
+from wal.bytes import invalid, busy
+
+extern func fsync(descriptor: i32) -> i32
+extern func renameat(source_directory: i32, source: c.str, target_directory: i32, target: c.str) -> i32
+extern func unlinkat(directory: i32, name: c.str, flags: i32) -> i32
+extern func renameat2(source_directory: i32, source: c.str, target_directory: i32, target: c.str, flags: u32) -> i32
+extern func renameatx_np(source_directory: i32, source: c.str, target_directory: i32, target: c.str, flags: u32) -> i32
+extern func win_handle as "_get_osfhandle"(descriptor: i32) -> isize
+extern func flock(descriptor: i32, flags: i32) -> i32
+extern func GetFinalPathNameByHandleW(handle: void*, output: u16*, capacity: u32, flags: u32) -> u32
+extern func MoveFileExW(source: u16*, destination: u16*, flags: u32) -> i32
+extern func ReplaceFileW(replaced: u16*, replacement: u16*, backup: u16*?, flags: u32, exclude: void*?, reserved: void*?) -> i32
+extern func DeleteFileW(path: u16*) -> i32
+
+## A child path rooted at an already-open directory. The extended namespace path
+## keeps the operation attached to the directory selected by the caller.
+inline func windows_path(directory: files.Directory*, name: c.str) -> u16[]!:
+    if not platform.windows:
+        error(invalid, "Windows database path requested on another platform")
+    let native = win_handle(try directory.descriptor())
+    if native < 0:
+        error(io.failed, "database directory handle is unavailable")
+    var parent: u16[32768]
+    let count = GetFinalPathNameByHandleW((void*)native, &parent[0], (u32)parent.length, 0)
+    if count == 0 or count >= parent.length:
+        error(io.failed, "database directory path is unavailable")
+    let child = try windows_text.wide(name, invalid)
+    defer free(child)
+    let separator: usize = 0 if parent[(usize)count - 1] == 92 or parent[(usize)count - 1] == 47 else 1
+    let result = try alloc u16[(usize)count + separator + child.length]
+    for index in 0..<(usize)count:
+        result[index] = parent[index]
+    if separator != 0:
+        result[(usize)count] = 92
+    for index in 0..<child.length:
+        result[(usize)count + separator + index] = 92 if child[index] == 47 else child[index]
+    return result
+
+## O_CREAT without O_EXCL can race another creator and report ENOENT on the
+## tested host. Open existing or create exclusively; retry only a creation loser.
+## Never remove/recreate a published lock inode. Caller validates and locks it.
+pub func open_lock_file(directory: files.Directory*, name: c.str) -> files.File!:
+    for attempt in 0..<128:
+        let existing: files.File? = directory.open_file(name, files.OpenMode.read_write, follow_symlinks = false, nonblocking = true) catch failure:
+            if failure.code != files.missing: error(failure.code, failure.message)
+            recover none
+        if let file = existing: return file
+        let created = directory.open_file(name, files.OpenMode.create_new_read_write, 384, follow_symlinks = false, nonblocking = true) catch failure:
+            if failure.code == files.already_exists: continue
+            error(failure.code, failure.message)
+        return created
+    error(busy, "database lock creation retry bound reached")
+
+## Acquire the process-lifetime exclusive lock held by `file`. Both APIs release
+## the lock when the owned descriptor/handle closes, including every error path.
+pub func lock_file(file: files.File*) -> !:
+    let descriptor = file.descriptor() else error(invalid, "database lock is closed")
+    if platform.windows:
+        let native = win_handle(descriptor)
+        if native < 0:
+            error(invalid, "database lock handle is unavailable")
+        var overlapped = windows_abi.Overlapped()
+        if windows_abi.LockFileEx((void*)native, 3, 0, 4294967295, 4294967295, &overlapped) == 0:
+            error(busy, "database already has an owner or locking failed")
+        return
+    if flock(descriptor, 6) != 0:
+        error(busy, "database already has an owner or locking failed")
+
+## Atomic no-replace; unsupported platforms/filesystems fail without a fallback.
+pub func publish(context: void*?, directory: files.Directory*, source: c.str, target: c.str, possibly_published: bool*) -> !:
+    discard(context)
+    *possibly_published = false
+    if platform.windows:
+        let source_path = try windows_path(directory, source)
+        defer free(source_path)
+        let target_path = try windows_path(directory, target)
+        defer free(target_path)
+        *possibly_published = true
+        if MoveFileExW(source_path.data, target_path.data, 8) == 0:
+            let number = windows_abi.GetLastError()
+            if number == 80 or number == 183:
+                *possibly_published = false
+                error(files.already_exists, "backup destination already exists")
+            error(io.failed, "exclusive backup publication failed; outcome may be uncertain")
+        return
+    let descriptor = try directory.descriptor()
+    *possibly_published = true
+    var result: i32
+    if platform.macos:
+        result = renameatx_np(descriptor, source, descriptor, target, 4)
+    else:
+        result = renameat2(descriptor, source, descriptor, target, 1)
+    if result != 0:
+        if c.errno() == 17:
+            *possibly_published = false
+            error(files.already_exists, "backup destination already exists")
+        error(io.failed, "exclusive backup publication failed; outcome may be uncertain")
+
+func system_random(context: void*?, buffer: u8[]) -> !:
+    discard(context)
+    try os.random_bytes(buffer)
+
+func system_create(context: void*?, directory: files.Directory*, name: c.str) -> files.File!:
+    discard(context)
+    return try directory.open_file(name, files.OpenMode.create_new_read_write, 384, follow_symlinks = false, nonblocking = true)
+
+func system_close(context: void*?, file: files.File*) -> !:
+    discard(context)
+    try file.close()
+
+## Set possibly_published BEFORE the syscall. Conservatively treat every error
+## after attempting rename as uncertain; never retry an ambiguous rename blindly.
+pub func replace(context: void*?, directory: files.Directory*, source: c.str, target: c.str, possibly_published: bool*) -> !:
+    discard(context)
+    *possibly_published = false
+    if platform.windows:
+        let source_path = try windows_path(directory, source)
+        defer free(source_path)
+        let target_path = try windows_path(directory, target)
+        defer free(target_path)
+        *possibly_published = true
+        # ReplaceFile opens the destination with read/write/delete sharing, so
+        # the live journal handle remains valid. Its replacement open is
+        # exclusive; Journal.compact closes that synced handle before this call.
+        if ReplaceFileW(target_path.data, source_path.data, none, 0, none, none) == 0:
+            error(io.failed, "checkpoint rename failed; publication may have occurred")
+        return
+    let descriptor = try directory.descriptor()
+    *possibly_published = true
+    if renameat(descriptor, source, descriptor, target) != 0:
+        error(io.failed, "checkpoint rename failed; publication may have occurred")
+
+pub func remove(context: void*?, directory: files.Directory*, name: c.str) -> !:
+    discard(context)
+    if platform.windows:
+        let path = try windows_path(directory, name)
+        defer free(path)
+        if DeleteFileW(path.data) == 0:
+            let number = windows_abi.GetLastError()
+            if number == 2 or number == 3: return
+            error(io.failed, "checkpoint temporary cleanup failed")
+        return
+    let descriptor = try directory.descriptor()
+    if unlinkat(descriptor, name, 0) != 0:
+        if c.errno() == 2: return
+        error(io.failed, "checkpoint temporary cleanup failed")
+
+func system_read(context: void*?, file: files.File*, buffer: u8[]) -> usize!:
+    discard(context)
+    return try file.read(buffer)
+
+func system_write(context: void*?, file: files.File*, bytes: const u8[]) -> usize!:
+    discard(context)
+    return try file.write(bytes)
+
+func system_sync(context: void*?, file: files.File*) -> !:
+    discard(context)
+    try file.sync()
+
+func system_truncate(context: void*?, file: files.File*, size: i64) -> !:
+    discard(context)
+    try file.truncate(size)
+
+pub func sync_directory(directory: files.Directory*) -> !:
+    if platform.windows:
+        # File.sync flushes content, and both Windows publication paths request
+        # MOVEFILE_WRITE_THROUGH; there is no separate directory fsync operation.
+        discard(directory)
+        return
+    let descriptor = try directory.descriptor()
+    var result = fsync(descriptor)
+    while result != 0 and c.errno() == c.interrupted: result = fsync(descriptor)
+    if result != 0: error(invalid, "database directory sync failed")
+
+func system_directory_sync(context: void*?, directory: files.Directory*) -> !:
+    discard(context)
+    try sync_directory(directory)
+
+pub struct Controls:
+    pub var context: void*?
+    pub var read: func(void*?, files.File*, u8[]) -> usize! = system_read
+    pub var write: func(void*?, files.File*, const u8[]) -> usize! = system_write
+    pub var sync: func(void*?, files.File*) -> unit! = system_sync
+    pub var truncate: func(void*?, files.File*, i64) -> unit! = system_truncate
+    pub var directory_sync: func(void*?, files.Directory*) -> unit! = system_directory_sync
+    pub var random: func(void*?, u8[]) -> unit! = system_random
+    pub var create: func(void*?, files.Directory*, c.str) -> files.File! = system_create
+    pub var close: func(void*?, files.File*) -> unit! = system_close
+    pub var replace: func(void*?, files.Directory*, c.str, c.str, bool*) -> unit! = replace
+    pub var remove: func(void*?, files.Directory*, c.str) -> unit! = remove
+    pub var publish: func(void*?, files.Directory*, c.str, c.str, bool*) -> unit! = publish
+
+pub struct Stream: io.Reader, io.Writer:
+    pub var file: files.File*
+    pub var controls: Controls
+
+    pub mutating func read(buffer: u8[]) -> usize!:
+        return try self.controls.read(self.controls.context, self.file, buffer)
+
+    pub mutating func write(bytes: const u8[]) -> usize!:
+        return try self.controls.write(self.controls.context, self.file, bytes)
+
+pub func read_exact(file: files.File*, controls: Controls, buffer: u8[]) -> !:
+    var stream = Stream(file = file, controls = controls)
+    try io.read_exact(&stream, buffer)
+
+pub func write_all(file: files.File*, controls: Controls, bytes: const u8[]) -> !:
+    var stream = Stream(file = file, controls = controls)
+    try io.write_all(&stream, bytes)

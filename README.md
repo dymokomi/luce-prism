@@ -24,7 +24,7 @@ luce_prism = "../luce-prism"
 ```
 
 ```luce
-from prism import Document, Value, DType, Encoding
+from luce_prism.prism import Document, Value, DType, Encoding
 
 pub func main(arguments: list[str]) -> int!:
     let document = Document()

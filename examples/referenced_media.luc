@@ -1,4 +1,4 @@
-from prism import Document, Value, DType, Encoding
+from luce_prism.prism import Document, Value, DType, Encoding
 
 # Pass an existing output directory. This writes page.prisma and media.prism there.
 # The example uses a sibling filename; a host with a general filesystem resolver

@@ -1,8 +1,8 @@
-import prism
+import luce_prism.prism
 import interop
 import memory
 import strings
-import math
+import luce_std.math
 from compatibility.serialization import roundtrip
 
 func reject(bytes: const u8[]) -> !:

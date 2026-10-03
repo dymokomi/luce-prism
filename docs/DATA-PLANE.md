@@ -26,11 +26,11 @@ The first mechanical fix is to stop treating `DocumentData` as both table storag
 
 ### Current `luce-db` (verified)
 
-Transactional **KV**, not SQL. Public facade: `src/luce_db/db.lucb` (`Database`, `Snapshot`, `Transaction`, `Migration`, `Value`). Native shared state: `src/luce_db/engine.lucb` (`Store`, `View`, `Transaction`) — `engine.Store` is already `pub`; `luce.toml` exports only `db`. Index: immutable structurally-shared AVL in `src/luce_db/tree.lucb`. Journal: `LUCE-DB-WAL-001` / checkpointed `LUCE-DB-WAL-002` in `src/luce_db/journal.lucb` and `src/luce_db/checkpoint.lucb`. Writers: bounded FIFO admission in `src/luce_db/writers.lucb` (32 waiters, 0–60s, fail-fast default). Process exclusivity: sidecar `{basename}.lock` next to the database file (`journal.lucb` formats `f"{file_name}.lock"`; README paraphrases this as `database-path.lock`). Luce/interop objects are thread-confined. `tests/registry_server.lucb` shares `var shared_database: db.Database*?` (the Luce façade) across HTTP workers; each handler calls `begin()` on its thread. Native sharing is the `engine.Store*` inside that façade (`db.lucb`), not a `Store*` passed in the fixture.
+Transactional **KV**, not SQL. Public facade: `src/db.lucb` (`Database`, `Snapshot`, `Transaction`, `Migration`, `Value`). Native shared state: `src/engine.lucb` (`Store`, `View`, `Transaction`) — `engine.Store` is already `pub`; `luce.toml` exports only `db`. Index: immutable structurally-shared AVL in `src/tree.lucb`. Journal: `LUCE-DB-WAL-001` / checkpointed `LUCE-DB-WAL-002` in `src/journal.lucb` and `src/checkpoint.lucb`. Writers: bounded FIFO admission in `src/writers.lucb` (32 waiters, 0–60s, fail-fast default). Process exclusivity: sidecar `{basename}.lock` next to the database file (`journal.lucb` formats `f"{file_name}.lock"`; README paraphrases this as `database-path.lock`). Luce/interop objects are thread-confined. `tests/registry_server.lucb` shares `var shared_database: db.Database*?` (the Luce façade) across HTTP workers; each handler calls `begin()` on its thread. Native sharing is the `engine.Store*` inside that façade (`db.lucb`), not a `Store*` passed in the fixture.
 
-README omissions are explicit: no tables, no secondary indexes, no SQL parser, **no pager**, no replication. Schema in `src/luce_db/schema.lucb` is **application version metadata** (`LDSM`), not Prism types. `initialize_schema` writes only on a genuinely empty tree.
+README omissions are explicit: no tables, no secondary indexes, no SQL parser, **no pager**, no replication. Schema in `src/schema.lucb` is **application version metadata** (`LDSM`), not Prism types. `initialize_schema` writes only on a genuinely empty tree.
 
-Current bounds (`README.md`, `src/luce_db/bytes.lucb`):
+Current bounds (`README.md`, `src/bytes.lucb`):
 
 | Limit | Value |
 | --- | ---: |
@@ -45,11 +45,11 @@ Current bounds (`README.md`, `src/luce_db/bytes.lucb`):
 
 ### Current `luce-prism` (verified)
 
-Whole-document load/save (`src/luce_prism/document.lucb`, `src/luce_prism/io.lucb`). `DocumentData.elements` is an inline `List[Element]`, not `Element*` (`model.lucb`). `put_value` mutates `elements.items[index]` in place. `Topology` (`collections/topology.lucb`) is three mutable open-addressed hashes of **row numbers**. `Index` (`collections/index.lucb`) supports `prepare`/`commit`/`add`/`find`/`close` only — **no delete, no persistent node sharing**. `rename` and `remove` rebuild the entire `Topology` by scanning every element (`model.lucb`). There is no `hold` of a tables root.
+Whole-document load/save (`src/document.lucb`, `src/io.lucb`). `DocumentData.elements` is an inline `List[Element]`, not `Element*` (`model.lucb`). `put_value` mutates `elements.items[index]` in place. `Topology` (`collections/topology.lucb`) is three mutable open-addressed hashes of **row numbers**. `Index` (`collections/index.lucb`) supports `prepare`/`commit`/`add`/`find`/`close` only — **no delete, no persistent node sharing**. `rename` and `remove` rebuild the entire `Topology` by scanning every element (`model.lucb`). There is no `hold` of a tables root.
 
 Eager copies (see [Copy-site inventory](#copy-site-inventory)). `layers.overlay` starts with `base.copy()` then, if any reorder exists, `rebuild_order` copies again and re-emits every element (`composition/layers.lucb`). `emit_order` emits reorder-listed children **then remaining unemitted children**, not “the reorder list exclusively.” Overlay applies **deletions first**, then elements: `override` patches an existing path; `elif not element.override` inserts; override-only against a missing path is a no-op.
 
-Bounds (`src/luce_prism/types.lucb`): `max_bytes = 256 MiB`, `max_items = 1,048,576`, `max_depth = 128`, path length ≤ 4,096 (`path.lucb`). `.` in a path starts a **slot**, not a filename extension; `notes.txt` is not a valid element path.
+Bounds (`src/types.lucb`): `max_bytes = 256 MiB`, `max_items = 1,048,576`, `max_depth = 128`, path length ≤ 4,096 (`path.lucb`). `.` in a path starts a **slot**, not a filename extension; `notes.txt` is not a valid element path.
 
 ### Pain
 
@@ -225,7 +225,7 @@ Admission is **per `DocumentState`**: two identities do not share a FIFO. Reader
 
 ### In-memory tables (actual representation)
 
-`DocumentData.elements: List[Element]` and `Topology` **cannot** implement Decision 5. This section is the replacement. New module: `src/luce_prism/tables.lucb`. Algorithms for AVL `hold`/`drop`/`put`/`remove`/`find`/`at` are those in `luce_db/tree.lucb` (copy the code; do not import `luce_db.tree` into RAM Prism — that would pull `max_records` / `bytes` from db into the RAM path). Use Prism `max_items` (1,048,576) as the node-count cap.
+`DocumentData.elements: List[Element]` and `Topology` **cannot** implement Decision 5. This section is the replacement. New module: `src/tables.lucb`. Algorithms for AVL `hold`/`drop`/`put`/`remove`/`find`/`at` are those in `luce_db/tree.lucb` (copy the code; do not import `luce_db.tree` into RAM Prism — that would pull `max_records` / `bytes` from db into the RAM path). Use Prism `max_items` (1,048,576) as the node-count cap.
 
 ```text
 # Refcounted row. Same fields as model.Element minus override/removed_*,
@@ -362,7 +362,7 @@ fn charge(store, delta) -> !:
 
 ### Sparse layer (first mechanical fix)
 
-New module `src/luce_prism/composition/delta.lucb`. A layer is not a document.
+New module `src/composition/delta.lucb`. A layer is not a document.
 
 Luce consumer sketch and native `Cell`/`Key`/`Op` are **1:1**:
 
@@ -377,7 +377,7 @@ Luce consumer sketch and native `Cell`/`Key`/`Op` are **1:1**:
 | `"asset"` | `Cell.asset` |
 
 ```luce
-from prism import Store, Layer, Value, Query, Predicate, DType
+from luce_prism.prism import Store, Layer, Value, Query, Predicate, DType
 
 pub enum WriteKind:
     set
@@ -1054,7 +1054,7 @@ Prism durable open `import luce_db.engine` (already `pub`) and `luce_db.schema` 
 ### `luce-prism` Luce API
 
 ```luce
-from prism import Store, Session, Document, Value, Query, Predicate, Layer, DType
+from luce_prism.prism import Store, Session, Document, Value, Query, Predicate, Layer, DType
 
 pub func main(arguments: list[str]) -> int!:
     let store = Store.memory(64 * 1024 * 1024)
@@ -1113,14 +1113,14 @@ Session.pin(path) / Session.unpin(path)  # subtree payloads; fails if over limit
 
 | File | Role |
 | --- | --- |
-| `src/luce_prism/composition/delta.lucb` | `Layer`, `Key`, `Op`, merge, visibility, `from_document` |
-| `src/luce_prism/view.lucb` | `View`, read-through `get`/`children`/`visible`, virtual row |
-| `src/luce_prism/tables.lucb` | Persistent AVL `Tables`, `Element*`, `ChildList`, hold/drop |
-| `src/luce_prism/admit.lucb` | 32-slot FIFO copy (RAM-safe, no `luce-db` import) |
-| `src/luce_prism/store.lucb` | `Store`, `DocumentState`, `Session`; catalog; overlap commit |
-| `src/luce_prism/persist.lucb` | Log codec; snapshot reclaim; `Store.open`; schema `prism/encoding` |
-| `src/luce_prism/lookup.lucb` | `namei` |
-| `src/luce_prism/ipc.lucb` | Unix-socket owner + `Store.connect` client |
+| `src/composition/delta.lucb` | `Layer`, `Key`, `Op`, merge, visibility, `from_document` |
+| `src/view.lucb` | `View`, read-through `get`/`children`/`visible`, virtual row |
+| `src/tables.lucb` | Persistent AVL `Tables`, `Element*`, `ChildList`, hold/drop |
+| `src/admit.lucb` | 32-slot FIFO copy (RAM-safe, no `luce-db` import) |
+| `src/store.lucb` | `Store`, `DocumentState`, `Session`; catalog; overlap commit |
+| `src/persist.lucb` | Log codec; snapshot reclaim; `Store.open`; schema `prism/encoding` |
+| `src/lookup.lucb` | `namei` |
+| `src/ipc.lucb` | Unix-socket owner + `Store.connect` client |
 
 ---
 
@@ -1389,9 +1389,9 @@ These were open forks; they are **decided**. Do not re-open.
 ## References
 
 - `luce-db`: `README.md`, `docs/STORAGE.md`, `docs/WRITERS.md`, `docs/CHECKPOINTS.md`, `docs/MIGRATIONS.md`, `docs/RESOURCES.md`
-- `luce-db` source: `src/luce_db/engine.lucb`, `db.lucb`, `journal.lucb`, `writers.lucb`, `tree.lucb`, `checkpoint.lucb`, `schema.lucb`, `bytes.lucb`, `tests/registry_server.lucb`
+- `luce-db` source: `src/engine.lucb`, `db.lucb`, `journal.lucb`, `writers.lucb`, `tree.lucb`, `checkpoint.lucb`, `schema.lucb`, `bytes.lucb`, `tests/registry_server.lucb`
 - `luce-prism`: `README.md`, `docs/API.md`, `docs/PORT.md`, `docs/REFERENCES.md`, `docs/FORMAT.md`
-- `luce-prism` source: `src/luce_prism/document.lucb`, `model.lucb`, `io.lucb`, `storage.lucb`, `types.lucb`, `path.lucb`, `prism.lucb`, `schema.lucb`, `columnar.lucb`, `composition/layers.lucb`, `composition/event_log.lucb`, `composition/references.lucb`, `composition/merge.lucb`, `query/query.lucb`, `query/field_index.lucb`, `collections/topology.lucb`, `collections/index.lucb`, `evaluation/engine.lucb`, `logic/api.lucb`
+- `luce-prism` source: `src/document.lucb`, `model.lucb`, `io.lucb`, `storage.lucb`, `types.lucb`, `path.lucb`, `prism.lucb`, `schema.lucb`, `columnar.lucb`, `composition/layers.lucb`, `composition/event_log.lucb`, `composition/references.lucb`, `composition/merge.lucb`, `query/query.lucb`, `query/field_index.lucb`, `collections/topology.lucb`, `collections/index.lucb`, `evaluation/engine.lucb`, `logic/api.lucb`
 - LuciaOS: `docs/THREADS.md`, `docs/FILESYSTEM.md`, `docs/SOFTWARE_DESIGN.md`, `src/luce/runtime/workers.zig`, `src/luce/runtime/channels.zig`
 
 ---
@@ -1403,14 +1403,14 @@ Each PR is independently reviewable and mergeable. Persistent tables are a dedic
 ### PR 1 — Sparse `Layer` map and document adapter
 
 - **Title:** Add sparse Prism layer map; adapt existing layer documents without changing overlay callers
-- **Files:** new `src/luce_prism/composition/delta.lucb`; `composition/layers.lucb` (adapter only); `tests/compatibility/layers.lucb`
+- **Files:** new `src/composition/delta.lucb`; `composition/layers.lucb` (adapter only); `tests/compatibility/layers.lucb`
 - **Depends on:** none
 - **Description:** `Key` / `Op` / `Layer` with `Index` lookup, `override` on element cells, `identifier` field default 0. `from_document` / `to_document`. Collapse is overlay-apply (not SlotKey union). Tests: delete then property set on the same path; override-only against missing path; **add `/users/alice` in a layer, `children("/users")` contains it**; **reorder `/users` listing only `/users/bob` still yields `alice` in the residual tail**; **delete `/a` then `get("/a/b")` and `children("/a")` miss**; **delete `/a` then add `/a/b` still misses**.
 
 ### PR 2 — Read-through `View`; overlay attaches a layer
 
 - **Title:** Read properties and children through a View without copying the base
-- **Files:** new `src/luce_prism/view.lucb`; `document.lucb` (`get`, `has_property`, `children`, `contains`, `type_at`, `overlay`); allocation tests
+- **Files:** new `src/view.lucb`; `document.lucb` (`get`, `has_property`, `children`, `contains`, `type_at`, `overlay`); allocation tests
 - **Depends on:** PR 1
 - **Description:** `Document` may hold a `View` (unique `DocumentData` or tables + layers). `overlay` attaches `Layer.from_document` — **no clone**. `materialize()` is the one clone (returned only when the caller asks, and for tests that need a flattened `Document`). `get` / `children` / `contains` / `type_at` on a layered `Document` are read-through. Allocation test: overlay + 1 `get` does not scale with `element_count`. **Do not change `Query`.** `view_data()` / `elements` remain the unique-owner base array; Query on a layered Document therefore misses unbaked ops until PR 5. Overlay+Query compatibility tests (`tests/compatibility/query.lucb` cases that overlay then query) **wait for PR 5** — skip or leave expected-fail; do not land a release across the gap. Overlay tests in this PR assert `get`/`children` only.
 
@@ -1445,35 +1445,35 @@ Each PR is independently reviewable and mergeable. Persistent tables are a dedic
 ### PR 7 — Persistent `Tables` AVL
 
 - **Title:** Replace published List[Element]/Topology with a holdable path AVL of Element*
-- **Files:** new `src/luce_prism/tables.lucb`; wire unique-owner `Document`/`bake` through it; tests for hold/drop, COW put, subtree remove without full scan
+- **Files:** new `src/tables.lucb`; wire unique-owner `Document`/`bake` through it; tests for hold/drop, COW put, subtree remove without full scan
 - **Depends on:** PR 4
 - **Description:** Copy `tree.lucb` algorithms; Prism `max_items`. `ChildList` per parent. **`apply_cow` is the Store bake path** (always a new `Tables*`). **No `last_id` on `Tables`**. `by_path` / `by_parent` keys are UTF-8; **`by_id` keys are 8 raw big-endian bytes**, not UTF-8 — no `str` / `valid_key`. `Index`/`Topology` are not this. `Document()` with no Store may still mutate in place.
 
 ### PR 8 — Native `prism.Store`, per-identity admission, overlapping SlotKeys
 
 - **Title:** Shared native Prism store with snapshot/begin/commit and per-identity FIFO
-- **Files:** new `src/luce_prism/admit.lucb`, `src/luce_prism/store.lucb`; `prism.lucb`; Base fixture under `luce-prism/tests/` (façade-sharing like `registry_server.lucb`)
+- **Files:** new `src/admit.lucb`, `src/store.lucb`; `prism.lucb`; Base fixture under `luce-prism/tests/` (façade-sharing like `registry_server.lucb`)
 - **Depends on:** PR 3, PR 7
 - **Description:** Catalog of `DocumentState` with `unbaked` and `retired` lists, `last_id` on the state only. Copy 32-slot FIFO — do not import `luce_db.writers`. `snapshot`/`begin`/`lookup` go through `snapshot_identity` (error at 1,024 live Views per identity). `views` is a bag under `head_lock`. Commit: durable I/O **outside** `head_lock`; then short lock to `unbaked.append` + `generation += 1`. Bake: always `apply_cow` (old root unchanged), then short lock swap of `tables` / `retired` / `unbaked`. Test: Alice and Bob begin, Alice commits `/a`, bake, Bob commits `/a` → `conflict`. RAM only. **`memory_limit` is a hard refuse** (no eviction yet): `set`/`add` that would push `resident` over the limit returns `limit_exceeded`. Worker-local interop. Join before close.
 
 ### PR 9 — Persist complete layer blobs through `luce-db`
 
 - **Title:** Optional durable Prism store: one engine transaction per commit, chunked log keys
-- **Files:** new `src/luce_prism/persist.lucb`; `store.lucb`; `luce.toml` dependency used only by this module
+- **Files:** new `src/persist.lucb`; `store.lucb`; `luce.toml` dependency used only by this module
 - **Depends on:** PR 8
 - **Description:** `Store.open` → `engine.open` → empty then `initialize_schema("prism/encoding", "luce-prism")` else require version 0. Catalog = identities on **`s/<id>/through` or `u/<id>/…`**. After that scan, if `catalog["root"]` is missing, create empty unique-owner `root` (`through = 0`, empty tables, empty `unbaked`). Tests: (1) commit, kill before bake, reopen, `get` sees the commit; (2) `open`, `close`, `open`, `begin`, `add`, `commit` with no bake. Commit encodings **`journal.operation` sum ≤ `max_frame - 32`**. Identity ≤ 200 bytes. Bake/checkpoint: new `{identity}.{through}` file, then cookie tx. No `n/<id>` live KV. RAM `memory()` still has no db import.
 
 ### PR 10 — `namei`, mounts, `materialize` for graft
 
 - **Title:** Lookup walks components and switches identity; compose remains explicit materialize
-- **Files:** new `src/luce_prism/lookup.lucb`; `composition/references.lucb`; `prism.lucb`; `docs/REFERENCES.md`, `docs/API.md`; `tests/compatibility/references.lucb`
+- **Files:** new `src/lookup.lucb`; `composition/references.lucb`; `prism.lucb`; `docs/REFERENCES.md`, `docs/API.md`; `tests/compatibility/references.lucb`
 - **Depends on:** PR 2, PR 8
 - **Description:** Implement `lookup` as specified (`snapshot_identity` under each identity’s `head_lock`; missing `referencePath` is `"/"`; `cur == "/"` returns `Look(..., "/", directory)` without `fs_kind`; chain only real element links; cycle stack of identities; `reference` is the catalog key). `Session.get` does not lookup. Tests use **`Store.lookup` / `Store.read`**: `lookup("/users/alice/photos", follow=true)` with no `referencePath` → `Look("media.prism", "/", directory)`; `read("/users/alice/photos/vacation")` returns media’s `bytes` without grafting.
 
 ### PR 11 — Filesystem helpers and dump policy
 
 - **Title:** Map std.files-shaped helpers onto lookup + Session with documented divergences
-- **Files:** new `src/luce_prism/fs.lucb`; `io.lucb`; docs
+- **Files:** new `src/fs.lucb`; `io.lucb`; docs
 - **Depends on:** PR 10
 - **Description:** `entries` yields `{name, path, kind}`; `make_directory` creates parents (FS helper only); `delete` / `remove_directory` / `remove_all` match host split and do not follow links on recursive delete. `kind` / `read` / `entries` use `lookup(follow=true)`. No public `kind_nofollow`. No `mode`. Refuse oversized `set`. Dump via atomic `io.write` per identity.
 
@@ -1487,13 +1487,13 @@ Each PR is independently reviewable and mergeable. Persistent tables are a dedic
 ### PR 13 — IPC client protocol
 
 - **Title:** Store.connect: snapshot/get/children/begin/set/commit/lookup over a Unix socket
-- **Files:** new `src/luce_prism/ipc.lucb` (or service + client); `store.lucb` `connect`; tests with two processes
+- **Files:** new `src/ipc.lucb` (or service + client); `store.lucb` `connect`; tests with two processes
 - **Depends on:** PR 12
 - **Description:** Length-prefixed request/response as specified under Concurrency Service. Client process must **not** `engine.open` the journal. Tokens are owner-side `snap_id` / `tx_id`. Test: owner `open` + listen; client `connect`, `begin`, `set`, `commit`; second `Store.open` on the same path still fails flock. Not in this PR: Query over IPC, bake/checkpoint from clients, TCP.
 
 ### PR 14 — Payload virtual memory (`memory_limit` + extents)
 
 - **Title:** Configurable Store resident ceiling; evict/fault published Value payloads
-- **Files:** `store.lucb` (`memory_limit`, `set_limit`, statistics); `tables.lucb` (stub locators, `tables.bytes` = resident); new `src/luce_prism/pool.lucb` (LRU); persist/dump extent records; `Session.pin`/`unpin`
+- **Files:** `store.lucb` (`memory_limit`, `set_limit`, statistics); `tables.lucb` (stub locators, `tables.bytes` = resident); new `src/pool.lucb` (LRU); persist/dump extent records; `Session.pin`/`unpin`
 - **Depends on:** PR 8 (accounting + hard refuse), PR 9 (durable locators; RAM-only stays refuse-only)
 - **Description:** Charge index + layers + resident payloads against `memory_limit` (default 256 MiB, Store-wide). Unbaked/private/retired layers and pins never evict. Published payloads LRU-evict to snapshot/extent locators; `get` faults them back. `children`/`lookup`/`kind` do not fault. Exceeding the limit after eviction → `limit_exceeded`, never anonymous growth into OS swap. Tests: 32 MiB limit, write more than that in baked files, listing still works, `read` of a cold file faults, compositor `pin` of a subtree is not evicted, `set` that cannot fit pinned+index fails. Does not page AVL nodes. Does not change sparse-layer / bake / overlap mechanics.

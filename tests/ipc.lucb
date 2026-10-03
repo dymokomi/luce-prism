@@ -1,5 +1,5 @@
 ## Owner listen + Store.connect. The client never opens the journal.
-import prism
+import luce_prism.prism
 import interop
 import memory
 

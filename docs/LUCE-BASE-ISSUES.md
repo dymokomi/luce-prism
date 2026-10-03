@@ -54,7 +54,7 @@ the initial macOS/Linux hosted correctness job passed.
 ## Ordinary packages do not support standard-library ORDER modules
 
 The standard library assembles `name/ORDER` fragments. A package export such as
-`prism = "luce_prism.prism"` cannot resolve `src/luce_prism/prism/module.lucb` plus
+`prism = "luce_prism.prism"` cannot resolve `src/prism/module.lucb` plus
 `ORDER`; it reports `an exported module does not exist`.
 
 Evidence: `luce-base/src/support/modules.lucb`, `source_file`, checks `.luc` and
@@ -105,8 +105,8 @@ cache's managed fields are private; its public methods use supported
 Observed in `tests/editor_consumer.luc`. This is a Luce boundary limitation,
 not a failure of Base's generic implementation. The package now wraps each
 exported specialization in a concrete opaque struct in
-`src/luce_prism/evaluation/cache_api.lucb`. The generic implementation remains
-in `src/luce_prism/evaluation/cache.lucb`; no sibling compiler sources changed.
+`src/evaluation/cache_api.lucb`. The generic implementation remains
+in `src/evaluation/cache.lucb`; no sibling compiler sources changed.
 
 Confirmed independently with a temporary module declaring both the generic alias
 and its `interop.Type` locally: Base describes `type SpecializedCache =

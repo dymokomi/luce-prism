@@ -9,7 +9,7 @@ import heap_process
 
 ROOT = Path(__file__).resolve().parents[1]
 base = ROOT / 'build/toolchain/luce-base'
-source = ROOT / 'src/luce_prism/table_export_tests.lucb'
+source = ROOT / 'src/table_export_tests.lucb'
 output = ROOT / 'build/table-export-tests'
 output.mkdir(parents=True, exist_ok=True)
 runtime = ROOT.parent / 'luce-base/runtime'

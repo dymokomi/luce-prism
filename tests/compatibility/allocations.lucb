@@ -1,5 +1,5 @@
 ## Exhaust each allocation point in representative composition and codec operations.
-import prism
+import luce_prism.prism
 import memory
 import interop
 import ownership

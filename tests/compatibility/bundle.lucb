@@ -1,4 +1,4 @@
-import prism
+import luce_prism.prism
 import strings
 
 func populated() -> prism.Bundle!:
