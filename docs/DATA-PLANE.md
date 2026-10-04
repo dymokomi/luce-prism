@@ -1064,13 +1064,13 @@ pub func main(arguments: list[str]) -> int!:
     tx.add("/users/alice", "directory")
     tx.add("/users/alice/notes", "file")
     tx.set("/users/alice/notes", "text", Value.text("hello"))
-    discard(tx.commit())
+    _ = tx.commit()
 
     let snap = store.snapshot()                 # Session, read
     print(snap.get("/users/alice/notes", "text").text_at())
     let kids = snap.children("/users/alice")
     let q = Query(snap.document(), "/users/*/*")
-    discard(q.filter(Predicate.field("text", .not_equal, Value.text(""))))
+    _ = q.filter(Predicate.field("text", .not_equal, Value.text("")))
     store.bake()
     store.dump("root.prism")
     store.close()
