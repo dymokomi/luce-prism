@@ -1,7 +1,8 @@
 ## RAM Store plus durable open/reopen through Prism's journal.
 from luce_prism import prism, persist
 from luce_std import files
-import file_access as file_io
+import c
+import strings
 import memory
 import interop
 
@@ -713,9 +714,7 @@ func large_value_lives_in_an_extent() -> !:
     defer last.release()
     assert(last.value().bytes().length == size and last.value().bytes()[size - 1] == 7)
     # Neither the journal nor the snapshot copied the payload.
-    var journal = try file_io.read(persist_db())
-    defer journal.close()
-    assert(journal.used < 1048576)
+    assert(try file_size(persist_db()) < 1048576)
 
 ## An extent nothing references any more goes on the next open.
 func replaced_extents_are_swept_on_open() -> !:
@@ -734,18 +733,30 @@ func replaced_extents_are_swept_on_open() -> !:
     first.release()
     var name_buffer: u8[2048]
     let old_extent = try format(name_buffer, f"{persist_db()}.ext/root.1.0")
-    assert(try file_io.exists(old_extent))
+    assert(try file_exists(old_extent))
     let second = try prism.Store.open(persist_db())
     defer second.release()
     var again_buffer: u8[2048]
-    assert(not try file_io.exists(try format(again_buffer, f"{persist_db()}.ext/root.1.0")))
+    assert(not try file_exists(try format(again_buffer, f"{persist_db()}.ext/root.1.0")))
     var kept_buffer: u8[2048]
-    assert(try file_io.exists(try format(kept_buffer, f"{persist_db()}.ext/root.2.0")))
+    assert(try file_exists(try format(kept_buffer, f"{persist_db()}.ext/root.2.0")))
     let snap = try second.value().snapshot()
     defer snap.release()
     let value = try snap.value().get("/blob", "bytes")
     defer value.release()
     assert(value.value().bytes()[0] == 2)
+
+## Whether a file is at `path`, through luce-std's public API (tests are a separate
+## package and cannot use prism's file_access).
+func file_exists(path: str) -> bool!:
+    let name = try strings.copy(path)
+    defer strings.release(name)
+    return files.exists((c.str)name)
+
+func file_size(path: str) -> i64!:
+    let name = try strings.copy(path)
+    defer strings.release(name)
+    return (try files.metadata((c.str)name)).size
 
 func marked_blob(count: usize, mark: u8) -> interop.Reference[prism.Value]!:
     let payload = try alloc u8[count] in memory.heap
