@@ -614,9 +614,9 @@ pub struct Document:
         with memory.heap:
             let name = try strings.copy(path)
             defer strings.release(name)
-            let bytes = try files.read_limit((c.str)name, max_bytes)
-            defer free(bytes) in memory.heap
-            return try Document.decode(bytes)
+            let bytes = try files.read((c.str)name, limit = max_bytes)
+            defer bytes.release()
+            return try Document.decode(bytes.value)
 
     pub func save(path: str, encoding: Encoding = Encoding.binary, compressed: bool = false) -> !:
         let output = try self.encode(encoding, compressed)

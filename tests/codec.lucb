@@ -13,8 +13,9 @@ pub func main(arguments: str[]) -> i32!:
         with memory.heap:
             let name = try strings.copy(arguments[1])
             defer strings.release(name)
-            let bytes = try files.read_limit((c.str)name, 268435456)
-            defer free(bytes) in memory.heap
+            let bytes_file = try files.read((c.str)name, limit = 268435456)
+            defer bytes_file.release()
+            let bytes = bytes_file.value
             let document = try prism.parse_surface((str)bytes)
             defer document.release()
             try document.value().save(arguments[2])
@@ -24,8 +25,9 @@ pub func main(arguments: str[]) -> i32!:
         with memory.heap:
             let name = try strings.copy(arguments[1])
             defer strings.release(name)
-            let bytes = try files.read_limit((c.str)name, 268435456)
-            defer free(bytes) in memory.heap
+            let bytes_file = try files.read((c.str)name, limit = 268435456)
+            defer bytes_file.release()
+            let bytes = bytes_file.value
             let document = try prism.decode(bytes, codec)
             defer document.release()
             try document.value().save(arguments[2])

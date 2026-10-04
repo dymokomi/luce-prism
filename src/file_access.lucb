@@ -13,11 +13,12 @@ pub func read(path: str) -> Buffer!:
     with memory.heap:
         let name = try strings.copy(path)
         defer strings.release(name)
-        let bytes = try files.read_limit((c.str)name, max_bytes)
-        if bytes.length == 0:
-            free(bytes) in memory.heap
-            return Buffer()
-        return Buffer(data = bytes, used = bytes.length)
+        let bytes = try files.read((c.str)name, limit = max_bytes)
+        defer bytes.release()
+        var out: Buffer
+        errdefer out.close()
+        try out.put(bytes.value)
+        return out
 
 pub func write(path: str, bytes: const u8[]) -> !:
     with memory.heap:
@@ -56,21 +57,35 @@ pub func join(dir: str, name: str) -> Buffer!:
     try out.text(name)
     return out
 
+## Create the directory at `path`; its parent must exist.
+pub func create_directory(path: str) -> !:
+    with memory.heap:
+        let name = try strings.copy(path)
+        defer strings.release(name)
+        try files.create_directory((c.str)name)
+
+## Ensure the directory at `path` exists, with its parents.
 pub func ensure_directory(path: str) -> !:
     try files.ensure_directory(path)
 
+## Remove the file at `path`.
+pub func remove(path: str) -> !:
+    with memory.heap:
+        let name = try strings.copy(path)
+        defer strings.release(name)
+        try files.remove_file((c.str)name)
+
+## The names in the directory at `path`, sorted.
 pub func list_names(path: str) -> List[Buffer]!:
-    var listing = try files.Entries(path)
-    defer listing.close()
+    let name = try strings.copy(path)
+    defer strings.release(name)
+    let listing = try files.list((c.str)name)
+    defer listing.release()
     var out: List[Buffer]
     errdefer close_names(&out)
-    var i: i64 = 0
-    while i < listing.count():
-        let owned = try listing.name(i)
-        defer owned.release()
-        var copy = try text_copy(owned.value)
+    for entry in listing.value:
+        var copy = try text_copy(entry)
         out.push(copy) catch failure:
             copy.close()
             error(failure.code, failure.message)
-        i += 1
     return out

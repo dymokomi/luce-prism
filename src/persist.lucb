@@ -1,6 +1,5 @@
 ## Durable layer blobs in a Prism-owned WAL. RAM Store.memory() does not open this.
 import memory
-from luce_std import files
 import composition.delta
 import extents
 import file_access as file_io
@@ -717,7 +716,7 @@ pub func reclaim(journal: Journal*, identity: str, owned: tables.Tables*, throug
         var dir = try snap_dir(journal)
         defer dir.close()
         if not try file_io.exists(dir.view()):
-            try files.make_directory(dir.view())
+            try file_io.create_directory(dir.view())
         try new_name.text(identity)
         try new_name.byte((u8)'.')
         try put_decimal(&new_name, through)
@@ -750,7 +749,7 @@ pub func reclaim(journal: Journal*, identity: str, owned: tables.Tables*, throug
         defer dir.close()
         var path = try join_path(dir.view(), old_file.view())
         defer path.close()
-        files.delete_path(path.view()) catch failure:
+        file_io.remove(path.view()) catch failure:
             discard(failure)
 
 pub func snap_basename(identity: str, through: u64) -> Buffer!:

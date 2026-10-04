@@ -29,8 +29,9 @@ func media() -> !:
         pixels[i] = (u8)i
     let rgba = try prism.Value.array(prism.DType.uint8, [512, 512, 4], pixels)
     defer rgba.release()
-    let png_bytes = try files.read("tests/fixtures/rgba.png")
-    defer free(png_bytes)
+    let file = try files.read("tests/fixtures/rgba.png")
+    defer file.release()
+    let png_bytes = file.value
     let png = try prism.Value.array(prism.DType.uint8, [(i64)png_bytes.length], png_bytes)
     defer png.release()
     let empty = try prism.Value.array(prism.DType.uint8, [0], b"")

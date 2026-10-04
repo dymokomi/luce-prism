@@ -443,7 +443,7 @@ func reset_persist() -> !:
     case_number += 1
     persist_path = try format(persist_buffer, f"{scratch_root}/persist-{case_number}")
     database_path = try format(database_buffer, f"{persist_path}/root.db")
-    try files.make_directory(persist_dir())
+    try files.ensure_directory(persist_dir())
 
 func persist_budget_counts_chunked_keys() -> !:
     let small = try persist.journal_bytes_for_layer("root", 1, 16)
@@ -519,7 +519,7 @@ func dump_dir() -> str:
 func reset_dump() -> !:
     case_number += 1
     dump_path = try format(dump_buffer, f"{scratch_root}/dump-{case_number}")
-    try files.make_directory(dump_dir())
+    try files.ensure_directory(dump_dir())
 
 func seed_photos(store: prism.Store*) -> !:
     try store.mount("media.prism")

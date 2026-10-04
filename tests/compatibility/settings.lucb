@@ -108,8 +108,9 @@ func durable_write_lands_bytes_and_overwrites(path: str) -> !:
     with memory.heap:
         let name = try strings.copy(path)
         defer strings.release(name)
-        let got = try files.read_limit((c.str)name, 100)
-        defer free(got) in memory.heap
+        let got_file = try files.read((c.str)name, limit = 100)
+        defer got_file.release()
+        let got = got_file.value
         assert(got.length == bytes.length)
         for i in 0..<bytes.length:
             assert(got[i] == bytes[i])
@@ -117,8 +118,9 @@ func durable_write_lands_bytes_and_overwrites(path: str) -> !:
     with memory.heap:
         let name = try strings.copy(path)
         defer strings.release(name)
-        let got = try files.read_limit((c.str)name, 100)
-        defer free(got) in memory.heap
+        let got_file = try files.read((c.str)name, limit = 100)
+        defer got_file.release()
+        let got = got_file.value
         assert((str)got == "new")
 
 func document_load_save_round_trip_by_extension(md: str, prisma: str) -> !:

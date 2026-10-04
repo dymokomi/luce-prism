@@ -264,7 +264,7 @@ pub func sweep(base: str, keep: List[Buffer]*) -> !:
         defer path.close()
         try path.byte('/')
         try path.put(name.bytes())
-        files.delete_path(path.view()) catch failure:
+        file_io.remove(path.view()) catch failure:
             discard(failure)
 
 ## Whether sorted `names` holds `name`.

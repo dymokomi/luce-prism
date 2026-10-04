@@ -3,7 +3,6 @@ import memory
 import interop
 import sync
 import thread
-from luce_std import files
 import c
 import platform
 import admit
@@ -1645,7 +1644,7 @@ func stop_listen(inner: Inner*):
         ipc.close_fd(inner.listen_fd)
         inner.listen_fd = -1
     if inner.listen_path.used > 0:
-        files.delete_path(inner.listen_path.view()) catch failure:
+        file_io.remove(inner.listen_path.view()) catch failure:
             discard(failure)
         inner.listen_path.close()
 

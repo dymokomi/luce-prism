@@ -32,8 +32,8 @@ func identifier(id: str) -> Buffer!:
         error(invalid, "invalid Prism reference filename")
     with memory.heap:
         let normalized = try paths.normalize(id)
-        defer strings.release(normalized)
-        return try text_copy(normalized)
+        defer normalized.release()
+        return try text_copy(normalized.value)
 
 func rebase(path: str, root: str, destination: str) -> Buffer!:
     var output: Buffer
@@ -150,8 +150,8 @@ struct Context:
             let name = try strings.copy(normalized.view())
             defer strings.release(name)
             let real = try files.canonical((c.str)name)
-            defer strings.release(real)
-            return try text_copy(real)
+            defer real.release()
+            return try text_copy(real.value)
 
     func load(id: str) -> DocumentData!:
         for source in self.sources:
@@ -162,11 +162,11 @@ struct Context:
         with memory.heap:
             let name = try strings.copy(id)
             defer strings.release(name)
-            let bytes = try files.read_limit((c.str)name, max_bytes)
-            defer free(bytes) in memory.heap
+            let bytes = try files.read((c.str)name, limit = max_bytes)
+            defer bytes.release()
             var output = DocumentData()
             errdefer output.close()
-            try read_document(bytes, &output)
+            try read_document(bytes.value, &output)
             return output
 
     mutating func compose(id: str) -> DocumentData!:
@@ -193,8 +193,8 @@ struct Context:
             defer filename.close()
             with memory.heap:
                 let joined = try paths.join(paths.directory(id), asset)
-                defer strings.release(joined)
-                filename = try self.canonical(joined)
+                defer joined.release()
+                filename = try self.canonical(joined.value)
             var referenced = try self.compose(filename.view())
             defer referenced.close()
             var root: str = ""

@@ -54,8 +54,9 @@ func roundtrips() -> !:
     defer text.release()
     let expected = try text.value().encode()
     defer expected.release()
-    let fixture = try files.read("tests/fixtures/core.prism")
-    defer free(fixture)
+    let fixture_file = try files.read("tests/fixtures/core.prism")
+    defer fixture_file.release()
+    let fixture = fixture_file.value
     assert(equal(expected.value().bytes(), fixture))
     for path in ["tests/fixtures/core.prism", "tests/fixtures/core-compressed.prism"]:
         let parsed = try prism.Document.load(path)
@@ -89,8 +90,9 @@ func roundtrips() -> !:
     assert(equal(asset.value().bytes(), b"\0\xff\x01"))
     let encoded_archive = try archive.value().encode(prism.Encoding.package)
     defer encoded_archive.release()
-    let original_archive = try files.read("tests/fixtures/core-package.prism")
-    defer free(original_archive)
+    let original_archive_file = try files.read("tests/fixtures/core-package.prism")
+    defer original_archive_file.release()
+    let original_archive = original_archive_file.value
     assert(equal(encoded_archive.value().bytes(), original_archive))
     # A plain document encode cannot silently discard package assets.
     let lost_assets: interop.Reference[prism.Blob]? = archive.value().encode() catch failure:
@@ -148,8 +150,9 @@ func mutations() -> !:
 func malformed() -> !:
     for source in ["", "#prisma 9.0\n", "#prisma 4.0\ndef x {", "#prisma 4.0\ndef x { uint8 p = 256 }", "#prisma 4.0\ndef x { int32[2,2] p = [[1,2],[3]] }", "#prisma 4.0\ndef x { str p = \"bad }", "#prisma 4.0\ndef x { float64[4294967295,4294967295,2] p = [] }", "#prisma 4.0\ndef x { str p = true }"]:
         try rejected(source.bytes)
-    let bytes = try files.read("tests/fixtures/core.prism")
-    defer free(bytes)
+    let bytes_file = try files.read("tests/fixtures/core.prism")
+    defer bytes_file.release()
+    let bytes = bytes_file.value
     # Every truncated prefix before required sections must fail (trailing sections
     # are optional, so test only up to half of this crate).
     for end in 0..<bytes.length // 2:
