@@ -62,7 +62,7 @@ pub struct Predicate:
             try result.rules.push(try rule.copy())
         return result
 
-    func single(operation: usize, name: str, text: str = "") -> Predicate!:
+    static func single(operation: usize, name: str, text: str = "") -> Predicate!:
         var result = Predicate()
         errdefer result.close()
         var rule = Rule(operation = operation)
@@ -72,7 +72,7 @@ pub struct Predicate:
         try result.rules.push(rule)
         return result
 
-    pub func field(name: str, comparison: Comparison, value: interop.Reference[Value]) -> interop.Reference[Predicate]!:
+    pub static func field(name: str, comparison: Comparison, value: interop.Reference[Value]) -> interop.Reference[Predicate]!:
         var result = try Predicate.single(1, name)
         errdefer result.close()
         result.rules.items[0].comparison = comparison
@@ -81,34 +81,34 @@ pub struct Predicate:
         result = Predicate()
         return try own_predicate(owned)
 
-    pub func contains(name: str, text: str) -> interop.Reference[Predicate]!:
+    pub static func contains(name: str, text: str) -> interop.Reference[Predicate]!:
         return try own_predicate(try Predicate.single(2, name, text))
 
-    pub func starts_with(name: str, text: str) -> interop.Reference[Predicate]!:
+    pub static func starts_with(name: str, text: str) -> interop.Reference[Predicate]!:
         return try own_predicate(try Predicate.single(3, name, text))
 
-    pub func exists(name: str) -> interop.Reference[Predicate]!:
+    pub static func exists(name: str) -> interop.Reference[Predicate]!:
         return try own_predicate(try Predicate.single(4, name))
 
-    pub func is_null(name: str) -> interop.Reference[Predicate]!:
+    pub static func is_null(name: str) -> interop.Reference[Predicate]!:
         return try own_predicate(try Predicate.single(5, name))
 
-    pub func by_type(name: str) -> interop.Reference[Predicate]!:
+    pub static func by_type(name: str) -> interop.Reference[Predicate]!:
         return try own_predicate(try Predicate.single(6, name))
 
-    pub func under(path: str) -> interop.Reference[Predicate]!:
+    pub static func under(path: str) -> interop.Reference[Predicate]!:
         return try own_predicate(try Predicate.single(7, path))
 
-    pub func name_is(name: str) -> interop.Reference[Predicate]!:
+    pub static func name_is(name: str) -> interop.Reference[Predicate]!:
         return try own_predicate(try Predicate.single(8, name))
 
-    pub func has_metadata(name: str) -> interop.Reference[Predicate]!:
+    pub static func has_metadata(name: str) -> interop.Reference[Predicate]!:
         return try own_predicate(try Predicate.single(9, name))
 
-    pub func metadata(name: str, text: str) -> interop.Reference[Predicate]!:
+    pub static func metadata(name: str, text: str) -> interop.Reference[Predicate]!:
         return try own_predicate(try Predicate.single(10, name, text))
 
-    pub func custom(callback: interop.Callback[interop.Reference[Row], bool]) -> interop.Reference[Predicate]!:
+    pub static func custom(callback: interop.Callback[interop.Reference[Row], bool]) -> interop.Reference[Predicate]!:
         var result = try Predicate.single(14, "")
         result.rules.items[0].callback = callback.clone()
         return try own_predicate(result)

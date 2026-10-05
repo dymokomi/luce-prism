@@ -60,7 +60,7 @@ pub struct Bundle:
         # A real root lets the entire bundle survive both ASCII and binary forms.
         try self.data.add("/bundle", "folder")
 
-    pub func from_document(doc: interop.Reference[Document]) -> interop.Reference[Bundle]!:
+    pub static func from_document(doc: interop.Reference[Document]) -> interop.Reference[Bundle]!:
         let source = try doc.get()
         var data = try source.view_data().copy()
         errdefer data.close()

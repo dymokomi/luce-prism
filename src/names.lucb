@@ -17,7 +17,7 @@ pub struct Name:
     var entry: Entry*?
 
     ## The name `text`, shared with every other holder of the same text.
-    pub func of(text: str) -> Name!:
+    pub static func of(text: str) -> Name!:
         if text.length == 0:
             return Name()
         return Name(entry = try intern(text))
@@ -156,4 +156,3 @@ func remove_slot(at: usize):
             slots[next] = none
             hole = next
         next = (next + 1) & mask
-

@@ -125,7 +125,7 @@ pub struct Query:
         self.source = none
 
     ## A plan over a store's tables (see TableSource), holding `source`.
-    pub func over(source: TableSource*, pattern: str = "") -> Query!:
+    pub static func over(source: TableSource*, pattern: str = "") -> Query!:
         let placeholder = try own_document(DocumentData())
         defer placeholder.release()
         var output = try Query(placeholder, pattern)

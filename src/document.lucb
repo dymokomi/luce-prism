@@ -592,7 +592,7 @@ pub struct Document:
         self.generation += 1
         (try self.writable()).remove_asset(path)
 
-    pub func decode(bytes: const u8[]) -> interop.Reference[Document]!:
+    pub static func decode(bytes: const u8[]) -> interop.Reference[Document]!:
         let native = try new Document() in memory.heap
         read_document(bytes, native.data) catch failure:
             native.close()
@@ -607,10 +607,10 @@ pub struct Document:
         native.tables_dirty = false
         return try interop.Reference[Document].adopt(native, document_type, memory.heap)
 
-    pub func parse(text: str) -> interop.Reference[Document]!:
+    pub static func parse(text: str) -> interop.Reference[Document]!:
         return try Document.decode(text.bytes)
 
-    pub func load(path: str) -> interop.Reference[Document]!:
+    pub static func load(path: str) -> interop.Reference[Document]!:
         with memory.heap:
             let name = try strings.copy(path)
             defer strings.release(name)
@@ -625,7 +625,6 @@ pub struct Document:
             let name = try strings.copy(path)
             defer strings.release(name)
             try files.write_atomic((c.str)name, output.value().bytes(), synchronize = true)
-
 
 pub let document_type = interop.Type[Document]("Prism document", Document.close, closeable = true)
 

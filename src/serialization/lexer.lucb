@@ -44,7 +44,7 @@ pub struct Parser:
         if not (try self.accept(text)):
             try Parser.fail("unexpected token")
 
-    pub func fail(message: str) -> !:
+    pub static func fail(message: str) -> !:
         error(invalid, message)
 
     pub func name() -> str!:

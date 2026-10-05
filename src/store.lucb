@@ -281,7 +281,7 @@ func pool_statistics(inner: Inner*) -> PoolStatistics:
     inner.pool_lock.lock()
     defer inner.pool_lock.unlock()
     return PoolStatistics(pinned_bytes = pool.pinned_bytes(&inner.pool), faults = inner.pool.faults,
-        evictions = inner.pool.evictions)
+                          evictions = inner.pool.evictions)
 
 func register_tables(inner: Inner*, identity: str, owned: tables.Tables*):
     var i: usize = 0
@@ -2087,11 +2087,11 @@ pub struct Store:
         self.inner = inner
         self.remote = none
 
-    pub func memory(limit_bytes: usize = max_bytes) -> interop.Reference[Store]!:
+    pub static func memory(limit_bytes: usize = max_bytes) -> interop.Reference[Store]!:
         let native = try new Store(limit_bytes) in memory.heap
         return try interop.Reference[Store].adopt(native, store_type, memory.heap)
 
-    pub func open(path: str, limit_bytes: usize = max_bytes, token: str = "") -> interop.Reference[Store]!:
+    pub static func open(path: str, limit_bytes: usize = max_bytes, token: str = "") -> interop.Reference[Store]!:
         let native = try new Store(limit_bytes) in memory.heap
         errdefer native.close()
         let previous = native.inner
@@ -2100,7 +2100,7 @@ pub struct Store:
             drop_inner(old)
         return try interop.Reference[Store].adopt(native, store_type, memory.heap)
 
-    pub func connect(socket_path: str, token: str = "") -> interop.Reference[Store]!:
+    pub static func connect(socket_path: str, token: str = "") -> interop.Reference[Store]!:
         let client = try ipc.connect_client(socket_path)
         if token.length > 0:
             var req: Buffer
@@ -2176,7 +2176,7 @@ pub struct Store:
         let inner = try self.require()
         return inner.tls_qy
 
-    pub func connect_tls(host: str, port: u16, token: str, issuer_x: const u8[], issuer_y: const u8[]) -> interop.Reference[Store]!:
+    pub static func connect_tls(host: str, port: u16, token: str, issuer_x: const u8[], issuer_y: const u8[]) -> interop.Reference[Store]!:
         let remote = try tls_pipe.handshake_client(host, port, issuer_x, issuer_y)
         if token.length > 0:
             var req: Buffer
@@ -2521,9 +2521,9 @@ pub struct Store:
         let admission = state.writer.statistics()
         let cache = pool_statistics(inner)
         return Statistics(generation, elements, (i64)inner.resident.load(.acquire), (i64)inner.memory_limit, views,
-            admission.waiting, admission.peak, admission.enqueued, admission.busy_returns, admission.timeouts,
-            (i64)inner.conflicted.load(.acquire), (i64)logical_bytes(inner), (i64)cache.pinned_bytes,
-            (i64)cache.faults, (i64)cache.evictions)
+                          admission.waiting, admission.peak, admission.enqueued, admission.busy_returns, admission.timeouts,
+                          (i64)inner.conflicted.load(.acquire), (i64)logical_bytes(inner), (i64)cache.pinned_bytes,
+                          (i64)cache.faults, (i64)cache.evictions)
 
     pub func dump(path: str) -> !:
         try file_io.ensure_directory(path)
