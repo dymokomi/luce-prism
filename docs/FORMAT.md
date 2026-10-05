@@ -18,6 +18,8 @@ Magic, not the filename, selects decoding. The text syntax uses nested
 `.timeSamples`, `reference`, `connect`, `unset`, `delete`, `disconnect`, and
 `reorder`. A string Value is `str`; `string` is metadata. Canonical content is
 independent of whitespace and of the writer's choice of legacy role spelling.
+One `def` or `over` block sets a property at most once, its value and its
+`.timeSamples` once each; the reader refuses a second setting at its line and column.
 
 ## Values
 

@@ -118,7 +118,16 @@ pub func parse_handles(parser: Parser*, values: List[f64]*) -> !:
     if values.count % 2 != 0:
         try Parser.fail("handles need time/value pairs")
 
-pub func parse_property(parser: Parser*, document: DocumentData*, path: str) -> !:
+## A property one element's block sets, by its name and whether it is the samples
+## (`name.timeSamples`) or the value.
+pub struct Assigned:
+    pub var name: str
+    pub var animated: bool
+
+## A property set twice in one `def` or `over` block is refused at its second setting: the
+## text would say two things and keep only one. A later block may set it again.
+pub func parse_property(parser: Parser*, document: DocumentData*, path: str, assigned: List[Assigned]*) -> !:
+    let start = parser.token_start
     let type_name = try parser.name()
     var spec = try type_spec(type_name)
     defer spec.close()
@@ -153,6 +162,11 @@ pub func parse_property(parser: Parser*, document: DocumentData*, path: str) -> 
         name = (str)name.bytes[..<name.length - 12]
     elif try parser.accept(".timeSamples"):
         animated = true
+    for earlier in assigned.span():
+        if earlier.name == name and earlier.animated == animated:
+            parser.token_start = start
+            try Parser.fail("a property is set twice in one element")
+    try assigned.push(Assigned(name = name, animated = animated))
     try parser.expect("=")
     if not animated:
         let value = try parse_value(parser, &spec)
@@ -209,7 +223,8 @@ pub func parse_property(parser: Parser*, document: DocumentData*, path: str) -> 
             break
     try parser.expect("}")
 
-pub func parse_directive(parser: Parser*, document: DocumentData*, path: str, depth: usize) -> !:
+## One directive of the block at `path`; `assigned` holds the properties the block has set.
+pub func parse_directive(parser: Parser*, document: DocumentData*, path: str, depth: usize, assigned: List[Assigned]*) -> !:
     if parser.kind() != 1:
         try Parser.fail("expected a directive or value type")
     let directive = parser.peek()
@@ -244,8 +259,10 @@ pub func parse_directive(parser: Parser*, document: DocumentData*, path: str, de
         defer child.close()
         try document.add(child.view(), kind, directive == "over")
         try parser.expect("{")
+        var inside: List[Assigned]
+        defer inside.close()
         while not parser.at("}"):
-            try parse_directive(parser, document, child.view(), depth + 1)
+            try parse_directive(parser, document, child.view(), depth + 1, &inside)
         try parser.expect("}")
     elif directive == "delete" or directive == "disconnect":
         _ = try parser.take()
@@ -309,7 +326,7 @@ pub func parse_directive(parser: Parser*, document: DocumentData*, path: str, de
         try require_slot(target.view())
         try set_pair(&document.connections, target.view(), source)
     else:
-        try parse_property(parser, document, path)
+        try parse_property(parser, document, path, assigned)
 
 pub func read_text(bytes: const u8[], document: DocumentData*, location: Location*? = none) -> !:
     let trimmed = strings.trim(try str(bytes))
@@ -321,5 +338,7 @@ pub func read_text(bytes: const u8[], document: DocumentData*, location: Locatio
     defer parser.close()
     errdefer capture(bytes, parser.token_start, location)
     try parser.advance()
+    var top: List[Assigned]
+    defer top.close()
     while parser.kind() != 0:
-        try parse_directive(&parser, document, "/", 0)
+        try parse_directive(&parser, document, "/", 0, &top)

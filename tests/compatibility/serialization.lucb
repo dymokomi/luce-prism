@@ -222,6 +222,17 @@ func diagnostics() -> !:
             assert(result.value().line() == 0)
         if i < 4:
             assert(result.value().error_message().length > 0)
+    # a property set twice in one block is refused at its second setting; another element's
+    # property of that name, or the samples beside the value, repeat nothing
+    let twice = try prism.decode_diagnosed("#prisma 4.0\ndef \"a\" {\n    float x = 1\n    float x = 2\n}\n".bytes, prism.Codec.prisma)
+    defer twice.release()
+    assert(not twice.value().ok() and twice.value().line() == 4 and twice.value().column() == 5)
+    assert(twice.value().error_message() == "a property is set twice in one element")
+    let layered = try prism.decode_diagnosed("#prisma 4.0\ndef \"a\" {\n    float x = 1\n    float x.timeSamples = { 0: 1, 1: 2 }\n    def \"b\" {\n        float x = 3\n    }\n    float y = 2\n}\n".bytes, prism.Codec.prisma)
+    defer layered.release()
+    if not layered.value().ok():
+        print(f"layered: {layered.value().line()}:{layered.value().column()} {layered.value().error_message()}")
+    assert(layered.value().ok())
 
 func handwritten() -> !:
     let doc = try prism.Document.parse("  \n #prisma 1.0\n# comment\ndef object \"a\" { float radius = 4 connect in = </m.out> }\n\ndef material \"m\" { float out = 2 } # trailing comment\n")
