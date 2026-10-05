@@ -34,7 +34,7 @@ pub struct RowMask:
     pub func values() -> const i64[]:
         return self.indices.span()
 
-    pub mutating func close():
+    pub func close():
         self.indices.close()
 
 pub let row_mask_type = interop.Type[RowMask]("Prism column row mask", RowMask.close, closeable = true)
@@ -145,7 +145,7 @@ pub struct ColumnTable:
             return selected.items[middle] if selected.count % 2 != 0 else (selected.items[middle - 1] + selected.items[middle]) / 2.0
         return calculate(selected.span(), operation) else math.nan
 
-    pub mutating func close():
+    pub func close():
         self.table.close()
 
 pub let column_table_type = interop.Type[ColumnTable]("Prism column table", ColumnTable.close, closeable = true)

@@ -2,9 +2,10 @@
 ## collisions after removals, and the table is freed with the last name.
 import names
 from names import Name
+import strings
 
 pub func main(arguments: str[]) -> i32!:
-    discard(arguments)
+    _ = arguments
     let before = names.live_names()
     var first = try Name.of("subject")
     var second = try Name.of("subject")
@@ -22,14 +23,14 @@ pub func main(arguments: str[]) -> i32!:
     var held: Name[300]
     for i in 0..<(usize)300:
         var scratch: u8[16]
-        held[i] = try Name.of(try format(scratch, f"n{i}"))
+        held[i] = try Name.of(try strings.format(scratch, f"n{i}"))
     for i in 0..<(usize)300:
         if i % 3 != 0:
             held[i].close()
     for i in 0..<(usize)300:
         if i % 3 == 0:
             var scratch: u8[16]
-            var again = try Name.of(try format(scratch, f"n{i}"))
+            var again = try Name.of(try strings.format(scratch, f"n{i}"))
             assert(again.shares(&held[i]))
             again.close()
     assert(names.live_names() == before + 100)

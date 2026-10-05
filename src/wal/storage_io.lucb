@@ -40,7 +40,7 @@ inline func windows_path(directory: files.Directory*, name: c.str) -> u16[]!:
     let child = try windows_text.wide(name, invalid)
     defer free(child)
     let separator: usize = 0 if parent[(usize)count - 1] == 92 or parent[(usize)count - 1] == 47 else 1
-    let result = try alloc u16[(usize)count + separator + child.length]
+    let result = try new u16[(usize)count + separator + child.length] ---
     for index in 0..<(usize)count:
         result[index] = parent[index]
     if separator != 0:
@@ -81,7 +81,7 @@ pub func lock_file(file: files.File*) -> !:
 
 ## Atomic no-replace; unsupported platforms/filesystems fail without a fallback.
 pub func publish(context: void*?, directory: files.Directory*, source: c.str, target: c.str, possibly_published: bool*) -> !:
-    discard(context)
+    _ = context
     *possibly_published = false
     if platform.windows:
         let source_path = try windows_path(directory, source)
@@ -110,21 +110,21 @@ pub func publish(context: void*?, directory: files.Directory*, source: c.str, ta
         error(io.failed, "exclusive backup publication failed; outcome may be uncertain")
 
 func system_random(context: void*?, buffer: u8[]) -> !:
-    discard(context)
+    _ = context
     try os.random_bytes(buffer)
 
 func system_create(context: void*?, directory: files.Directory*, name: c.str) -> files.File!:
-    discard(context)
+    _ = context
     return try directory.open_file(name, files.OpenMode.create_new_read_write, 384, follow_symlinks = false, nonblocking = true)
 
 func system_close(context: void*?, file: files.File*) -> !:
-    discard(context)
+    _ = context
     try file.close()
 
 ## Set possibly_published BEFORE the syscall. Conservatively treat every error
 ## after attempting rename as uncertain; never retry an ambiguous rename blindly.
 pub func replace(context: void*?, directory: files.Directory*, source: c.str, target: c.str, possibly_published: bool*) -> !:
-    discard(context)
+    _ = context
     *possibly_published = false
     if platform.windows:
         let source_path = try windows_path(directory, source)
@@ -144,7 +144,7 @@ pub func replace(context: void*?, directory: files.Directory*, source: c.str, ta
         error(io.failed, "checkpoint rename failed; publication may have occurred")
 
 pub func remove(context: void*?, directory: files.Directory*, name: c.str) -> !:
-    discard(context)
+    _ = context
     if platform.windows:
         let path = try windows_path(directory, name)
         defer free(path)
@@ -159,26 +159,26 @@ pub func remove(context: void*?, directory: files.Directory*, name: c.str) -> !:
         error(io.failed, "checkpoint temporary cleanup failed")
 
 func system_read(context: void*?, file: files.File*, buffer: u8[]) -> usize!:
-    discard(context)
+    _ = context
     return try file.read(buffer)
 
 func system_write(context: void*?, file: files.File*, bytes: const u8[]) -> usize!:
-    discard(context)
+    _ = context
     return try file.write(bytes)
 
 func system_sync(context: void*?, file: files.File*) -> !:
-    discard(context)
+    _ = context
     try file.sync()
 
 func system_truncate(context: void*?, file: files.File*, size: i64) -> !:
-    discard(context)
+    _ = context
     try file.truncate(size)
 
 pub func sync_directory(directory: files.Directory*) -> !:
     if platform.windows:
         # File.sync flushes content, and both Windows publication paths request
         # MOVEFILE_WRITE_THROUGH; there is no separate directory fsync operation.
-        discard(directory)
+        _ = directory
         return
     let descriptor = try directory.descriptor()
     var result = fsync(descriptor)
@@ -186,7 +186,7 @@ pub func sync_directory(directory: files.Directory*) -> !:
     if result != 0: error(invalid, "database directory sync failed")
 
 func system_directory_sync(context: void*?, directory: files.Directory*) -> !:
-    discard(context)
+    _ = context
     try sync_directory(directory)
 
 pub struct Controls:
@@ -207,10 +207,10 @@ pub struct Stream: io.Reader, io.Writer:
     pub var file: files.File*
     pub var controls: Controls
 
-    pub mutating func read(buffer: u8[]) -> usize!:
+    pub func read(buffer: u8[]) -> usize!:
         return try self.controls.read(self.controls.context, self.file, buffer)
 
-    pub mutating func write(bytes: const u8[]) -> usize!:
+    pub func write(bytes: const u8[]) -> usize!:
         return try self.controls.write(self.controls.context, self.file, bytes)
 
 pub func read_exact(file: files.File*, controls: Controls, buffer: u8[]) -> !:

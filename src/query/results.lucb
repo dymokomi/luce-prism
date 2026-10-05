@@ -33,7 +33,7 @@ pub struct Row:
     pub func metadata(name: str) -> str!:
         return find_pair(&self.data.metadata, name) else error(missing, "row metadata is absent")
 
-    pub mutating func close():
+    pub func close():
         self.data.close()
 
 pub let row_type = interop.Type[Row]("Prism query row", Row.close, closeable = true)
@@ -54,7 +54,7 @@ pub struct Selection:
     pub func view_data() -> const List[Element]*:
         return &self.rows
 
-    pub mutating func append(element: const Element*) -> !:
+    pub func append(element: const Element*) -> !:
         var copy = try element.copy()
         errdefer copy.close()
         try self.rows.push(copy)
@@ -90,7 +90,7 @@ pub struct Selection:
         doc = DocumentData()
         return try own_document(owned)
 
-    pub mutating func close():
+    pub func close():
         for i in 0..<self.rows.count:
             self.rows.items[i].close()
         self.rows.close()

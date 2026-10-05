@@ -14,6 +14,7 @@ from model import DocumentData
 from document import Document, own_document
 from value import ValueData
 from types import DType, invalid, limit_exceeded
+import strings
 
 func safe_path(doc: const DocumentData*, parent: str, name: str) -> Buffer!:
     var base: Buffer
@@ -30,7 +31,7 @@ func safe_path(doc: const DocumentData*, parent: str, name: str) -> Buffer!:
         path.close()
         path = try child_path(parent, base.view())
         var scratch: u8[32]
-        try path.text(try format(scratch, f"_{suffix}"))
+        try path.text(try strings.format(scratch, f"_{suffix}"))
         suffix += 1
         if suffix > 1048576:
             error(limit_exceeded, "too many duplicate bundle names")
@@ -59,7 +60,7 @@ pub struct Bundle:
         # A real root lets the entire bundle survive both ASCII and binary forms.
         try self.data.add("/bundle", "folder")
 
-    pub static func from_document(doc: interop.Reference[Document]) -> interop.Reference[Bundle]!:
+    pub func from_document(doc: interop.Reference[Document]) -> interop.Reference[Bundle]!:
         let source = try doc.get()
         var data = try source.view_data().copy()
         errdefer data.close()
@@ -72,7 +73,7 @@ pub struct Bundle:
     pub func document() -> interop.Reference[Document]!:
         return try own_document(try self.data.copy())
 
-    pub mutating func add_folder(parent: str, name: str) -> str!:
+    pub func add_folder(parent: str, name: str) -> str!:
         var path = try safe_path(&self.data, parent, name)
         defer path.close()
         var next = try self.data.copy()
@@ -84,8 +85,8 @@ pub struct Bundle:
         self.data = next
         return self.data.elements.items[index].path.view()
 
-    pub mutating func add_file(parent: str, name: str, bytes: const u8[]) -> str!:
-        discard(try self.data.require(parent))
+    pub func add_file(parent: str, name: str, bytes: const u8[]) -> str!:
+        _ = try self.data.require(parent)
         var path = try safe_path(&self.data, parent, name)
         defer path.close()
         var next = try self.data.copy()
@@ -140,7 +141,7 @@ pub struct Bundle:
     pub func file_name(path: str) -> str:
         return get_text(&self.data, path, "name")
 
-    pub mutating func set_file_name(path: str, name: str) -> !:
+    pub func set_file_name(path: str, name: str) -> !:
         try set_text(&self.data, path, "name", name)
 
     func entries(parent: str) -> List[str]!:
@@ -191,7 +192,7 @@ pub struct Bundle:
             return try own_blob(try markdown_writer.encode(&standalone))
         return try own_blob(try html_writer.encode(&standalone))
 
-    pub mutating func close():
+    pub func close():
         self.data.close()
 
 pub let bundle_type = interop.Type[Bundle]("Prism bundle", Bundle.close, closeable = true)

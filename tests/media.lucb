@@ -23,7 +23,7 @@ func same_value(document: prism.Document*, name: str, expected: interop.Referenc
 func media() -> !:
     # Every possible byte, including NUL, delimiters and invalid UTF-8, repeats
     # across a realistic RGBA image. Payload bytes are never interpreted as text.
-    let pixels = try alloc u8[512 * 512 * 4]
+    let pixels = try new u8[512 * 512 * 4] ---
     defer free(pixels)
     for i in 0..<pixels.length:
         pixels[i] = (u8)i
@@ -37,7 +37,7 @@ func media() -> !:
     let empty = try prism.Value.array(prism.DType.uint8, [0], b"")
     defer empty.release()
     # Full unsigned 16-bit range, representative of a 16-bit image channel.
-    let words = try alloc u8[65536 * 2]
+    let words = try new u8[65536 * 2] ---
     defer free(words)
     for i in 0..<(usize)65536:
         words[i * 2] = (u8)i
@@ -45,7 +45,7 @@ func media() -> !:
     let channel = try prism.Value.array(prism.DType.uint16, [256, 256], words)
     defer channel.release()
     # All finite half patterns, including signed zero and every subnormal.
-    let half_bytes = try alloc u8[63488 * 2]
+    let half_bytes = try new u8[63488 * 2] ---
     defer free(half_bytes)
     var position: usize = 0
     for bits in 0..<(u32)65536:

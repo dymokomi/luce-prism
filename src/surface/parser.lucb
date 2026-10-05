@@ -23,7 +23,7 @@ func data(doc: DocumentData*, name: str, body: str, override: bool) -> !:
     while parser.kind() != 0:
         let kind = try parser.name()
         let property = try parser.name()
-        discard(try parser.accept("="))
+        _ = try parser.accept("=")
         let value = try parser.take()
         if kind == "bool":
             if value != "true" and value != "false":

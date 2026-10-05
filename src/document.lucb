@@ -55,7 +55,7 @@ pub struct Document:
     pub func is_layered() -> bool:
         return self.layered
 
-    mutating func writable() -> DocumentData*!:
+    func writable() -> DocumentData*!:
         if self.data.references.load(.relaxed) == 1:
             return self.data
         var copy = try self.data.copy()
@@ -70,7 +70,7 @@ pub struct Document:
         self.tables_dirty = true
         return self.data
 
-    mutating func ensure_tables() -> !:
+    func ensure_tables() -> !:
         if not self.tables_dirty:
             return
         let built = try tables.from_data(self.data)
@@ -93,13 +93,13 @@ pub struct Document:
     pub func extract(path: str) -> interop.Reference[Document]!:
         return try own_document(try prefab.extract(self.data, path))
 
-    mutating func replace_tables(next: DocumentData):
+    func replace_tables(next: DocumentData):
         self.data.close()
         self.data[0] = next
         self.data.references.store(1, .relaxed)
         self.tables_dirty = true
 
-    pub mutating func compile_math(name: str, expression: str) -> !:
+    pub func compile_math(name: str, expression: str) -> !:
         self.generation += 1
         var next = try (try self.writable()).copy()
         errdefer next.close()
@@ -107,7 +107,7 @@ pub struct Document:
         self.replace_tables(next)
         next = DocumentData()
 
-    pub mutating func compile_logic(name: str, rule: str) -> !:
+    pub func compile_logic(name: str, rule: str) -> !:
         self.generation += 1
         var next = try (try self.writable()).copy()
         errdefer next.close()
@@ -115,7 +115,7 @@ pub struct Document:
         self.replace_tables(next)
         next = DocumentData()
 
-    pub mutating func add_fact(name: str, head: interop.Reference[Atom]) -> !:
+    pub func add_fact(name: str, head: interop.Reference[Atom]) -> !:
         self.generation += 1
         var next = try (try self.writable()).copy()
         errdefer next.close()
@@ -123,7 +123,7 @@ pub struct Document:
         self.replace_tables(next)
         next = DocumentData()
 
-    pub mutating func add_rule(name: str, kind: RuleKind, head: interop.Reference[Atom], body: interop.Reference[Atoms]) -> !:
+    pub func add_rule(name: str, kind: RuleKind, head: interop.Reference[Atom], body: interop.Reference[Atoms]) -> !:
         self.generation += 1
         var next = try (try self.writable()).copy()
         errdefer next.close()
@@ -131,7 +131,7 @@ pub struct Document:
         self.replace_tables(next)
         next = DocumentData()
 
-    pub mutating func add_superiority(name: str, superior: str, inferior: str) -> !:
+    pub func add_superiority(name: str, superior: str, inferior: str) -> !:
         self.generation += 1
         var next = try (try self.writable()).copy()
         errdefer next.close()
@@ -139,7 +139,7 @@ pub struct Document:
         self.replace_tables(next)
         next = DocumentData()
 
-    pub mutating func instantiate(fragment: interop.Reference[Document], parent: str = "/") -> interop.Reference[Paths]!:
+    pub func instantiate(fragment: interop.Reference[Document], parent: str = "/") -> interop.Reference[Paths]!:
         self.generation += 1
         var next = try (try self.writable()).copy()
         errdefer next.close()
@@ -172,11 +172,11 @@ pub struct Document:
             return delta.has_property(self.data, &self.extra, none, path, name)
         return self.data.has_property(path, name)
 
-    pub mutating func remove_property(path: str, name: str) -> !:
+    pub func remove_property(path: str, name: str) -> !:
         self.generation += 1
         try (try self.writable()).remove_property(path, name)
 
-    pub mutating func remove_metadata(path: str, key: str) -> !:
+    pub func remove_metadata(path: str, key: str) -> !:
         self.generation += 1
         try (try self.writable()).remove_metadata(path, key)
 
@@ -191,11 +191,11 @@ pub struct Document:
     pub func metadata_name(path: str, index: usize) -> str!:
         return try self.data.metadata_name(path, index)
 
-    pub mutating func set_type(path: str, name: str) -> !:
+    pub func set_type(path: str, name: str) -> !:
         self.generation += 1
         try (try self.writable()).set_type(path, name)
 
-    pub mutating func overlay(layer: interop.Reference[Document]) -> interop.Reference[Document]!:
+    pub func overlay(layer: interop.Reference[Document]) -> interop.Reference[Document]!:
         var attached = try delta.from_document((try layer.get()).view_data())
         errdefer attached.close()
         if self.layered:
@@ -221,7 +221,7 @@ pub struct Document:
         attached = delta.Layer()
         return try interop.Reference[Document].adopt(native, document_type, memory.heap)
 
-    pub mutating func bake() -> !:
+    pub func bake() -> !:
         if not self.layered:
             return
         self.generation += 1
@@ -326,7 +326,7 @@ pub struct Document:
             return try self.data.type_at(path)
         return try self.data.type_at(path)
 
-    pub mutating func add(path: str, type_name: str, override: bool = false) -> !:
+    pub func add(path: str, type_name: str, override: bool = false) -> !:
         self.generation += 1
         if self.layered:
             var op = delta.Op(override = override)
@@ -336,7 +336,7 @@ pub struct Document:
             return
         try (try self.writable()).add(path, type_name, override)
 
-    pub mutating func append(path: str, type_name: str, override: bool = false) -> str!:
+    pub func append(path: str, type_name: str, override: bool = false) -> str!:
         self.generation += 1
         let owned = try self.writable()
         var allocated = try names.unique_path(owned, path)
@@ -344,7 +344,7 @@ pub struct Document:
         try owned.insert(allocated.view(), type_name, override)
         return try owned.path_at(owned.element_count() - 1)
 
-    pub mutating func add_child(parent: str, type_name: str) -> str!:
+    pub func add_child(parent: str, type_name: str) -> str!:
         self.generation += 1
         let owned = try self.writable()
         var allocated = try names.anonymous_path(owned, parent)
@@ -352,7 +352,7 @@ pub struct Document:
         try owned.insert(allocated.view(), type_name)
         return try owned.path_at(owned.element_count() - 1)
 
-    pub mutating func move(path: str, destination: str) -> str!:
+    pub func move(path: str, destination: str) -> str!:
         self.generation += 1
         let owned = try self.writable()
         if not owned.contains(path) or is_descendant(parent_path(destination), path):
@@ -363,7 +363,7 @@ pub struct Document:
         try owned.rename(path, allocated.view())
         return owned.path_for_id(identifier) else error(invalid, "moved Prism element lost its identity")
 
-    pub mutating func set(path: str, name: str, value: interop.Reference[Value], type_name: str = "") -> !:
+    pub func set(path: str, name: str, value: interop.Reference[Value], type_name: str = "") -> !:
         self.generation += 1
         if self.layered:
             var op = delta.Op()
@@ -386,7 +386,7 @@ pub struct Document:
     pub func property_name(path: str, index: usize) -> str!:
         return try self.data.property_name(path, index)
 
-    pub mutating func set_metadata(path: str, key: str, value: str) -> !:
+    pub func set_metadata(path: str, key: str, value: str) -> !:
         self.generation += 1
         try (try self.writable()).set_metadata(path, key, value)
 
@@ -395,7 +395,7 @@ pub struct Document:
             return try delta.read_metadata(self.data, &self.extra, none, path, key)
         return try self.data.metadata(path, key)
 
-    pub mutating func connect(source: str, target: str) -> !:
+    pub func connect(source: str, target: str) -> !:
         self.generation += 1
         try (try self.writable()).connect(source, target)
 
@@ -442,15 +442,15 @@ pub struct Document:
         try self.walk_from("/", &out)
         return out
 
-    pub mutating func disconnect(target: str) -> !:
+    pub func disconnect(target: str) -> !:
         self.generation += 1
         (try self.writable()).disconnect(target)
 
-    pub mutating func set_sample(path: str, name: str, time: f64, value: interop.Reference[Value], interpolation: Interpolation = Interpolation.linear) -> !:
+    pub func set_sample(path: str, name: str, time: f64, value: interop.Reference[Value], interpolation: Interpolation = Interpolation.linear) -> !:
         self.generation += 1
         try (try self.writable()).set_sample(path, name, time, value, interpolation)
 
-    pub mutating func animate(path: str, name: str, time: f64, value: interop.Reference[Value], interpolation: Interpolation = Interpolation.linear) -> !:
+    pub func animate(path: str, name: str, time: f64, value: interop.Reference[Value], interpolation: Interpolation = Interpolation.linear) -> !:
         self.generation += 1
         let owned = try self.writable()
         if owned.has_property(path, name):
@@ -463,11 +463,11 @@ pub struct Document:
         self.replace_tables(next)
         next = DocumentData()
 
-    pub mutating func set_handles(path: str, name: str, time: f64, kind: HandleType, left: const f64[], right: const f64[]) -> !:
+    pub func set_handles(path: str, name: str, time: f64, kind: HandleType, left: const f64[], right: const f64[]) -> !:
         self.generation += 1
         try (try self.writable()).set_handles(path, name, time, kind, left, right)
 
-    pub mutating func remove_sample(path: str, name: str, time: f64) -> !:
+    pub func remove_sample(path: str, name: str, time: f64) -> !:
         self.generation += 1
         try (try self.writable()).remove_sample(path, name, time)
 
@@ -512,35 +512,35 @@ pub struct Document:
     pub func eval(slot: str, time: f64 = 0.0) -> interop.Reference[Value]!:
         return try self.data.eval(slot, time)
 
-    pub mutating func mark_deleted(path: str) -> !:
+    pub func mark_deleted(path: str) -> !:
         self.generation += 1
         try (try self.writable()).mark_deleted(path)
 
-    pub mutating func mark_disconnected(target: str) -> !:
+    pub func mark_disconnected(target: str) -> !:
         self.generation += 1
         try (try self.writable()).mark_disconnected(target)
 
-    pub mutating func mark_unset(path: str, name: str, metadata: bool = false) -> !:
+    pub func mark_unset(path: str, name: str, metadata: bool = false) -> !:
         self.generation += 1
         try (try self.writable()).mark_unset(path, name, metadata)
 
-    pub mutating func reorder(parent: str, children: const str[]) -> !:
+    pub func reorder(parent: str, children: const str[]) -> !:
         self.generation += 1
         try (try self.writable()).reorder(parent, children)
 
-    pub mutating func connect_pattern(source: str, target_pattern: str) -> !:
+    pub func connect_pattern(source: str, target_pattern: str) -> !:
         self.generation += 1
         try (try self.writable()).connect_pattern(source, target_pattern)
 
-    pub mutating func set_asset(path: str, bytes: const u8[], mime: str = "application/octet-stream") -> !:
+    pub func set_asset(path: str, bytes: const u8[], mime: str = "application/octet-stream") -> !:
         self.generation += 1
         try (try self.writable()).set_asset(path, bytes, mime)
 
-    pub mutating func rename(path: str, destination: str) -> !:
+    pub func rename(path: str, destination: str) -> !:
         self.generation += 1
         try (try self.writable()).rename(path, destination)
 
-    pub mutating func remove(path: str) -> !:
+    pub func remove(path: str) -> !:
         self.generation += 1
         if self.layered:
             try self.extra.put(path, delta.Cell.element, "", delta.Op(deleted = true))
@@ -556,7 +556,7 @@ pub struct Document:
     pub func asset_mime(path: str) -> str!:
         return try self.data.asset_mime(path)
 
-    pub mutating func close():
+    pub func close():
         self.generation += 1
         self.extra.close()
         self.layered = false
@@ -588,11 +588,11 @@ pub struct Document:
             return try (try flat.get()).encode_package(text_scene, compressed)
         return try own_blob(try write_package(self.data, compressed, text_scene))
 
-    pub mutating func remove_asset(path: str) -> !:
+    pub func remove_asset(path: str) -> !:
         self.generation += 1
         (try self.writable()).remove_asset(path)
 
-    pub static func decode(bytes: const u8[]) -> interop.Reference[Document]!:
+    pub func decode(bytes: const u8[]) -> interop.Reference[Document]!:
         let native = try new Document() in memory.heap
         read_document(bytes, native.data) catch failure:
             native.close()
@@ -607,10 +607,10 @@ pub struct Document:
         native.tables_dirty = false
         return try interop.Reference[Document].adopt(native, document_type, memory.heap)
 
-    pub static func parse(text: str) -> interop.Reference[Document]!:
+    pub func parse(text: str) -> interop.Reference[Document]!:
         return try Document.decode(text.bytes)
 
-    pub static func load(path: str) -> interop.Reference[Document]!:
+    pub func load(path: str) -> interop.Reference[Document]!:
         with memory.heap:
             let name = try strings.copy(path)
             defer strings.release(name)

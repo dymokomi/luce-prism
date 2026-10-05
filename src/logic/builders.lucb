@@ -5,6 +5,7 @@ from model import DocumentData
 from storage import Buffer, List
 from path import joined
 from codecs.common import set_text, set_boolean
+import strings
 
 func append(doc: DocumentData*, path: str, kind: str) -> !:
     try doc.insert(path, kind)
@@ -19,7 +20,7 @@ pub func build_atom(doc: DocumentData*, path: str, atom: const AtomData*, kind: 
     for i in 0..<atom.arguments.count:
         let arg = &atom.arguments.items[i]
         var scratch: u8[32]
-        var child = try joined(path, try format(scratch, f"[{i}]"))
+        var child = try joined(path, try strings.format(scratch, f"[{i}]"))
         defer child.close()
         try append(doc, child.view(), "var" if arg.variable else "const")
         try set_text(doc, child.view(), "name", arg.name.view())
@@ -45,7 +46,7 @@ pub func add_rule(doc: DocumentData*, name: str, kind: RuleKind, head: const Ato
     try build_atom(doc, child.view(), head)
     for i in 0..<body.count:
         var scratch: u8[32]
-        var body_path = try joined(path.view(), try format(scratch, f"[{i}]"))
+        var body_path = try joined(path.view(), try strings.format(scratch, f"[{i}]"))
         defer body_path.close()
         try build_atom(doc, body_path.view(), &body.items[i])
 

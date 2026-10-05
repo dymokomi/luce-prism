@@ -21,7 +21,7 @@ struct Behavior:
         self.bakes = 0
         self.retained = none
 
-    mutating func run(view: interop.View[prism.BakeContext]) -> !:
+    func run(view: interop.View[prism.BakeContext]) -> !:
         self.bakes += 1
         if let previous = self.retained:
             previous.release()
@@ -42,14 +42,14 @@ struct Behavior:
             defer value.release()
             try context.set_output("out", value)
 
-    pub mutating func bake(view: interop.View[prism.BakeContext]) -> interop.Outcome[unit]:
+    pub func bake(view: interop.View[prism.BakeContext]) -> interop.Outcome[unit]:
         self.run(view) catch failure:
             let message = interop.copy_text(failure.message) catch exhausted:
                 return interop.Outcome[unit].failure(exhausted.code, interop.Owned[str]("failed to copy bake error"))
             return interop.Outcome[unit].failure(failure.code, message)
         return interop.Outcome[unit].success(interop.Owned[unit](()))
 
-    pub mutating func close():
+    pub func close():
         if let view = self.retained:
             view.release()
         self.retained = none

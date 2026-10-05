@@ -3,6 +3,7 @@ from model import DocumentData
 from path import parent_path, path_name, joined, require_element, valid_path, element_path
 from storage import Buffer, text_copy
 from types import invalid
+import strings
 
 pub func unique_path(doc: const DocumentData*, path: str, excluding: str = "") -> Buffer!:
     try require_element(path)
@@ -16,7 +17,7 @@ pub func unique_path(doc: const DocumentData*, path: str, excluding: str = "") -
         defer name.close()
         try name.text(leaf)
         var scratch: u8[32]
-        try name.text(try format(scratch, f"_{suffix}"))
+        try name.text(try strings.format(scratch, f"_{suffix}"))
         var candidate = try joined(parent, name.view())
         if candidate.view() == excluding or not doc.contains(candidate.view()):
             return candidate
@@ -29,7 +30,7 @@ pub func anonymous_path(doc: const DocumentData*, parent: str) -> Buffer!:
     var index = doc.child_count(parent)
     while true:
         var scratch: u8[32]
-        var path = try joined(parent, try format(scratch, f"[{index}]"))
+        var path = try joined(parent, try strings.format(scratch, f"[{index}]"))
         if not doc.contains(path.view()):
             return path
         path.close()

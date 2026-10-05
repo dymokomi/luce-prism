@@ -7,6 +7,7 @@ from storage import Buffer, Reader, List, text_copy
 from types import DType, invalid
 from path import parent_path
 from names import Name
+import strings
 
 pub func whitespace(byte: u8) -> bool:
     return byte == ' ' or byte == '\t' or byte == '\r' or byte == '\n' or byte == 11 or byte == 12
@@ -63,7 +64,7 @@ pub func child_path(parent: str, name: str) -> Buffer!:
 pub func append(doc: DocumentData*, parent: str, kind: str, anonymous: bool = true) -> Buffer!:
     let count = doc.child_count(parent)
     var digits: u8[32]
-    let name = try format(digits, f"[{count}]") if anonymous else try format(digits, f"{count}")
+    let name = try strings.format(digits, f"[{count}]") if anonymous else try strings.format(digits, f"{count}")
     var path = try child_path(parent, name)
     errdefer path.close()
     try doc.add(path.view(), kind)

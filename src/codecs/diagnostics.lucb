@@ -36,7 +36,7 @@ pub struct DecodeResult:
             error(invalid, "Prism decode failed; inspect the located diagnosis")
         return try own_document(try self.data.copy())
 
-    mutating func decode(bytes: const u8[], codec: codecs.Codec) -> !:
+    func decode(bytes: const u8[], codec: codecs.Codec) -> !:
         self.location = Location(line = 1, column = 1)
         if bytes.length > max_bytes:
             error(limit_exceeded, "Prism input exceeds the byte limit")
@@ -48,7 +48,7 @@ pub struct DecodeResult:
             self.data = try (try decoded.get()).view_data().copy()
         self.parsed = true
 
-    pub mutating func close():
+    pub func close():
         self.data.close()
         self.message.close()
 

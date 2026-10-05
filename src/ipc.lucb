@@ -75,7 +75,7 @@ func socket_errno() -> i32:
     return c.errno()
 
 func socket_cleanup():
-    discard(WSACleanup())
+    _ = WSACleanup()
 
 func socket_startup() -> !:
     if not platform.windows:
@@ -88,7 +88,7 @@ func socket_startup() -> !:
     if WSAStartup(514, (void*)&data[0]) != 0:
         error(closed, "Prism Winsock startup failed")
     if atexit(socket_cleanup) != 0:
-        discard(WSACleanup())
+        _ = WSACleanup()
         error(closed, "Prism Winsock cleanup could not be registered")
     winsock_ready = true
 
@@ -116,12 +116,12 @@ pub struct Client:
         return
 
 pub func hold_client(client: Client*):
-    discard(client.references.add(1, .relaxed))
+    _ = client.references.add(1, .relaxed)
 
 pub func drop_client(client: Client*):
     if client.references.sub(1, .acq_rel) == 1:
         if client.fd >= 0:
-            discard(socket_close(client.fd))
+            _ = socket_close(client.fd)
         client.fd = -1
         free(client) in memory.heap
 
@@ -154,7 +154,7 @@ func guard_sigpipe(fd: platform.SocketDescriptor):
     if not platform.macos:
         return
     var yes: i32 = 1
-    discard(setsockopt(fd, sock_level, nosigpipe_opt, &yes, 4))
+    _ = setsockopt(fd, sock_level, nosigpipe_opt, &yes, 4)
 
 func fill_unix(path: str, raw: u8[]) -> u32!:
     if path.length == 0 or path.length > 100 or raw.length < 110:
@@ -177,7 +177,7 @@ func open_unix() -> platform.SocketDescriptor!:
     if fd < 0:
         error(closed, "Prism unix socket could not be created")
     mark_cloexec(fd) catch failure:
-        discard(socket_close(fd))
+        _ = socket_close(fd)
         error(failure.code, failure.message)
     guard_sigpipe(fd)
     return fd
@@ -201,20 +201,20 @@ pub func bind_unix(path: str) -> platform.SocketDescriptor!:
         with memory.heap:
             let name = try strings.copy(path)
             defer strings.release(name)
-            discard(unlink_path((c.str)name))
+            _ = unlink_path((c.str)name)
     var raw: u8[110]
     for i in 0..<raw.length:
         raw[i] = 0
     let length = try fill_unix(path, raw)
     let fd = try open_unix()
     if bind(fd, &raw[0], length) != 0:
-        discard(socket_close(fd))
+        _ = socket_close(fd)
         error(busy, "Prism owner could not bind its socket")
     if listen(fd, 128) != 0:
-        discard(socket_close(fd))
+        _ = socket_close(fd)
         error(busy, "Prism owner could not listen")
     set_nonblocking(fd, true) catch failure:
-        discard(socket_close(fd))
+        _ = socket_close(fd)
         error(failure.code, failure.message)
     return fd
 
@@ -225,11 +225,11 @@ pub func accept_unix(listen_fd: platform.SocketDescriptor) -> platform.SocketDes
     if fd < 0:
         error(closed, "Prism owner accept failed")
     mark_cloexec(fd) catch failure:
-        discard(socket_close(fd))
+        _ = socket_close(fd)
         error(failure.code, failure.message)
     # BSD may inherit listener flags; session framing uses blocking I/O.
     set_nonblocking(fd, false) catch failure:
-        discard(socket_close(fd))
+        _ = socket_close(fd)
         error(failure.code, failure.message)
     guard_sigpipe(fd)
     return fd
@@ -241,13 +241,13 @@ pub func connect_unix(path: str) -> platform.SocketDescriptor!:
     let length = try fill_unix(path, raw)
     let fd = try open_unix()
     if connect(fd, &raw[0], length) != 0:
-        discard(socket_close(fd))
+        _ = socket_close(fd)
         error(closed, "Prism client could not connect")
     return fd
 
 pub func close_fd(fd: platform.SocketDescriptor):
     if fd >= 0:
-        discard(socket_close(fd))
+        _ = socket_close(fd)
 
 func send_all(fd: platform.SocketDescriptor, data: const u8[]) -> !:
     var offset: usize = 0

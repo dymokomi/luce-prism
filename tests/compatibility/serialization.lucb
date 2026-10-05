@@ -179,15 +179,14 @@ func bounded_value() -> !:
     let value = try doc.value().get("/a", "x")
     defer value.release()
     assert(value.value().bytes().length == 8 and try value.value().integer_at(1) == 2)
-    discard(value.value().integer_at(2) catch failure:
+    _ = value.value().integer_at(2) catch failure:
         return
-    )
     assert(false)
 
 func compression() -> !:
     let doc = try prism.Document.parse("#prisma 4.0\ndef \"array\" {}")
     defer doc.release()
-    let data = try alloc u8[80000] in memory.heap
+    let data = try new u8[80000] --- in memory.heap
     defer free(data) in memory.heap
     for i in 0..<(usize)20000:
         let number = (u64)i if i % 100 == 0 else 7

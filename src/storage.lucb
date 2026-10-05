@@ -8,19 +8,19 @@ pub struct List[T]:
     pub var items: T[]
     pub var count: usize
 
-    pub mutating func reserve(count: usize) -> !:
+    pub func reserve(count: usize) -> !:
         if count > max_items:
             error(limit_exceeded, "Prism collection limit exceeded")
         if count <= self.items.length:
             return
         let capacity = count if count > self.items.length * 2 else self.items.length * 2
-        let grown = try alloc T[capacity] in memory.heap
+        let grown = try new T[capacity] --- in memory.heap
         memory.copy(grown, self.items, self.count)
         if self.items.length > 0:
             free(self.items) in memory.heap
         self.items = grown
 
-    pub mutating func push(value: T) -> !:
+    pub func push(value: T) -> !:
         try self.reserve(self.count + 1)
         self.items[self.count] = value
         self.count += 1
@@ -31,12 +31,12 @@ pub struct List[T]:
             return empty
         return self.items[..<self.count]
 
-    pub mutating func remove(index: usize):
+    pub func remove(index: usize):
         for i in index + 1..<self.count:
             self.items[i - 1] = self.items[i]
         self.count -= 1
 
-    pub mutating func close():
+    pub func close():
         if self.items.length > 0:
             free(self.items) in memory.heap
         var empty: T[]
@@ -47,7 +47,7 @@ pub struct Buffer:
     pub var data: u8[]
     pub var used: usize
 
-    pub mutating func reserve(count: usize) -> !:
+    pub func reserve(count: usize) -> !:
         if count > max_bytes:
             error(limit_exceeded, "Prism byte limit exceeded (256 MiB)")
         if count <= self.data.length:
@@ -63,13 +63,13 @@ pub struct Buffer:
                 capacity = count
         if capacity > max_bytes:
             capacity = max_bytes
-        let grown = try alloc u8[capacity] in memory.heap
+        let grown = try new u8[capacity] --- in memory.heap
         memory.copy(grown, self.data, self.used)
         if self.data.length > 0:
             free(self.data) in memory.heap
         self.data = grown
 
-    pub mutating func put(data: const u8[]) -> !:
+    pub func put(data: const u8[]) -> !:
         if data.length == 0:
             return
         let count = self.used +? data.length else error(limit_exceeded, "Prism byte size overflow")
@@ -78,22 +78,22 @@ pub struct Buffer:
         memory.copy(self.data[self.used..], data, data.length)
         self.used = count
 
-    pub mutating func text(value: str) -> !:
+    pub func text(value: str) -> !:
         try self.put(value.bytes)
 
-    pub mutating func byte(value: u8) -> !:
+    pub func byte(value: u8) -> !:
         let data: u8[1] = [value]
         try self.put(data)
 
-    pub mutating func uint(value: u64, width: usize) -> !:
+    pub func uint(value: u64, width: usize) -> !:
         for i in 0..<width:
             try self.byte((u8)((value >> (i * 8)) & 255))
 
-    pub mutating func real(value: f64) -> !:
+    pub func real(value: f64) -> !:
         var finite = value if math.is_finite(value) else 0.0
         try self.uint(memory.read[u64](&finite), 8)
 
-    pub mutating func sized(value: str) -> !:
+    pub func sized(value: str) -> !:
         try self.reserve(self.used + 4 + value.length)
         try self.uint((u64)value.length, 4)
         try self.text(value)
@@ -110,7 +110,7 @@ pub struct Buffer:
     pub func copy() -> Buffer!:
         return try copied(self.bytes())
 
-    pub mutating func close():
+    pub func close():
         if self.data.length > 0:
             free(self.data) in memory.heap
         var empty: u8[]
@@ -125,7 +125,7 @@ pub func copied(data: const u8[]) -> Buffer!:
         return output
     if data.length > max_bytes:
         error(limit_exceeded, "Prism byte limit exceeded (256 MiB)")
-    output.data = try alloc u8[data.length] in memory.heap
+    output.data = try new u8[data.length] --- in memory.heap
     memory.copy(output.data, data, data.length)
     output.used = data.length
     return output
@@ -148,34 +148,34 @@ pub struct Reader:
     pub func remaining() -> usize:
         return self.data.length - self.pos
 
-    pub mutating func take(count: usize) -> const u8[]!:
+    pub func take(count: usize) -> const u8[]!:
         if count > self.remaining():
             error(invalid, "truncated Prism input")
         let start = self.pos
         self.pos += count
         return self.data[start..<self.pos]
 
-    pub mutating func uint(width: usize) -> u64!:
+    pub func uint(width: usize) -> u64!:
         let bytes = try self.take(width)
         var value: u64 = 0
         for i in 0..<width:
             value |= (u64)bytes[i] << (i * 8)
         return value
 
-    pub mutating func count(minimum: usize) -> usize!:
+    pub func count(minimum: usize) -> usize!:
         let count = (usize)try self.uint(4)
         if count > max_items or (minimum > 0 and count > self.remaining() // minimum):
             error(limit_exceeded, "implausible Prism record count")
         return count
 
-    pub mutating func real() -> f64!:
+    pub func real() -> f64!:
         var bits = try self.uint(8)
         let value = memory.read[f64](&bits)
         if not math.is_finite(value):
             error(invalid, "non-finite Prism time or handle")
         return value
 
-    pub mutating func text() -> str!:
+    pub func text() -> str!:
         let size = (usize)try self.uint(4)
         let data = try self.take(size)
         return str(data) catch failure:
@@ -184,7 +184,7 @@ pub struct Reader:
 pub struct Blob:
     var storage: Buffer
 
-    pub static func from_bytes(bytes: const u8[]) -> interop.Reference[Blob]!:
+    pub func from_bytes(bytes: const u8[]) -> interop.Reference[Blob]!:
         return try own_blob(try copied(bytes))
 
     pub func bytes() -> const u8[]:
@@ -196,7 +196,7 @@ pub struct Blob:
     pub func size() -> usize:
         return self.storage.used
 
-    pub mutating func close():
+    pub func close():
         self.storage.close()
 
 pub let blob_type = interop.Type[Blob]("Prism bytes", Blob.close, closeable = true)
@@ -212,7 +212,7 @@ pub struct Pair:
     pub var key: Buffer
     pub var value: Buffer
 
-    pub mutating func close():
+    pub func close():
         self.key.close()
         self.value.close()
 

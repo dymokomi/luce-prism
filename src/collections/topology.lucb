@@ -1,6 +1,7 @@
 ## Atomic incremental indexes for document paths, child order and stable node IDs.
 from collections.index import Index
 from path import parent_path
+import strings
 
 pub struct Topology:
     var paths: Index
@@ -14,7 +15,7 @@ pub struct Topology:
 
     pub func by_id(identifier: usize) -> usize?:
         var scratch: u8[32]
-        let key = format(scratch, f"{identifier}") catch failure: return none
+        let key = strings.format(scratch, f"{identifier}") catch failure: return none
         let bucket = self.identifiers.find(key) else return none
         return self.identifiers.buckets.items[bucket].rows.items[0]
 
@@ -24,26 +25,26 @@ pub struct Topology:
         var empty: usize[]
         return empty
 
-    pub mutating func append(path: str, preferred: usize, row: usize) -> usize!:
+    pub func append(path: str, preferred: usize, row: usize) -> usize!:
         var identifier = preferred
         if identifier == 0 or self.by_id(identifier) != none:
             identifier = self.last_id + 1
         var scratch: u8[32]
-        let key = try format(scratch, f"{identifier}")
+        let key = try strings.format(scratch, f"{identifier}")
         var path_entry = try self.paths.prepare(path, row)
         defer path_entry.close()
         var parent_entry = try self.parents.prepare(parent_path(path), row)
         defer parent_entry.close()
         var id_entry = try self.identifiers.prepare(key, row)
         defer id_entry.close()
-        discard(self.paths.commit(&path_entry))
-        discard(self.parents.commit(&parent_entry))
-        discard(self.identifiers.commit(&id_entry))
+        _ = self.paths.commit(&path_entry)
+        _ = self.parents.commit(&parent_entry)
+        _ = self.identifiers.commit(&id_entry)
         if identifier > self.last_id:
             self.last_id = identifier
         return identifier
 
-    pub mutating func close():
+    pub func close():
         self.paths.close()
         self.parents.close()
         self.identifiers.close()

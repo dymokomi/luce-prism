@@ -18,7 +18,7 @@ pub struct Literal:
     pub var supporters: List[usize]
     pub var rules: List[usize]
 
-    pub mutating func close():
+    pub func close():
         self.atom.close()
         self.key.close()
         self.supporters.close()
@@ -30,7 +30,7 @@ pub struct GroundRule:
     pub var head: usize
     pub var body: List[usize]
 
-    pub mutating func close():
+    pub func close():
         self.body.close()
 
 struct RawRule:
@@ -40,7 +40,7 @@ struct RawRule:
     var head: AtomData
     var body: List[AtomData]
 
-    mutating func close():
+    func close():
         self.name.close()
         self.head.close()
         for i in 0..<self.body.count:
@@ -66,7 +66,7 @@ pub struct Theory:
                 return true
         return false
 
-    mutating func note_one(atom: const AtomData*, fact: bool) -> usize!:
+    func note_one(atom: const AtomData*, fact: bool) -> usize!:
         var key = try atom.key()
         defer key.close()
         if let index = self.find(key.view()):
@@ -78,11 +78,11 @@ pub struct Theory:
         literal.key = try key.copy()
         try self.literals.reserve(self.literals.count + 1)
         let index = self.literals.count
-        discard(try self.keys.add(key.view(), index))
+        _ = try self.keys.add(key.view(), index)
         try self.literals.push(literal)
         return index
 
-    mutating func note(atom: const AtomData*, fact: bool = false) -> usize!:
+    func note(atom: const AtomData*, fact: bool = false) -> usize!:
         let index = try self.note_one(atom, fact)
         var opposite = try atom.copy()
         defer opposite.close()
@@ -92,7 +92,7 @@ pub struct Theory:
         self.literals.items[complement].complement = index
         return index
 
-    mutating func ground(rule: const RawRule*, constants: const str[], variables: const Index*, assignment: const usize[]) -> !:
+    func ground(rule: const RawRule*, constants: const str[], variables: const Index*, assignment: const usize[]) -> !:
         var ground = GroundRule(kind = rule.kind)
         errdefer ground.close()
         ground.name = try intern(&self.names, rule.name.view())
@@ -113,7 +113,7 @@ pub struct Theory:
         try literal.rules.push(self.rules.count)
         try self.rules.push(ground)
 
-    pub mutating func close():
+    pub func close():
         for i in 0..<self.literals.count:
             self.literals.items[i].close()
         self.literals.close()
@@ -145,9 +145,9 @@ func substitute(atom: const AtomData*, constants: const str[], variables: const 
 func collect(atom: const AtomData*, constants: Index*, variables: Index*, fact: bool) -> !:
     for arg in atom.arguments.span():
         if fact or not arg.variable:
-            discard(try intern(constants, arg.name.view()))
+            _ = try intern(constants, arg.name.view())
         elif arg.variable:
-            discard(try intern(variables, arg.name.view()))
+            _ = try intern(variables, arg.name.view())
 
 func close_raw(rules: List[RawRule]*):
     for i in 0..<rules.count:
@@ -170,9 +170,9 @@ pub func build(doc: const DocumentData*) -> Theory!:
             defer superior.close()
             var inferior = try read_text(doc, element.path.view(), "inferior")
             defer inferior.close()
-            discard(try intern(&theory.names, superior.view()))
+            _ = try intern(&theory.names, superior.view())
             let name = try intern(&theory.names, inferior.view())
-            discard(try theory.superiority.add(superior.view(), name))
+            _ = try theory.superiority.add(superior.view(), name)
             continue
         if kind != "fact" and kind != "strict" and kind != "defeasible" and kind != "defeater":
             continue
@@ -201,7 +201,7 @@ pub func build(doc: const DocumentData*) -> Theory!:
     sorting.text(constant_names.span())
     for rule in raw.span():
         if rule.fact:
-            discard(try theory.note(&rule.head, true))
+            _ = try theory.note(&rule.head, true)
             continue
         var variables: Index
         defer variables.close()

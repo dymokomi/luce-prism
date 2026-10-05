@@ -40,7 +40,7 @@ pub struct Element:
             try output.properties.push(try prop.copy())
         return output
 
-    pub mutating func put_property(prop: const Property*) -> !:
+    pub func put_property(prop: const Property*) -> !:
         var owned = try prop.copy()
         errdefer owned.close()
         if let index = self.property(prop.name.view()):
@@ -55,12 +55,12 @@ pub struct Element:
                 self.properties.items[i] = prior
                 i -= 1
 
-    pub mutating func remove_property(name: str):
+    pub func remove_property(name: str):
         if let index = self.property(name):
             self.properties.items[index].close()
             self.properties.remove(index)
 
-    pub mutating func close():
+    pub func close():
         self.path.close()
         self.kind.close()
         for i in 0..<self.properties.count:
@@ -76,7 +76,7 @@ pub struct Reorder:
     pub var parent: Buffer
     pub var children: List[Buffer]
 
-    pub mutating func close():
+    pub func close():
         self.parent.close()
         close_names(&self.children)
 
@@ -85,7 +85,7 @@ pub struct Asset:
     pub var mime: Buffer
     pub var bytes: Buffer
 
-    pub mutating func close():
+    pub func close():
         self.path.close()
         self.mime.close()
         self.bytes.close()
@@ -128,7 +128,7 @@ pub struct DocumentData:
             try output.set_asset(asset.path.view(), asset.bytes.bytes(), asset.mime.view())
         return output
 
-    pub mutating func insert_copy(element: const Element*) -> !:
+    pub func insert_copy(element: const Element*) -> !:
         var owned = try element.copy()
         errdefer owned.close()
         if let index = self.find(element.path.view()):
@@ -144,10 +144,10 @@ pub struct DocumentData:
         let index = self.find(path) else return false
         return self.elements.items[index].property(name) != none
 
-    pub mutating func remove_property(path: str, name: str) -> !:
+    pub func remove_property(path: str, name: str) -> !:
         self.elements.items[try self.require(path)].remove_property(name)
 
-    pub mutating func remove_metadata(path: str, key: str) -> !:
+    pub func remove_metadata(path: str, key: str) -> !:
         remove_pair(&self.elements.items[try self.require(path)].metadata, key)
 
     pub func has_metadata(path: str, key: str) -> bool:
@@ -163,7 +163,7 @@ pub struct DocumentData:
             error(invalid, "Prism metadata index is out of bounds")
         return element.metadata.items[index].key.view()
 
-    pub mutating func set_type(path: str, name: str) -> !:
+    pub func set_type(path: str, name: str) -> !:
         let index = try self.require(path)
         let replacement = try text_copy(name)
         self.elements.items[index].kind.close()
@@ -194,7 +194,7 @@ pub struct DocumentData:
         let children = self.topology.children(parent)
         return self.elements.items[children[index]].path.view() if index < children.length else none
 
-    pub mutating func clear_elements():
+    pub func clear_elements():
         for i in 0..<self.elements.count:
             self.elements.items[i].close()
         self.elements.close()
@@ -217,7 +217,7 @@ pub struct DocumentData:
     pub func type_at(path: str) -> str!:
         return self.elements.items[try self.require(path)].kind.view()
 
-    pub mutating func add(path: str, type_name: str, override: bool = false) -> !:
+    pub func add(path: str, type_name: str, override: bool = false) -> !:
         try require_element(path)
         if self.contains(path):
             error(invalid, "duplicate Prism element path")
@@ -226,7 +226,7 @@ pub struct DocumentData:
             error(missing, "add the Prism parent before its child")
         try self.insert(path, type_name, override)
 
-    pub mutating func insert(path: str, type_name: str, override: bool = false) -> !:
+    pub func insert(path: str, type_name: str, override: bool = false) -> !:
         try require_element(path)
         if self.contains(path):
             error(invalid, "duplicate Prism element path")
@@ -239,7 +239,7 @@ pub struct DocumentData:
         element.identifier = try self.topology.append(path, 0, self.elements.count)
         try self.elements.push(element)
 
-    pub mutating func put_value(path: str, name: str, value: ValueData, type_name: str = "") -> !:
+    pub func put_value(path: str, name: str, value: ValueData, type_name: str = "") -> !:
         var owned = value
         errdefer owned.close()
         let index = try self.require(path)
@@ -264,7 +264,7 @@ pub struct DocumentData:
             position -= 1
 
     ## Insert a deep snapshot. Later edits or closing Value never change the document.
-    pub mutating func set(path: str, name: str, value: interop.Reference[Value], type_name: str = "") -> !:
+    pub func set(path: str, name: str, value: interop.Reference[Value], type_name: str = "") -> !:
         let native = try value.get()
         try self.put_value(path, name, try native.view_data().copy(), type_name)
 
@@ -282,7 +282,7 @@ pub struct DocumentData:
             error(invalid, "Prism property index is out of bounds")
         return element.properties.items[index].name.view()
 
-    pub mutating func set_metadata(path: str, key: str, value: str) -> !:
+    pub func set_metadata(path: str, key: str, value: str) -> !:
         let element = &self.elements.items[try self.require(path)]
         try set_pair(&element.metadata, key, value)
 
@@ -293,7 +293,7 @@ pub struct DocumentData:
                 return item.value.view()
         error(missing, "Prism metadata does not exist")
 
-    pub mutating func connect(source: str, target: str) -> !:
+    pub func connect(source: str, target: str) -> !:
         try require_slot(source)
         try require_slot(target)
         try set_pair(&self.connections, target, source)
@@ -315,14 +315,14 @@ pub struct DocumentData:
     pub func source(target: str) -> str!:
         return self.incoming(target) else error(missing, "Prism input is not connected")
 
-    pub mutating func disconnect(target: str):
+    pub func disconnect(target: str):
         for i in 0..<self.connections.count:
             if self.connections.items[i].key.view() == target:
                 self.connections.items[i].close()
                 self.connections.remove(i)
                 return
 
-    pub mutating func set_sample(path: str, name: str, time: f64, value: interop.Reference[Value], interpolation: Interpolation = Interpolation.linear) -> !:
+    pub func set_sample(path: str, name: str, time: f64, value: interop.Reference[Value], interpolation: Interpolation = Interpolation.linear) -> !:
         if not math.is_finite(time):
             error(invalid, "Prism keyframe time must be finite")
         let element = &self.elements.items[try self.require(path)]
@@ -339,7 +339,7 @@ pub struct DocumentData:
                 break
         try insert_sample(prop, sample)
 
-    pub mutating func set_handles(path: str, name: str, time: f64, kind: HandleType, left: const f64[], right: const f64[]) -> !:
+    pub func set_handles(path: str, name: str, time: f64, kind: HandleType, left: const f64[], right: const f64[]) -> !:
         if left.length % 2 != 0 or right.length % 2 != 0:
             error(invalid, "Prism handles contain (time, value) pairs")
         let element = &self.elements.items[try self.require(path)]
@@ -367,7 +367,7 @@ pub struct DocumentData:
                 sample.handle = (u8)kind
                 return
 
-    pub mutating func remove_sample(path: str, name: str, time: f64) -> !:
+    pub func remove_sample(path: str, name: str, time: f64) -> !:
         let element = &self.elements.items[try self.require(path)]
         let index = element.property(name) else return
         let prop = &element.properties.items[index]
@@ -401,22 +401,22 @@ pub struct DocumentData:
             return try own_value(try scalar_bits(DType.float32, 0))
         return try self.resolve(element_path(current), slot_name(current), time)
 
-    pub mutating func mark_deleted(path: str) -> !:
+    pub func mark_deleted(path: str) -> !:
         try require_element(path)
         try add_name(&self.deletions, path)
 
-    pub mutating func mark_disconnected(target: str) -> !:
+    pub func mark_disconnected(target: str) -> !:
         try require_slot(target)
         try add_name(&self.disconnections, target)
 
-    pub mutating func mark_unset(path: str, name: str, metadata: bool = false) -> !:
+    pub func mark_unset(path: str, name: str, metadata: bool = false) -> !:
         let element = &self.elements.items[try self.require(path)]
         if metadata:
             try add_name(&element.removed_metadata, name)
         else:
             try add_name(&element.removed_properties, name)
 
-    pub mutating func reorder(parent: str, children: const str[]) -> !:
+    pub func reorder(parent: str, children: const str[]) -> !:
         if not valid_path(parent) or element_path(parent) != parent:
             error(invalid, "invalid Prism reorder parent")
         var order: Reorder
@@ -441,7 +441,7 @@ pub struct DocumentData:
         try self.reorders.push(order)
         sort_reorders(&self.reorders)
 
-    pub mutating func connect_pattern(source: str, target_pattern: str) -> !:
+    pub func connect_pattern(source: str, target_pattern: str) -> !:
         try require_slot(source)
         if target_pattern.length == 0 or target_pattern.bytes[0] != '/':
             error(invalid, "Prism wildcard target must be absolute")
@@ -452,7 +452,7 @@ pub struct DocumentData:
         errdefer item.close()
         try self.globs.push(item)
 
-    pub mutating func set_asset(key: str, bytes: const u8[], mime: str = "application/octet-stream") -> !:
+    pub func set_asset(key: str, bytes: const u8[], mime: str = "application/octet-stream") -> !:
         if not valid_path(key):
             error(invalid, "invalid Prism asset path")
         let path = element_path(key)
@@ -475,10 +475,10 @@ pub struct DocumentData:
             i -= 1
 
     ## Rename/reparent a subtree. All allocations finish before any path changes.
-    pub mutating func rename(path: str, destination: str) -> !:
+    pub func rename(path: str, destination: str) -> !:
         try require_element(path)
         try require_element(destination)
-        discard(try self.require(path))
+        _ = try self.require(path)
         if path == destination:
             return
         if is_descendant(destination, path) or self.contains(destination):
@@ -531,7 +531,7 @@ pub struct DocumentData:
                 try rewritten.text(destination)
                 try rewritten.put(name.bytes[path.length..])
                 name = rewritten.view()
-            discard(try topology.append(name, element.identifier, i))
+            _ = try topology.append(name, element.identifier, i)
         for i in 0..<edits.count:
             let edit = &edits.items[i]
             edit.target.close()
@@ -556,9 +556,9 @@ pub struct DocumentData:
                     order.children.remove(j)
 
     ## Remove content, incident wires, assets and affected wildcard/reorder entries.
-    pub mutating func remove(path: str) -> !:
+    pub func remove(path: str) -> !:
         try require_element(path)
-        discard(try self.require(path))
+        _ = try self.require(path)
         var owned_path = try text_copy(path)
         defer owned_path.close()
         let root = owned_path.view()
@@ -567,7 +567,7 @@ pub struct DocumentData:
         var kept: usize = 0
         for element in self.elements.span():
             if not is_descendant(element.path.view(), root):
-                discard(try topology.append(element.path.view(), element.identifier, kept))
+                _ = try topology.append(element.path.view(), element.identifier, kept)
                 kept += 1
         kept = 0
         for index in 0..<self.elements.count:
@@ -616,7 +616,7 @@ pub struct DocumentData:
     pub func asset_count() -> usize:
         return self.assets.count
 
-    pub mutating func remove_asset(key: str):
+    pub func remove_asset(key: str):
         if not valid_path(key):
             return
         let path = element_path(key)
@@ -638,7 +638,7 @@ pub struct DocumentData:
                 return asset.mime.view()
         error(missing, "Prism asset does not exist")
 
-    pub mutating func close():
+    pub func close():
         for i in 0..<self.elements.count:
             self.elements.items[i].close()
         self.elements.close()
@@ -664,7 +664,7 @@ pub func close_elements(elements: List[Element]*):
     elements.close()
 
 pub func hold_data(data: DocumentData*):
-    discard(data.references.add(1, .relaxed))
+    _ = data.references.add(1, .relaxed)
 
 pub func drop_data(data: DocumentData*):
     if data.references.sub(1, .acq_rel) == 1:

@@ -19,7 +19,7 @@ pub struct Entry:
     pub func init():
         return
 
-    pub mutating func close():
+    pub func close():
         self.identity.close()
         self.path.close()
         self.name.close()
@@ -32,7 +32,7 @@ pub struct Pin:
     pub func init():
         return
 
-    pub mutating func close():
+    pub func close():
         self.identity.close()
         self.path.close()
 
@@ -118,7 +118,7 @@ func find(pool: const Pool*, identity: str, path: str, name: str) -> usize?:
 func reindex(pool: Pool*, minimum: usize) -> !:
     var capacity: usize = 16
     while capacity < minimum * 2: capacity *= 2
-    let slots = try alloc usize[capacity] in memory.heap
+    let slots = try new usize[capacity] --- in memory.heap
     for i in 0..<capacity: slots[i] = 0
     if pool.slots.length > 0: free(pool.slots) in memory.heap
     pool.slots = slots

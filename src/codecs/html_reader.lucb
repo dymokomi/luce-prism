@@ -36,7 +36,7 @@ struct Parser:
         let token = &self.tokens.values.items[self.position]
         return token.kind == xml.Kind.close and token.name.view() == name
 
-    mutating func inline_content(parent: str, close: str, depth: usize) -> !:
+    func inline_content(parent: str, close: str, depth: usize) -> !:
         if depth > 128:
             error(limit_exceeded, "HTML inline nesting exceeds 128")
         while self.position < self.tokens.values.count:
@@ -91,7 +91,7 @@ struct Parser:
                 self.position += 1
                 try self.inline_content(parent, name, depth + 1)
 
-    mutating func pre(parent: str) -> !:
+    func pre(parent: str) -> !:
         var language: str = ""
         var code: Buffer
         defer code.close()
@@ -113,7 +113,7 @@ struct Parser:
         try set_text(self.doc, child.view(), "language", language)
         try set_text(self.doc, child.view(), "text", code.view())
 
-    mutating func raw(parent: str) -> !:
+    func raw(parent: str) -> !:
         let first = &self.tokens.values.items[self.position]
         let name = first.name.view()
         let start = first.start
@@ -144,7 +144,7 @@ struct Parser:
         defer child.close()
         try set_text(self.doc, child.view(), "text", (str)self.source.bytes[start..<end])
 
-    mutating func list(parent: str, name: str, depth: usize) -> !:
+    func list(parent: str, name: str, depth: usize) -> !:
         var child = try append(self.doc, parent, "definitionList" if name == "dl" else "list")
         defer child.close()
         if name != "dl":
@@ -170,7 +170,7 @@ struct Parser:
         if self.position < self.tokens.values.count:
             self.position += 1
 
-    mutating func table(parent: str, depth: usize) -> !:
+    func table(parent: str, depth: usize) -> !:
         var child = try append(self.doc, parent, "table")
         defer child.close()
         self.position += 1
@@ -198,7 +198,7 @@ struct Parser:
         if self.position < self.tokens.values.count:
             self.position += 1
 
-    mutating func blocks(parent: str, close: str, depth: usize) -> !:
+    func blocks(parent: str, close: str, depth: usize) -> !:
         if depth > 128:
             error(limit_exceeded, "HTML block nesting exceeds 128")
         while self.position < self.tokens.values.count:

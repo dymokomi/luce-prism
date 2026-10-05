@@ -19,12 +19,12 @@ func reject(bytes: const u8[]) -> !:
     assert(false)
 
 func compress_empty_and_tiny() -> !:
-    discard(try roundtrip(b""))
-    discard(try roundtrip(b"x"))
-    discard(try roundtrip(b"hi there"))
+    _ = try roundtrip(b"")
+    _ = try roundtrip(b"x")
+    _ = try roundtrip(b"hi there")
 
 func compress_overlapping_back_reference() -> !:
-    let bytes = try alloc u8[9000] in memory.heap
+    let bytes = try new u8[9000] --- in memory.heap
     defer free(bytes) in memory.heap
     for i in 0..<bytes.length:
         bytes[i] = 'Z'
@@ -34,7 +34,7 @@ func compress_overlapping_back_reference() -> !:
     assert(try roundtrip(bytes) < 900)
 
 func compress_identity_past_window() -> !:
-    let bytes = try alloc u8[80000] in memory.heap
+    let bytes = try new u8[80000] --- in memory.heap
     defer free(bytes) in memory.heap
     var seed: u32 = 12648430
     for i in 0..<bytes.length:
@@ -48,19 +48,19 @@ func compress_identity_past_window() -> !:
     assert(try roundtrip(bytes) < bytes.length)
 
 func compress_round_trips_all_shapes() -> !:
-    discard(try roundtrip(b"hello world"))
-    let bytes = try alloc u8[64000] in memory.heap
+    _ = try roundtrip(b"hello world")
+    let bytes = try new u8[64000] --- in memory.heap
     defer free(bytes) in memory.heap
     let record = b"name=widget; size=10; color=red; "
     for i in 0..<bytes.length:
         bytes[i] = record[i % record.length]
-    discard(try roundtrip(bytes))
+    _ = try roundtrip(bytes)
     for i in 0..<(usize)4096:
         bytes[i] = (u8)(i * 37)
-    discard(try roundtrip(bytes[..<4096]))
+    _ = try roundtrip(bytes[..<4096])
 
 func compress_actually_shrinks_repetitive_data() -> !:
-    let bytes = try alloc u8[50000] in memory.heap
+    let bytes = try new u8[50000] --- in memory.heap
     defer free(bytes) in memory.heap
     for i in 0..<bytes.length:
         bytes[i] = 0
@@ -75,7 +75,7 @@ func decompress_rejects_corrupt_input() -> !:
     try reject(impossible)
 
 func compress_fails_closed_on_corrupt() -> !:
-    let bytes = try alloc u8[2000] in memory.heap
+    let bytes = try new u8[2000] --- in memory.heap
     defer free(bytes) in memory.heap
     for i in 0..<bytes.length:
         bytes[i] = 'Q'

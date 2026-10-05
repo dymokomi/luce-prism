@@ -20,9 +20,9 @@ pub struct Parser:
     pub func remaining() -> usize:
         return self.source.length - self.token_start
 
-    pub mutating func take() -> str!:
+    pub func take() -> str!:
         if self.kind() == 0:
-            try self.fail("unexpected end of input")
+            try Parser.fail("unexpected end of input")
         let text = self.peek()
         try self.advance()
         return text
@@ -34,35 +34,35 @@ pub struct Parser:
             return self.kind() == text.bytes[0]
         return self.kind() == 1
 
-    pub mutating func accept(text: str) -> bool!:
+    pub func accept(text: str) -> bool!:
         if not self.at(text):
             return false
         try self.advance()
         return true
 
-    pub mutating func expect(text: str) -> !:
+    pub func expect(text: str) -> !:
         if not (try self.accept(text)):
-            try self.fail("unexpected token")
+            try Parser.fail("unexpected token")
 
     pub func fail(message: str) -> !:
         error(invalid, message)
 
-    pub mutating func name() -> str!:
+    pub func name() -> str!:
         if self.kind() != 1 and self.kind() != 2:
-            try self.fail("expected a name")
+            try Parser.fail("expected a name")
         return try self.take()
 
-    pub mutating func quoted() -> str!:
+    pub func quoted() -> str!:
         if self.kind() != 2:
-            try self.fail("expected a quoted string")
+            try Parser.fail("expected a quoted string")
         return try self.take()
 
-    pub mutating func path() -> str!:
+    pub func path() -> str!:
         if self.kind() != 4:
-            try self.fail("expected a <path>")
+            try Parser.fail("expected a <path>")
         return try self.take()
 
-    pub mutating func advance() -> !:
+    pub func advance() -> !:
         let bytes = self.source
         var pos = self.position
         while pos < bytes.length:
@@ -142,7 +142,7 @@ pub struct Parser:
             self.token = (str)bytes[start..<pos]
         self.position = pos
 
-    pub mutating func close():
+    pub func close():
         close_names(&self.decoded)
 
 pub func punctuation(byte: u8) -> bool:

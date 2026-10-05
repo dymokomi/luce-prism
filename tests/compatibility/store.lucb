@@ -59,7 +59,7 @@ func session_query_reads_tables_in_place() -> !:
     try tx.value().add("/box", "folder")
     for uid in 1..<(usize)6:
         var name: u8[32]
-        let path = try format(name, f"/box/m{uid}")
+        let path = try strings.format(name, f"/box/m{uid}")
         try tx.value().add(path, "message")
         let date = try prism.Value.integer(10 - (i64)uid)
         defer date.release()
@@ -67,8 +67,8 @@ func session_query_reads_tables_in_place() -> !:
         let subject = try prism.Value.text("unique" if uid == 3 else "hello")
         defer subject.release()
         try tx.value().set(path, "subject", subject)
-    discard(try tx.value().commit())
-    discard(try store.bake())
+    _ = try tx.value().commit()
+    _ = try store.bake()
     # A later commit stays unbaked; the query sees it as well.
     let late = try store.begin()
     defer late.release()
@@ -76,7 +76,7 @@ func session_query_reads_tables_in_place() -> !:
     let early = try prism.Value.integer(1)
     defer early.release()
     try late.value().set("/box/m6", "date", early)
-    discard(try late.value().commit())
+    _ = try late.value().commit()
     let snap = try store.snapshot()
     defer snap.release()
     var query = try snap.value().query("/box/*")
@@ -116,7 +116,7 @@ func note_row(context: void*?, row: const prism.RowView*) -> !:
     let date = row.integer("date") else -1
     let read = row.boolean("read") else false
     let subject = row.text("subject") else "-"
-    let text = try format(line, f"{row.path()}:{date}:{read}:{subject};")
+    let text = try strings.format(line, f"{row.path()}:{date}:{read}:{subject};")
     for i in 0..<text.length:
         seen.paths[seen.used + i] = text.bytes[i]
     seen.used += text.length
@@ -131,24 +131,24 @@ func each_child_reads_rows_in_place() -> !:
     try tx.value().add("/box", "folder")
     for uid in 1..<(usize)3:
         var name: u8[32]
-        let path = try format(name, f"/box/m{uid}")
+        let path = try strings.format(name, f"/box/m{uid}")
         try tx.value().add(path, "message")
         let date = try prism.Value.integer(100 + (i64)uid)
         defer date.release()
         try tx.value().set(path, "date", date)
         var label: u8[32]
-        let subject = try prism.Value.text(try format(label, f"hello {uid}"))
+        let subject = try prism.Value.text(try strings.format(label, f"hello {uid}"))
         defer subject.release()
         try tx.value().set(path, "subject", subject)
     let read = try prism.Value.boolean(true)
     defer read.release()
     try tx.value().set("/box/m2", "read", read)
-    discard(try tx.value().commit())
-    discard(try store.bake())
+    _ = try tx.value().commit()
+    _ = try store.bake()
     let late = try store.begin()
     defer late.release()
     try late.value().add("/box/m3", "message")
-    discard(try late.value().commit())
+    _ = try late.value().commit()
     let snap = try store.snapshot()
     defer snap.release()
     var seen = Seen()
@@ -173,7 +173,7 @@ func snapshot_does_not_see_later_commits() -> !:
     let tx = try store.begin()
     defer tx.release()
     try tx.value().add("/users", "directory")
-    discard(try tx.value().commit())
+    _ = try tx.value().commit()
     assert(not try snap.value().contains("/users"))
     let after = try store.snapshot()
     defer after.release()
@@ -204,7 +204,7 @@ func begin_reads_own_writes() -> !:
     let got = try tx.value().get("/notes", "text")
     defer got.release()
     assert(try got.value().text_at() == "hello")
-    discard(try tx.value().commit())
+    _ = try tx.value().commit()
     assert(try tx.value().contains("/notes"))
 
 func children_include_unbaked_adds() -> !:
@@ -214,7 +214,7 @@ func children_include_unbaked_adds() -> !:
     defer tx.release()
     try tx.value().add("/users", "directory")
     try tx.value().add("/users/alice", "directory")
-    discard(try tx.value().commit())
+    _ = try tx.value().commit()
     let snap = try store.snapshot()
     defer snap.release()
     let kids = try snap.value().children("/users")
@@ -229,15 +229,15 @@ func delete_then_add_child_misses() -> !:
     defer seed.release()
     try seed.value().add("/a", "directory")
     try seed.value().add("/a/b", "file")
-    discard(try seed.value().commit())
+    _ = try seed.value().commit()
     let del = try store.begin()
     defer del.release()
     try del.value().remove("/a")
-    discard(try del.value().commit())
+    _ = try del.value().commit()
     let add = try store.begin()
     defer add.release()
     try add.value().add("/a/b", "file")
-    discard(try add.value().commit())
+    _ = try add.value().commit()
     let snap = try store.snapshot()
     defer snap.release()
     assert(not try snap.value().contains("/a"))
@@ -255,8 +255,8 @@ func disjoint_commits_succeed() -> !:
     defer bob.release()
     try alice.value().add("/a", "file")
     try bob.value().add("/b", "file")
-    discard(try alice.value().commit())
-    discard(try bob.value().commit())
+    _ = try alice.value().commit()
+    _ = try bob.value().commit()
     let snap = try store.snapshot()
     defer snap.release()
     assert(try snap.value().contains("/a") and try snap.value().contains("/b"))
@@ -270,13 +270,13 @@ func alice_bob_conflict_after_bake() -> !:
     defer bob.release()
     try alice.value().add("/a", "file")
     try bob.value().add("/a", "file")
-    discard(try alice.value().commit())
-    discard(try store.bake())
+    _ = try alice.value().commit()
+    _ = try store.bake()
     var collided = false
-    discard(bob.value().commit() catch failure:
+    _ = bob.value().commit() catch failure:
         assert(failure.code == prism.conflict)
         collided = true
-        recover -1)
+        recover -1
     assert(collided)
     let stats = try store.statistics()
     assert(stats.conflicted_commits >= 1)
@@ -293,7 +293,7 @@ func bake_leaves_snapshot_unchanged() -> !:
     let value = try prism.Value.number(1.0)
     defer value.release()
     try tx.value().set("/keep", "x", value)
-    discard(try tx.value().commit())
+    _ = try tx.value().commit()
     let snap = try store.snapshot()
     defer snap.release()
     let later = try store.begin()
@@ -301,8 +301,8 @@ func bake_leaves_snapshot_unchanged() -> !:
     let nine = try prism.Value.number(9.0)
     defer nine.release()
     try later.value().set("/keep", "x", nine)
-    discard(try later.value().commit())
-    discard(try store.bake())
+    _ = try later.value().commit()
+    _ = try store.bake()
     let old = try snap.value().get("/keep", "x")
     defer old.release()
     assert(try old.value().number_at() == 1.0)
@@ -336,7 +336,7 @@ func set_limit_refuses_below_resident() -> !:
     let tx = try store.begin()
     defer tx.release()
     try tx.value().add("/a", "file")
-    discard(try tx.value().commit())
+    _ = try tx.value().commit()
     let stats = try store.statistics()
     assert(stats.resident > 0)
     var refused = false
@@ -384,11 +384,11 @@ func mount_is_a_separate_identity() -> !:
     let root = try store.begin()
     defer root.release()
     try root.value().add("/users", "directory")
-    discard(try root.value().commit())
+    _ = try root.value().commit()
     let media = try store.begin_identity("media.prism")
     defer media.release()
     try media.value().add("/photos", "directory")
-    discard(try media.value().commit())
+    _ = try media.value().commit()
     let root_snap = try store.snapshot()
     defer root_snap.release()
     assert(try root_snap.value().contains("/users"))
@@ -421,7 +421,7 @@ func document_facade_sees_unbaked() -> !:
     let value = try prism.Value.integer(2)
     defer value.release()
     try tx.value().set("/row", "x", value)
-    discard(try tx.value().commit())
+    _ = try tx.value().commit()
     let snap = try store.snapshot()
     defer snap.release()
     let doc = try snap.value().document()
@@ -442,8 +442,8 @@ func persist_db() -> str:
 
 func reset_persist() -> !:
     case_number += 1
-    persist_path = try format(persist_buffer, f"{scratch_root}/persist-{case_number}")
-    database_path = try format(database_buffer, f"{persist_path}/root.db")
+    persist_path = try strings.format(persist_buffer, f"{scratch_root}/persist-{case_number}")
+    database_path = try strings.format(database_buffer, f"{persist_path}/root.db")
     try files.ensure_directory(persist_dir())
 
 func persist_budget_counts_chunked_keys() -> !:
@@ -460,12 +460,12 @@ func persist_reopen_sees_unbaked_commit() -> !:
     let text = try prism.Value.text("hello")
     defer text.release()
     try tx.value().set("/notes", "text", text)
-    discard(try tx.value().commit())
+    _ = try tx.value().commit()
     tx.release()
     try first.value().mount("mail")
     let mail = try first.value().begin_identity("mail")
     try mail.value().add("/inbox", "folder")
-    discard(try mail.value().commit())
+    _ = try mail.value().commit()
     mail.release()
     first.release()
     let second = try prism.Store.open(persist_db())
@@ -489,7 +489,7 @@ func persist_schema_only_root_then_commit() -> !:
     let tx = try second.value().begin()
     defer tx.release()
     try tx.value().add("/users", "directory")
-    discard(try tx.value().commit())
+    _ = try tx.value().commit()
     let snap = try second.value().snapshot()
     defer snap.release()
     assert(try snap.value().contains("/users"))
@@ -502,9 +502,9 @@ func persist_bake_reclaim_survives_reopen() -> !:
     let value = try prism.Value.number(3.0)
     defer value.release()
     try tx.value().set("/keep", "x", value)
-    discard(try tx.value().commit())
+    _ = try tx.value().commit()
     tx.release()
-    discard(try first.value().bake())
+    _ = try first.value().bake()
     first.release()
     let second = try prism.Store.open(persist_db())
     defer second.release()
@@ -519,7 +519,7 @@ func dump_dir() -> str:
 
 func reset_dump() -> !:
     case_number += 1
-    dump_path = try format(dump_buffer, f"{scratch_root}/dump-{case_number}")
+    dump_path = try strings.format(dump_buffer, f"{scratch_root}/dump-{case_number}")
     try files.ensure_directory(dump_dir())
 
 func seed_photos(store: prism.Store*) -> !:
@@ -535,14 +535,14 @@ func seed_photos(store: prism.Store*) -> !:
     let note = try prism.Value.text("hi")
     defer note.release()
     try root.value().set("/users/alice/[0]", "text", note)
-    discard(try root.value().commit())
+    _ = try root.value().commit()
     let media = try store.begin_identity("media.prism")
     defer media.release()
     try media.value().add("/vacation", "file")
     let payload = try prism.Value.array(prism.DType.uint8, [4], b"JPEG")
     defer payload.release()
     try media.value().set("/vacation", "bytes", payload)
-    discard(try media.value().commit())
+    _ = try media.value().commit()
 
 func find_entry(listing: interop.Reference[prism.Entries], name: str) -> usize!:
     var i: usize = 0
@@ -592,7 +592,7 @@ func fs_make_directory_creates_parents() -> !:
     let tx = try store.begin()
     defer tx.release()
     try tx.value().add("/tmp", "file")
-    discard(try tx.value().commit())
+    _ = try tx.value().commit()
     store.make_directory("/tmp") catch failure:
         assert(failure.code == prism.invalid)
         refused = true
@@ -689,7 +689,7 @@ func large_value_lives_in_an_extent() -> !:
     let value = try marked_blob(size, 7)
     defer value.release()
     try tx.value().set("/blob", "bytes", value)
-    discard(try tx.value().commit())
+    _ = try tx.value().commit()
     tx.release()
     let unbaked = try first.value().snapshot()
     let early = try unbaked.value().get("/blob", "bytes")
@@ -704,7 +704,7 @@ func large_value_lives_in_an_extent() -> !:
     assert(again.value().bytes().length == size and again.value().bytes()[0] == 7)
     again.release()
     reopened.release()
-    discard(try second.value().bake(wait_ms = 1000))
+    _ = try second.value().bake(wait_ms = 1000)
     second.release()
     let third = try prism.Store.open(persist_db())
     defer third.release()
@@ -727,19 +727,19 @@ func replaced_extents_are_swept_on_open() -> !:
         let value = try marked_blob(8192, (u8)(round + 1))
         try tx.value().set("/blob", "bytes", value)
         value.release()
-        discard(try tx.value().commit())
+        _ = try tx.value().commit()
         tx.release()
-        discard(try first.value().bake(wait_ms = 1000))
+        _ = try first.value().bake(wait_ms = 1000)
     first.release()
     var name_buffer: u8[2048]
-    let old_extent = try format(name_buffer, f"{persist_db()}.ext/root.1.0")
+    let old_extent = try strings.format(name_buffer, f"{persist_db()}.ext/root.1.0")
     assert(try file_exists(old_extent))
     let second = try prism.Store.open(persist_db())
     defer second.release()
     var again_buffer: u8[2048]
-    assert(not try file_exists(try format(again_buffer, f"{persist_db()}.ext/root.1.0")))
+    assert(not try file_exists(try strings.format(again_buffer, f"{persist_db()}.ext/root.1.0")))
     var kept_buffer: u8[2048]
-    assert(try file_exists(try format(kept_buffer, f"{persist_db()}.ext/root.2.0")))
+    assert(try file_exists(try strings.format(kept_buffer, f"{persist_db()}.ext/root.2.0")))
     let snap = try second.value().snapshot()
     defer snap.release()
     let value = try snap.value().get("/blob", "bytes")
@@ -759,7 +759,7 @@ func file_size(path: str) -> i64!:
     return (try files.metadata((c.str)name)).size
 
 func marked_blob(count: usize, mark: u8) -> interop.Reference[prism.Value]!:
-    let payload = try alloc u8[count] in memory.heap
+    let payload = try new u8[count] --- in memory.heap
     defer free(payload) in memory.heap
     payload[0] = mark
     payload[count - 1] = mark
@@ -775,11 +775,11 @@ func write_baked_file(store: prism.Store*, path: str, mark: u8, bytes: usize) ->
         tx.release()
         error(failure.code, failure.message)
     value.release()
-    discard(tx.value().commit() catch failure:
+    _ = tx.value().commit() catch failure:
         tx.release()
-        error(failure.code, failure.message))
+        error(failure.code, failure.message)
     tx.release()
-    discard(try store.bake())
+    _ = try store.bake()
 
 func vm_evicts_baked_payloads_and_faults() -> !:
     try reset_persist()

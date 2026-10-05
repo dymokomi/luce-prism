@@ -4,6 +4,7 @@ from codecs.common import get_text, get_number, type_of
 from storage import Buffer
 from model import DocumentData
 from types import invalid, limit_exceeded
+import strings
 
 func indent(output: Buffer*, count: usize) -> !:
     for i in 0..<count:
@@ -112,7 +113,7 @@ func blocks(doc: const DocumentData*, parent: str, output: Buffer*, spaces: usiz
             let level = get_number(doc, child, "level", 1.0)
             let number = (i32)(level if level >= 1.0 else 1.0)
             var scratch: u8[32]
-            let tag = try format(scratch, f"h{number}")
+            let tag = try strings.format(scratch, f"h{number}")
             try indent(output, spaces)
             try output.byte('<')
             try output.text(tag)

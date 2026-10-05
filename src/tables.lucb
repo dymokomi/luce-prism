@@ -46,7 +46,7 @@ pub struct Element:
     pub func init():
         return
 
-    pub mutating func close():
+    pub func close():
         self.path.close()
         self.kind.close()
         for i in 0..<self.properties.count:
@@ -57,7 +57,7 @@ pub struct Element:
         self.metadata.close()
 
 pub func hold_element(element: Element*):
-    discard(element.references.add(1, .relaxed))
+    _ = element.references.add(1, .relaxed)
 
 pub func drop_element(element: Element*):
     if element.references.sub(1, .acq_rel) == 1:
@@ -88,11 +88,11 @@ pub struct ChildList:
     pub func init():
         return
 
-    pub mutating func close():
+    pub func close():
         close_names(&self.paths)
 
 pub func hold_children(children: ChildList*):
-    discard(children.references.add(1, .relaxed))
+    _ = children.references.add(1, .relaxed)
 
 pub func drop_children(children: ChildList*):
     if children.references.sub(1, .acq_rel) == 1:
@@ -113,13 +113,13 @@ pub struct Asset:
     pub func init():
         return
 
-    pub mutating func close():
+    pub func close():
         self.path.close()
         self.mime.close()
         self.bytes.close()
 
 pub func hold_asset(asset: Asset*):
-    discard(asset.references.add(1, .relaxed))
+    _ = asset.references.add(1, .relaxed)
 
 pub func drop_asset(asset: Asset*):
     if asset.references.sub(1, .acq_rel) == 1:
@@ -144,7 +144,7 @@ pub struct Node:
 
 pub func hold(node: Node*?) -> Node*?:
     if let n = node:
-        discard(n.references.add(1, .relaxed))
+        _ = n.references.add(1, .relaxed)
     return node
 
 pub func drop(node: Node*?):
@@ -187,8 +187,8 @@ func make(key: Buffer, left: Node*?, right: Node*?) -> Node*!:
     out.right = right
     out.height = h + 1
     out.count = total
-    discard(hold(left))
-    discard(hold(right))
+    _ = hold(left)
+    _ = hold(right)
     out.references.store(1, .relaxed)
     return out
 
@@ -274,7 +274,7 @@ pub func put(root: Node*?, node: Node*) -> Node*!:
         let right = try put(n.right, node)
         defer drop(right)
         return try balanced(n, n.left, right)
-    discard(hold(node))
+    _ = hold(node)
     return node
 
 pub func remove(root: Node*?, key: const u8[]) -> Node*?!:
@@ -335,7 +335,7 @@ pub func valid(tables: const Tables*) -> bool:
     return validate(tables.by_path) and validate(tables.by_parent) and validate(tables.by_id) and validate(tables.connections) and validate(tables.assets)
 
 pub func hold_tables(tables: Tables*):
-    discard(tables.references.add(1, .relaxed))
+    _ = tables.references.add(1, .relaxed)
 
 pub func drop_tables(tables: Tables*):
     if tables.references.sub(1, .acq_rel) == 1:
@@ -732,9 +732,9 @@ func build_tables(data: const DocumentData*, moving: DocumentData*?) -> Tables*!
     defer built.close()
     # Built frees what has a length, so an empty document allocates nothing.
     if count > 0:
-        built.paths = try alloc Node*[count] in memory.heap
-        built.ids = try alloc Node*[count] in memory.heap
-        built.scratch = try alloc Node*[count] in memory.heap
+        built.paths = try new Node*[count] --- in memory.heap
+        built.ids = try new Node*[count] --- in memory.heap
+        built.scratch = try new Node*[count] --- in memory.heap
     for row in 0..<count:
         let element = &data.elements.items[row]
         var node: Node*? = none
@@ -780,7 +780,7 @@ struct Built:
     var id_count: usize
     var scratch: Node*[]
 
-    mutating func close():
+    func close():
         for row in 0..<self.path_count:
             drop(self.paths[row])
         for row in 0..<self.id_count:
@@ -795,9 +795,9 @@ func children_tree(data: const DocumentData*, built: Built*) -> Node*?!:
     let count = data.elements.count
     if count == 0:
         return none
-    let rows = try alloc usize[count] in memory.heap
+    let rows = try new usize[count] --- in memory.heap
     defer free(rows) in memory.heap
-    let spare = try alloc usize[count] in memory.heap
+    let spare = try new usize[count] --- in memory.heap
     defer free(spare) in memory.heap
     for row in 0..<count:
         rows[row] = row

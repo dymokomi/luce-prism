@@ -55,7 +55,7 @@ pub struct JoinResult:
         let row = (try self.at(index)).right else return none
         return try self.right_rows.row(row)
 
-    pub mutating func close():
+    pub func close():
         self.left_rows.close()
         self.right_rows.close()
         self.pairs.close()
@@ -84,7 +84,7 @@ pub func join_on(left: interop.Reference[Query], left_field: str, right: interop
         if let result = try key(&right_rows.items[row], right_field):
             var value = result
             defer value.close()
-            discard(try index.add(value.view(), row))
+            _ = try index.add(value.view(), row)
     var result = JoinResult()
     errdefer result.close()
     for element in left_rows.span():

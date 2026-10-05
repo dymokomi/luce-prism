@@ -21,7 +21,7 @@ pub struct Sample:
         output.right = try copy_list(&self.right)
         return output
 
-    pub mutating func close():
+    pub func close():
         self.value.close()
         self.left.close()
         self.right.close()
@@ -44,7 +44,7 @@ pub struct Property:
             try output.samples.push(try sample.copy())
         return output
 
-    pub mutating func close():
+    pub func close():
         self.name.close()
         self.value.close()
         self.type_name.close()

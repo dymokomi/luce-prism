@@ -166,14 +166,14 @@ func seed_photos(store: prism.Store*) -> !:
     try root.value().add("/users/alice", "directory")
     try root.value().add("/users/alice/photos", "link")
     try root.value().set_metadata("/users/alice/photos", "reference", "media.prism")
-    discard(try root.value().commit())
+    _ = try root.value().commit()
     let media = try store.begin_identity("media.prism")
     defer media.release()
     try media.value().add("/vacation", "file")
     let payload = try prism.Value.array(prism.DType.uint8, [4], b"JPEG")
     defer payload.release()
     try media.value().set("/vacation", "bytes", payload)
-    discard(try media.value().commit())
+    _ = try media.value().commit()
 
 func lookup_photos_without_reference_path_is_mount_root() -> !:
     var store = try prism.Store()
@@ -248,12 +248,12 @@ func lookup_detects_identity_cycle() -> !:
     defer root.release()
     try root.value().add("/loop", "link")
     try root.value().set_metadata("/loop", "reference", "media.prism")
-    discard(try root.value().commit())
+    _ = try root.value().commit()
     let media = try store.begin_identity("media.prism")
     defer media.release()
     try media.value().add("/back", "link")
     try media.value().set_metadata("/back", "reference", "root")
-    discard(try media.value().commit())
+    _ = try media.value().commit()
     var cycled = false
     let result: interop.Reference[prism.Look]? = store.lookup("/loop/back/x") catch failure:
         assert(failure.code == prism.invalid)
@@ -276,7 +276,7 @@ func lookup_resolves_host_name_metadata() -> !:
     let payload = try prism.Value.text("hi")
     defer payload.release()
     try tx.value().set("/users/alice/[0]", "text", payload)
-    discard(try tx.value().commit())
+    _ = try tx.value().commit()
     let look = try store.lookup("/users/alice/notes.txt")
     defer look.release()
     assert(look.value().identity() == "root")
@@ -292,7 +292,7 @@ func lookup_through_non_directory_fails() -> !:
     let tx = try store.begin()
     defer tx.release()
     try tx.value().add("/notes", "file")
-    discard(try tx.value().commit())
+    _ = try tx.value().commit()
     var refused = false
     let result: interop.Reference[prism.Look]? = store.lookup("/notes/x") catch failure:
         assert(failure.code == prism.invalid)

@@ -18,12 +18,12 @@ pub struct Paths:
             error(invalid, "Prism path index is out of bounds")
         return self.paths.items[index].view()
 
-    pub mutating func append(path: str) -> !:
+    pub func append(path: str) -> !:
         var owned = try text_copy(path)
         errdefer owned.close()
         try self.paths.push(owned)
 
-    pub mutating func close():
+    pub func close():
         close_names(&self.paths)
 
 pub let paths_type = interop.Type[Paths]("Prism paths", Paths.close, closeable = true)

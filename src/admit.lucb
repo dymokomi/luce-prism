@@ -32,7 +32,7 @@ pub struct Queue:
     var busy_returns: i64
     var timeouts: i64
 
-    mutating func remove(index: usize):
+    func remove(index: usize):
         let previous = self.slots[index].previous
         let next = self.slots[index].next
         if previous == 0:
@@ -46,7 +46,7 @@ pub struct Queue:
         self.slots[index] = Slot()
         self.count -= 1
 
-    pub mutating func enter(wait_ms: i64 = 0) -> !:
+    pub func enter(wait_ms: i64 = 0) -> !:
         if wait_ms < 0 or wait_ms > maximum_wait_ms:
             error(invalid, "writer wait must be in 0-60000 milliseconds")
         let started = time.now()
@@ -89,13 +89,13 @@ pub struct Queue:
             self.mutex.unlock()
             thread.sleep(1)
 
-    pub mutating func leave():
+    pub func leave():
         self.mutex.lock()
         assert(self.held)
         self.held = false
         self.mutex.unlock()
 
-    pub mutating func statistics() -> Statistics:
+    pub func statistics() -> Statistics:
         self.mutex.lock()
         defer self.mutex.unlock()
         return Statistics((i64)self.count, (i64)self.peak, self.enqueued, self.busy_returns, self.timeouts)

@@ -5,6 +5,7 @@ from authoring.paths import Paths
 from storage import Buffer, List, text_copy, close_names
 from path import is_descendant, element_path, parent_path, path_name, joined, valid_path
 from types import invalid
+import strings
 
 pub func reparent(path: str, old: str, replacement: str) -> Buffer!:
     if not is_descendant(path, old):
@@ -29,11 +30,11 @@ pub func extract(doc: const DocumentData*, path: str) -> DocumentData!:
     defer keep.close()
     for element in doc.elements.span():
         if is_descendant(element.path.view(), root):
-            discard(try keep.add(element.path.view(), 0))
+            _ = try keep.add(element.path.view(), 0)
     # Preserve the original one-pass inclusion of sources bound into the subtree.
     for connection in doc.connections.span():
         if keep.find(element_path(connection.key.view())) != none:
-            discard(try keep.add(element_path(connection.value.view()), 0))
+            _ = try keep.add(element_path(connection.value.view()), 0)
     var output = DocumentData()
     errdefer output.close()
     for element in doc.elements.span():
@@ -64,11 +65,11 @@ struct Mapping:
     var index: Index
     var paths: List[Buffer]
 
-    mutating func add(source: str, destination: str) -> !:
+    func add(source: str, destination: str) -> !:
         try self.paths.reserve(self.paths.count + 1)
         var owned = try text_copy(destination)
         errdefer owned.close()
-        discard(try self.index.add(source, self.paths.count))
+        _ = try self.index.add(source, self.paths.count)
         try self.paths.push(owned)
 
     func find(source: str) -> str?:
@@ -83,7 +84,7 @@ struct Mapping:
         try result.put(source.bytes[base.length..])
         return result
 
-    mutating func close():
+    func close():
         self.index.close()
         close_names(&self.paths)
 
@@ -112,9 +113,9 @@ pub func instantiate(doc: DocumentData*, fragment: const DocumentData*, parent: 
             defer destination.close()
             if suffix > 0:
                 var scratch: u8[32]
-                try destination.text(try format(scratch, f"_{suffix}"))
+                try destination.text(try strings.format(scratch, f"_{suffix}"))
             if not doc.contains(destination.view()) and taken.find(destination.view()) == none:
-                discard(try taken.add(destination.view(), 0))
+                _ = try taken.add(destination.view(), 0)
                 try mapping.add(element.path.view(), destination.view())
                 try roots.append(destination.view())
                 break

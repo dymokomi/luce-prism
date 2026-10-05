@@ -16,7 +16,7 @@ struct Rule:
     var required: bool
     var unique: bool
 
-    mutating func close():
+    func close():
         self.type_name.close()
         self.field.close()
 
@@ -39,7 +39,7 @@ pub struct Violations:
             error(invalid, "violation index is out of bounds")
         return self.entries.items[index].value.view()
 
-    mutating func append(path: str, parts: const str[]) -> !:
+    func append(path: str, parts: const str[]) -> !:
         var entry: Pair
         errdefer entry.close()
         entry.key = try text_copy(path)
@@ -47,7 +47,7 @@ pub struct Violations:
             try entry.value.text(part)
         try self.entries.push(entry)
 
-    pub mutating func close():
+    pub func close():
         for i in 0..<self.entries.count:
             self.entries.items[i].close()
         self.entries.close()
@@ -64,7 +64,7 @@ pub struct Schema:
     pub func init():
         return
 
-    pub mutating func add_field(type_name: str, field: str, dtype: DType, required: bool = false, unique: bool = false) -> !:
+    pub func add_field(type_name: str, field: str, dtype: DType, required: bool = false, unique: bool = false) -> !:
         var rule = Rule(dtype = dtype, required = required, unique = unique)
         errdefer rule.close()
         rule.type_name = try text_copy(type_name)
@@ -103,7 +103,7 @@ pub struct Schema:
                     else:
                         var copied = try text_copy(element.path.view())
                         errdefer copied.close()
-                        discard(try seen.items[index].add(key.view(), paths.count))
+                        _ = try seen.items[index].add(key.view(), paths.count)
                         try paths.push(copied)
                         copied = Buffer()
 
@@ -115,7 +115,7 @@ pub struct Schema:
         var paths: List[Buffer]
         defer close_names(&paths)
         for i in 0..<self.rules.count:
-            discard(try by_type.add(self.rules.items[i].type_name.view(), i))
+            _ = try by_type.add(self.rules.items[i].type_name.view(), i)
             try seen.push(Index())
         var result = Violations()
         errdefer result.close()
@@ -134,7 +134,7 @@ pub struct Schema:
         result = Violations()
         return try own_violations(owned)
 
-    pub mutating func close():
+    pub func close():
         for i in 0..<self.rules.count:
             self.rules.items[i].close()
         self.rules.close()

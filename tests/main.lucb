@@ -167,7 +167,7 @@ struct Tracker: memory.Allocator:
     var live: usize
     var remaining: usize?
 
-    pub mutating func allocate(size: usize, alignment: usize) -> u8[]?:
+    pub func allocate(size: usize, alignment: usize) -> u8[]?:
         if let remaining = self.remaining:
             if remaining == 0:
                 return none
@@ -176,10 +176,10 @@ struct Tracker: memory.Allocator:
         self.live += 1
         return block
 
-    pub mutating func resize(block: u8[], size: usize) -> bool:
+    pub func resize(block: u8[], size: usize) -> bool:
         return self.upstream.resize(block, size)
 
-    pub mutating func release(block: u8[]):
+    pub func release(block: u8[]):
         assert(self.live > 0)
         self.live -= 1
         self.upstream.release(block)

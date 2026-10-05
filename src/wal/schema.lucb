@@ -78,21 +78,21 @@ pub struct Migration:
     pub func contains(key: str) -> bool!:
         return try self.get(key) != none
 
-    pub mutating func put(key: str, value: const u8[], only_new: bool = false) -> !:
+    pub func put(key: str, value: const u8[], only_new: bool = false) -> !:
         if self.schema_key(key): error(invalid, "cannot mutate schema metadata key")
         try self.transaction.put(key, value, only_new)
 
-    pub mutating func remove(key: str) -> !:
+    pub func remove(key: str) -> !:
         if self.schema_key(key): error(invalid, "cannot mutate schema metadata key")
         try self.transaction.remove(key)
 
-    pub mutating func commit(wait_ms: i64 = 0) -> u64!:
+    pub func commit(wait_ms: i64 = 0) -> u64!:
         let generation = try self.transaction.commit(wait_ms)
         self.key.close()
         self.metadata.close()
         return generation
 
-    pub mutating func close():
+    pub func close():
         self.transaction.close()
         self.key.close()
         self.metadata.close()

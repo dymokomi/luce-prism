@@ -8,7 +8,7 @@ pub struct Conflict:
     pub var path: Buffer
     pub var detail: Buffer
 
-    pub mutating func close():
+    pub func close():
         self.path.close()
         self.detail.close()
 

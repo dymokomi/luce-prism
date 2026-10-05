@@ -29,7 +29,7 @@ pub struct FieldIndex:
             for element in view.view_data().elements.span():
                 try self.index_row(&element, field)
 
-    mutating func index_row(element: const Element*, field: str) -> !:
+    func index_row(element: const Element*, field: str) -> !:
         let position = element.property(field) else return
         var value = try resolve_property(&element.properties.items[position], 0.0)
         defer value.close()
@@ -38,7 +38,7 @@ pub struct FieldIndex:
             defer key.close()
             var owned = try element.copy()
             errdefer owned.close()
-            discard(try self.index.add(key.view(), self.rows.count))
+            _ = try self.index.add(key.view(), self.rows.count)
             try self.rows.push(owned)
             owned = Element()
 
@@ -65,7 +65,7 @@ pub struct FieldIndex:
             return self.index.find(key.view()) != none
         return false
 
-    pub mutating func close():
+    pub func close():
         close_elements(&self.rows)
         self.index.close()
 

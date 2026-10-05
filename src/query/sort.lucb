@@ -10,7 +10,7 @@ struct Key:
     var text: Buffer
     var number: f64
 
-    mutating func close():
+    func close():
         self.text.close()
 
 func before(a: const Key*, b: const Key*) -> bool:

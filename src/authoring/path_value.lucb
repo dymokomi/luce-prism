@@ -75,7 +75,7 @@ pub struct Path:
             hash_code = (hash_code ^ (u32)byte) *% 16777619
         return (usize)hash_code
 
-    pub mutating func close():
+    pub func close():
         self.data.close()
 
 pub let path_type = interop.Type[Path]("Prism path", Path.close, closeable = true)

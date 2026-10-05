@@ -7,6 +7,7 @@
 from luce_prism import prism
 import interop
 import time
+import strings
 
 let messages: usize = 50000
 
@@ -37,23 +38,23 @@ func write(path: str) -> !:
         for _ in 0..<1000:
             uid += 1
             var name: u8[64]
-            let element = try format(name, f"/inbox/m{uid}")
+            let element = try strings.format(name, f"/inbox/m{uid}")
             try tx.value().add(element, "message")
             try put_integer(tx, element, "uid", (i64)uid)
             try put_integer(tx, element, "flags", (i64)(uid % 4))
             try put_integer(tx, element, "date", 1790000000 + (i64)uid * 37 % 100000)
             try put_integer(tx, element, "size", 2048 + (i64)uid % 9000)
             var sender: u8[64]
-            try put_text(tx, element, "sender", try format(sender, f"Robot {uid % 97} <robot{uid % 97}@example.net>"))
+            try put_text(tx, element, "sender", try strings.format(sender, f"Robot {uid % 97} <robot{uid % 97}@example.net>"))
             var subject: u8[96]
-            try put_text(tx, element, "subject", try format(subject, f"Report #{uid}: nightly build of luce {uid % 13}"))
+            try put_text(tx, element, "subject", try strings.format(subject, f"Report #{uid}: nightly build of luce {uid % 13}"))
             var id: u8[96]
-            try put_text(tx, element, "message_id", try format(id, f"<{uid}.nightly@example.net>"))
+            try put_text(tx, element, "message_id", try strings.format(id, f"<{uid}.nightly@example.net>"))
             try put_text(tx, element, "preview", "Build finished. Nothing to see here; all tests passed on every platform and the artifacts are uploaded.")
-        discard(try tx.value().commit())
+        _ = try tx.value().commit()
     print(f"insert {messages} in commits of 1000: {since(start)} ms")
     start = time.now()
-    discard(try store.value().bake_identity("acct"))
+    _ = try store.value().bake_identity("acct")
     print(f"bake: {since(start)} ms")
     start = time.now()
     store.value().close()

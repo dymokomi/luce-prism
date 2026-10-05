@@ -7,7 +7,7 @@ pub struct Bucket:
     pub var key: Buffer
     pub var rows: List[usize]
 
-    pub mutating func close():
+    pub func close():
         self.key.close()
         self.rows.close()
 
@@ -24,7 +24,7 @@ pub struct Pending:
     pub var row: usize
     pub var bucket: Bucket
 
-    pub mutating func close():
+    pub func close():
         self.bucket.close()
 
 pub struct Index:
@@ -42,13 +42,13 @@ pub struct Index:
             position = (position + 1) & (self.slots.length - 1)
         return none
 
-    mutating func capacity(count: usize) -> !:
+    func capacity(count: usize) -> !:
         if count <= self.slots.length // 2:
             return
         if count > 1048576:
             error(limit_exceeded, "Prism index key limit exceeded")
         let size = self.slots.length * 2 if self.slots.length > 0 else 16
-        let slots = try alloc usize[size] in memory.heap
+        let slots = try new usize[size] --- in memory.heap
         for i in 0..<slots.length:
             slots[i] = 0
         for index in 0..<self.buckets.count:
@@ -60,11 +60,11 @@ pub struct Index:
             free(self.slots) in memory.heap
         self.slots = slots
 
-    pub mutating func add(key: str, row: usize) -> usize!:
+    pub func add(key: str, row: usize) -> usize!:
         var pending = try self.prepare(key, row)
         return self.commit(&pending)
 
-    pub mutating func prepare(key: str, row: usize) -> Pending!:
+    pub func prepare(key: str, row: usize) -> Pending!:
         if let index = self.find(key):
             try self.buckets.items[index].rows.reserve(self.buckets.items[index].rows.count + 1)
             return Pending(existing = index, row = row)
@@ -76,7 +76,7 @@ pub struct Index:
         try bucket.rows.push(row)
         return Pending(row = row, bucket = bucket)
 
-    pub mutating func commit(pending: Pending*) -> usize:
+    pub func commit(pending: Pending*) -> usize:
         if let index = pending.existing:
             let rows = &self.buckets.items[index].rows
             rows.items[rows.count] = pending.row
@@ -92,7 +92,7 @@ pub struct Index:
         self.slots[position] = index + 1
         return index
 
-    pub mutating func close():
+    pub func close():
         for i in 0..<self.buckets.count:
             self.buckets.items[i].close()
         self.buckets.close()

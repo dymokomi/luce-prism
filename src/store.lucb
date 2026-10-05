@@ -25,6 +25,7 @@ from path import is_descendant, parent_path, path_name, require_element, valid_n
 from storage import Buffer, List, Reader, close_names, copied, has_name, text_copy
 from types import DType, closed, conflict, invalid, limit_exceeded, max_bytes, max_depth, max_items, missing, unsupported
 from value import Value, ValueData, Locator, own_value, own_locator, read_value, is_stub
+import strings
 
 pub let max_ops: usize = 65536
 pub let max_views: usize = 1024
@@ -38,7 +39,7 @@ pub struct FrozenLayer:
         return
 
 func hold_frozen(layer: FrozenLayer*):
-    discard(layer.references.add(1, .relaxed))
+    _ = layer.references.add(1, .relaxed)
 
 func drop_frozen(layer: FrozenLayer*):
     if layer.references.sub(1, .acq_rel) == 1:
@@ -127,7 +128,7 @@ pub struct Inner:
         return
 
 func hold_inner(inner: Inner*):
-    discard(inner.references.add(1, .relaxed))
+    _ = inner.references.add(1, .relaxed)
 
 func drop_inner(inner: Inner*):
     if inner.references.sub(1, .acq_rel) == 1:
@@ -211,7 +212,7 @@ struct PoolKey:
     var path: Buffer
     var name: Buffer
 
-    mutating func close():
+    func close():
         self.identity.close()
         self.path.close()
         self.name.close()
@@ -291,7 +292,7 @@ func register_tables(inner: Inner*, identity: str, owned: tables.Tables*):
                 for prop in element.properties.span():
                     if not is_stub(&prop.value) and prop.value.payload.used >= pool.min_paged:
                         touch_pool(inner, identity, element.path.view(), prop.name.view(), prop.value.payload.used) catch failure:
-                            discard(failure)
+                            _ = failure
         i += 1
     owned.bytes = tables.payload_bytes(owned)
 
@@ -389,7 +390,7 @@ func fault_property(inner: Inner*, identity: str, path: str, name: str, value: V
     if not is_stub(value):
         if value.payload.used > 0:
             touch_pool(inner, identity, path, name, value.payload.used) catch failure:
-                discard(failure)
+                _ = failure
         return
     let journal = inner.persist else error(missing, "Prism payload is not resident")
     let place = value.locator else error(missing, "Prism payload is not resident")
@@ -401,14 +402,14 @@ func fault_property(inner: Inner*, identity: str, path: str, name: str, value: V
     value.payload = blob
     record_fault(inner, size)
     touch_pool(inner, identity, path, name, size) catch failure:
-        discard(failure)
+        _ = failure
 
 func adjust_table_charge(inner: Inner*, new_bytes: usize) -> !:
     inner.pool_lock.lock()
     defer inner.pool_lock.unlock()
     if new_bytes > inner.table_charge:
         let added = new_bytes - inner.table_charge
-        discard(inner.resident.add((u64)added, .acq_rel))
+        _ = inner.resident.add((u64)added, .acq_rel)
         inner.table_charge = new_bytes
         return
     if inner.table_charge > new_bytes:
@@ -824,7 +825,7 @@ pub struct Session:
         paths = Paths()
         return try own_paths(owned)
 
-    pub mutating func add(path: str, type_name: str, override: bool = false) -> !:
+    pub func add(path: str, type_name: str, override: bool = false) -> !:
         try self.ensure_write()
         if self.remote != none or self.tls_link != none:
             try rpc_add(self.remote, self.tls_link, self.token, path, type_name, override)
@@ -842,7 +843,7 @@ pub struct Session:
         try self.private.put(path, delta.Cell.element, "", op)
         self.charged += bytes
 
-    pub mutating func set(path: str, name: str, value: interop.Reference[Value], type_name: str = "") -> !:
+    pub func set(path: str, name: str, value: interop.Reference[Value], type_name: str = "") -> !:
         try self.ensure_write()
         if self.remote != none or self.tls_link != none:
             try rpc_set(self.remote, self.tls_link, self.token, path, name, value)
@@ -864,7 +865,7 @@ pub struct Session:
         try self.private.put(path, delta.Cell.property, name, op)
         self.charged += bytes
 
-    pub mutating func set_metadata(path: str, key: str, value: str) -> !:
+    pub func set_metadata(path: str, key: str, value: str) -> !:
         try self.ensure_write()
         if self.remote != none or self.tls_link != none:
             try rpc_set_meta(self.remote, self.tls_link, self.token, path, key, value)
@@ -881,7 +882,7 @@ pub struct Session:
         try self.private.put(path, delta.Cell.metadata, key, op)
         self.charged += bytes
 
-    pub mutating func remove(path: str) -> !:
+    pub func remove(path: str) -> !:
         try self.ensure_write()
         if self.remote != none or self.tls_link != none:
             try rpc_remove(self.remote, self.tls_link, self.token, path)
@@ -896,7 +897,7 @@ pub struct Session:
         try self.private.put(path, delta.Cell.element, "", delta.Op(deleted = true))
         self.charged += bytes
 
-    pub mutating func connect(source: str, target: str) -> !:
+    pub func connect(source: str, target: str) -> !:
         try self.ensure_write()
         if self.private.count() >= max_ops:
             error(limit_exceeded, "Prism layer operation limit exceeded")
@@ -910,7 +911,7 @@ pub struct Session:
         try self.private.put(target, delta.Cell.connection, "", op)
         self.charged += bytes
 
-    pub mutating func disconnect(target: str) -> !:
+    pub func disconnect(target: str) -> !:
         try self.ensure_write()
         if self.private.count() >= max_ops:
             error(limit_exceeded, "Prism layer operation limit exceeded")
@@ -921,7 +922,7 @@ pub struct Session:
         try self.private.put(target, delta.Cell.disconnect, "", delta.Op())
         self.charged += bytes
 
-    pub mutating func commit(wait_ms: i64 = 0) -> i64!:
+    pub func commit(wait_ms: i64 = 0) -> i64!:
         try self.ensure_write()
         if self.remote != none or self.tls_link != none:
             return try rpc_commit(self.remote, self.tls_link, self.token, wait_ms)
@@ -933,7 +934,7 @@ pub struct Session:
         defer state.writer.leave()
         if self.generation_base != state.generation:
             if committed_overlap(state, &self.private, self.generation_base):
-                discard(inner.conflicted.add(1, .relaxed))
+                _ = inner.conflicted.add(1, .relaxed)
                 error(conflict, "Prism commit conflicts with a later write")
         assign_ids(state, &self.private)
         if let journal = inner.persist:
@@ -1047,7 +1048,7 @@ pub struct Session:
             let row = rows.view_of(element)
             try visit(context, &row)
 
-    pub mutating func pin(path: str) -> !:
+    pub func pin(path: str) -> !:
         try self.ensure_open()
         if self.remote != none:
             error(unsupported, "Prism pin is not available over IPC")
@@ -1071,7 +1072,7 @@ pub struct Session:
             unpin_pool(inner, identity, path)
             error(failure.code, failure.message)
 
-    pub mutating func unpin(path: str) -> !:
+    pub func unpin(path: str) -> !:
         try self.ensure_open()
         if self.remote != none:
             return
@@ -1083,7 +1084,7 @@ pub struct Session:
                 self.pins.remove(i)
                 return
 
-    pub mutating func close():
+    pub func close():
         if not self.open:
             return
         self.open = false
@@ -1280,7 +1281,7 @@ func rpc_add(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64, path
     try ipc.put_u8(&req, 1 if override else 0)
     var reply = try remote_call(client, remote_tls, req.bytes())
     defer reply.close()
-    discard(try ipc.expect_tag(reply.bytes(), ipc.tag_ok))
+    _ = try ipc.expect_tag(reply.bytes(), ipc.tag_ok)
 
 func rpc_set(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64, path: str, name: str, value: interop.Reference[Value]) -> !:
     var req: Buffer
@@ -1292,7 +1293,7 @@ func rpc_set(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64, path
     try ipc.put_value(&req, (try value.get()).view_data())
     var reply = try remote_call(client, remote_tls, req.bytes())
     defer reply.close()
-    discard(try ipc.expect_tag(reply.bytes(), ipc.tag_ok))
+    _ = try ipc.expect_tag(reply.bytes(), ipc.tag_ok)
 
 func rpc_set_meta(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64, path: str, key: str, value: str) -> !:
     var req: Buffer
@@ -1304,7 +1305,7 @@ func rpc_set_meta(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64,
     try ipc.put_str(&req, value)
     var reply = try remote_call(client, remote_tls, req.bytes())
     defer reply.close()
-    discard(try ipc.expect_tag(reply.bytes(), ipc.tag_ok))
+    _ = try ipc.expect_tag(reply.bytes(), ipc.tag_ok)
 
 func rpc_remove(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64, path: str) -> !:
     var req: Buffer
@@ -1314,7 +1315,7 @@ func rpc_remove(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64, p
     try ipc.put_str(&req, path)
     var reply = try remote_call(client, remote_tls, req.bytes())
     defer reply.close()
-    discard(try ipc.expect_tag(reply.bytes(), ipc.tag_ok))
+    _ = try ipc.expect_tag(reply.bytes(), ipc.tag_ok)
 
 func rpc_commit(client: ipc.Client*?, remote_tls: tls_pipe.Link*?, token: u64, wait_ms: i64) -> i64!:
     var req: Buffer
@@ -1566,7 +1567,7 @@ func tls_session_loop(raw: void*?):
             var errf = ipc.error_frame(failure.code, failure.message) catch inner:
                 recover Buffer()
             tls_pipe.send_frame(ctx.pipe, errf.bytes()) catch send_fail:
-                discard(send_fail)
+                _ = send_fail
             errf.close()
             req.close()
             failed = true
@@ -1638,14 +1639,14 @@ func stop_listen(inner: Inner*):
     # bounded idle sleep. Close only after join, preventing descriptor reuse races.
     if let worker = inner.accept_thread:
         worker.join() catch failure:
-            discard(failure)
+            _ = failure
         inner.accept_thread = none
     if inner.listen_fd >= 0:
         ipc.close_fd(inner.listen_fd)
         inner.listen_fd = -1
     if inner.listen_path.used > 0:
         file_io.remove(inner.listen_path.view()) catch failure:
-            discard(failure)
+            _ = failure
         inner.listen_path.close()
 
 func start_listen(inner: Inner*, path: str) -> !:
@@ -1863,7 +1864,7 @@ func next_anonymous_child(session: Session*, parent: str) -> Buffer!:
     var index: usize = 0
     while index <= max_items:
         var scratch: u8[32]
-        let label = try format(scratch, f"[{index}]")
+        let label = try strings.format(scratch, f"[{index}]")
         var path = try join_element(parent, label)
         var taken = false
         for k in kids.span():
@@ -1893,7 +1894,7 @@ func remove_on(store: Store, identity: str, path: str) -> !:
     let tx = try store.begin_identity(identity)
     defer tx.release()
     try tx.value().remove(path)
-    discard(try tx.value().commit())
+    _ = try tx.value().commit()
 
 func dump_identity(store: Store, dir: str, identity: str) -> !:
     let snap = try store.snapshot_identity(identity)
@@ -2086,11 +2087,11 @@ pub struct Store:
         self.inner = inner
         self.remote = none
 
-    pub static func memory(limit_bytes: usize = max_bytes) -> interop.Reference[Store]!:
+    pub func memory(limit_bytes: usize = max_bytes) -> interop.Reference[Store]!:
         let native = try new Store(limit_bytes) in memory.heap
         return try interop.Reference[Store].adopt(native, store_type, memory.heap)
 
-    pub static func open(path: str, limit_bytes: usize = max_bytes, token: str = "") -> interop.Reference[Store]!:
+    pub func open(path: str, limit_bytes: usize = max_bytes, token: str = "") -> interop.Reference[Store]!:
         let native = try new Store(limit_bytes) in memory.heap
         errdefer native.close()
         let previous = native.inner
@@ -2099,7 +2100,7 @@ pub struct Store:
             drop_inner(old)
         return try interop.Reference[Store].adopt(native, store_type, memory.heap)
 
-    pub static func connect(socket_path: str, token: str = "") -> interop.Reference[Store]!:
+    pub func connect(socket_path: str, token: str = "") -> interop.Reference[Store]!:
         let client = try ipc.connect_client(socket_path)
         if token.length > 0:
             var req: Buffer
@@ -2175,7 +2176,7 @@ pub struct Store:
         let inner = try self.require()
         return inner.tls_qy
 
-    pub static func connect_tls(host: str, port: u16, token: str, issuer_x: const u8[], issuer_y: const u8[]) -> interop.Reference[Store]!:
+    pub func connect_tls(host: str, port: u16, token: str, issuer_x: const u8[], issuer_y: const u8[]) -> interop.Reference[Store]!:
         let remote = try tls_pipe.handshake_client(host, port, issuer_x, issuer_y)
         if token.length > 0:
             var req: Buffer
@@ -2247,7 +2248,7 @@ pub struct Store:
 
     pub func lookup(os_path: str, follow: bool = true) -> interop.Reference[Look]!:
         if self.remote != none or self.tls_on:
-            discard(follow)
+            _ = follow
             var remote_tls: tls_pipe.Link*? = none
             if self.tls_on:
                 remote_tls = self.tls_heap
@@ -2375,7 +2376,7 @@ pub struct Store:
         try tx.value().add(dest.view(), "directory")
         if not valid_name(leaf.view()):
             try tx.value().set_metadata(dest.view(), "name", leaf.view())
-        discard(try tx.value().commit())
+        _ = try tx.value().commit()
 
     pub func delete(os_path: str) -> !:
         let look = try self.lookup(os_path, false)
@@ -2417,7 +2418,7 @@ pub struct Store:
             while i < kids.value().count():
                 try tx.value().remove(try kids.value().at(i))
                 i += 1
-            discard(try tx.value().commit())
+            _ = try tx.value().commit()
             return
         try remove_on(self, look.value().identity(), look.value().path())
 
@@ -2432,7 +2433,7 @@ pub struct Store:
             let tx = try self.begin_identity(look.value().identity())
             defer tx.release()
             try tx.value().set(look.value().path(), slot, value)
-            discard(try tx.value().commit())
+            _ = try tx.value().commit()
             return
         var parent = try fs.parent_host(os_path)
         defer parent.close()
@@ -2454,7 +2455,7 @@ pub struct Store:
         if not valid_name(leaf.view()):
             try tx.value().set_metadata(dest.view(), "name", leaf.view())
         try tx.value().set(dest.view(), slot, value)
-        discard(try tx.value().commit())
+        _ = try tx.value().commit()
 
     ## Whether `identity` is in the catalog: mounted now, or by an earlier open of this
     ## durable store.
@@ -2539,7 +2540,7 @@ pub struct Store:
             if valid_identity(name.view()):
                 try load_identity(self, path, name.view())
 
-    pub mutating func close():
+    pub func close():
         if let remote = self.remote:
             ipc.drop_client(remote)
             self.remote = none
@@ -2584,7 +2585,7 @@ func bake_identity(inner: Inner*, identity: str, wait_ms: i64) -> i64!:
     state.tables = built
     owned = none
     for i in 0..<pending.count:
-        discard(try state.retired.push(pending.items[i]))
+        _ = try state.retired.push(pending.items[i])
     state.unbaked.count = 0
     state.unbaked.close()
     sweep_retired(inner, state)

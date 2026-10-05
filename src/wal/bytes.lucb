@@ -19,7 +19,7 @@ pub struct Buffer:
     pub var data: u8[]
     pub var count: usize
 
-    pub mutating func reserve(count: usize) -> !:
+    pub func reserve(count: usize) -> !:
         if count > max_frame:
             error(limit, "database transaction exceeds 16 MiB")
         if count <= self.data.length:
@@ -28,19 +28,19 @@ pub struct Buffer:
         if capacity < 64: capacity = 64
         if capacity < count: capacity = count
         if capacity > max_frame: capacity = max_frame
-        let next = try alloc u8[capacity] in memory.heap
+        let next = try new u8[capacity] --- in memory.heap
         memory.copy(next, self.data, self.count)
         if self.data.length > 0: free(self.data) in memory.heap
         self.data = next
 
-    pub mutating func put(value: const u8[]) -> !:
+    pub func put(value: const u8[]) -> !:
         if value.length == 0: return
         let total = self.count +? value.length else error(limit, "database byte count overflow")
         try self.reserve(total)
         memory.copy(self.data[self.count..], value, value.length)
         self.count = total
 
-    pub mutating func uint(value: u64, width: usize) -> !:
+    pub func uint(value: u64, width: usize) -> !:
         var bytes: u8[8]
         for i in 0..<width: bytes[i] = (u8)(value >> (i * 8))
         try self.put(bytes[..<width])
@@ -49,7 +49,7 @@ pub struct Buffer:
         if self.count == 0: return b""
         return self.data[..<self.count]
 
-    pub mutating func close():
+    pub func close():
         if self.data.length > 0: free(self.data) in memory.heap
         var empty: u8[]
         self.data = empty
@@ -84,7 +84,7 @@ pub func checksum(bytes: const u8[]) -> u32:
 pub struct Crc32:
     var state: u32 = 4294967295
 
-    pub mutating func update(data: const u8[]):
+    pub func update(data: const u8[]):
         for byte in data:
             self.state ^= (u32)byte
             for bit in 0..<8:
@@ -97,14 +97,14 @@ pub struct Reader:
     pub var bytes: const u8[]
     pub var offset: usize
 
-    pub mutating func take(count: usize) -> const u8[]!:
+    pub func take(count: usize) -> const u8[]!:
         if count > self.bytes.length - self.offset:
             error(corrupt, "truncated database record")
         let start = self.offset
         self.offset += count
         return self.bytes[start..<self.offset]
 
-    pub mutating func uint(width: usize) -> u64!:
+    pub func uint(width: usize) -> u64!:
         let data = try self.take(width)
         var value: u64 = 0
         for i in 0..<width: value |= (u64)data[i] << (i * 8)

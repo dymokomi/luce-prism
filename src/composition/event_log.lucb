@@ -22,7 +22,7 @@ pub struct Changes:
             error(invalid, "Prism change index is out of bounds")
         return try own_document(try delta.to_document(&self.layers.items[index]))
 
-    pub mutating func close():
+    pub func close():
         for i in 0..<self.layers.count:
             self.layers.items[i].close()
         self.layers.close()
@@ -54,7 +54,7 @@ pub struct EventLog:
     pub func head() -> interop.Reference[Document]!:
         return try self.at(self.head_offset())
 
-    pub mutating func commit(next: interop.Reference[Document]) -> usize!:
+    pub func commit(next: interop.Reference[Document]) -> usize!:
         let count = self.head_offset() +? 1 else error(limit_exceeded, "Prism event offset overflow")
         let current = try self.head()
         defer current.release()
@@ -89,7 +89,7 @@ pub struct EventLog:
         changes = Changes()
         return try interop.Reference[Changes].adopt(owned, changes_type, memory.heap)
 
-    pub mutating func compact(keep: usize) -> !:
+    pub func compact(keep: usize) -> !:
         if keep >= self.history.count:
             return
         let folded = self.history.count - keep
@@ -108,7 +108,7 @@ pub struct EventLog:
         self.history.count = keep
         self.offset += folded
 
-    pub mutating func close():
+    pub func close():
         drop_data(self.base)
         for i in 0..<self.history.count:
             self.history.items[i].close()

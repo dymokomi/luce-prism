@@ -17,7 +17,7 @@ struct Evaluated:
     var world: Affine2
     var visible: bool
 
-    mutating func close():
+    func close():
         self.properties.close()
         self.outputs.close()
 
@@ -95,7 +95,7 @@ pub struct Scene:
         let prop = element.property(name) else error(missing, "scene output is absent")
         return try own_value(try element.properties.items[prop].value.copy())
 
-    pub mutating func close():
+    pub func close():
         for i in 0..<self.elements.count:
             self.elements.items[i].close()
         self.elements.close()

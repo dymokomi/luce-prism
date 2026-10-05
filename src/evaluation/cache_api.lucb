@@ -14,16 +14,16 @@ pub struct ValueCache:
     pub func valid(key: EvalKey) -> bool:
         return self.data.valid(key)
 
-    pub mutating func invalidate():
+    pub func invalidate():
         self.data.invalidate()
 
-    pub mutating func evaluate(key: EvalKey, producer: interop.Callback[EvalKey, interop.Reference[Value]]) -> interop.Reference[Value]!:
+    pub func evaluate(key: EvalKey, producer: interop.Callback[EvalKey, interop.Reference[Value]]) -> interop.Reference[Value]!:
         return try self.data.evaluate(key, producer)
 
     pub func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
         self.data.trace(visit, context)
 
-    pub mutating func close():
+    pub func close():
         self.data.close()
 
 pub let value_cache_type = interop.Type[ValueCache]("Prism value cache", ValueCache.close, ValueCache.trace, closeable = true)
@@ -37,16 +37,16 @@ pub struct DocumentCache:
     pub func valid(key: EvalKey) -> bool:
         return self.data.valid(key)
 
-    pub mutating func invalidate():
+    pub func invalidate():
         self.data.invalidate()
 
-    pub mutating func evaluate(key: EvalKey, producer: interop.Callback[EvalKey, interop.Reference[Document]]) -> interop.Reference[Document]!:
+    pub func evaluate(key: EvalKey, producer: interop.Callback[EvalKey, interop.Reference[Document]]) -> interop.Reference[Document]!:
         return try self.data.evaluate(key, producer)
 
     pub func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
         self.data.trace(visit, context)
 
-    pub mutating func close():
+    pub func close():
         self.data.close()
 
 pub let document_cache_type = interop.Type[DocumentCache]("Prism document cache", DocumentCache.close, DocumentCache.trace, closeable = true)

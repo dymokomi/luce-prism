@@ -19,7 +19,7 @@ pub struct StringTable:
     pub func init():
         return
 
-    pub mutating func close():
+    pub func close():
         self.strings.close()
         if self.slots.length > 0: free(self.slots) in memory.heap
 
@@ -32,16 +32,16 @@ pub struct StringTable:
             at = (at + 1) & mask
         return at
 
-    mutating func grow() -> !:
+    func grow() -> !:
         var capacity: usize = 64
         while capacity < (self.strings.count + 1) * 2: capacity *= 2
-        let slots = try alloc usize[capacity] in memory.heap
+        let slots = try new usize[capacity] --- in memory.heap
         for i in 0..<capacity: slots[i] = 0
         if self.slots.length > 0: free(self.slots) in memory.heap
         self.slots = slots
         for i in 0..<self.strings.count: self.slots[self.slot_for(self.strings.items[i])] = i + 1
 
-    pub mutating func intern(text: str) -> usize!:
+    pub func intern(text: str) -> usize!:
         if (self.strings.count + 1) * 2 > self.slots.length: try self.grow()
         let at = self.slot_for(text)
         if self.slots[at] != 0: return self.slots[at] - 1
@@ -76,7 +76,7 @@ pub func read_index(reader: Reader*, table: const List[str]*) -> str!:
 
 pub func intern_names(table: StringTable*, names: const List[Buffer]*) -> !:
     for name in names.span():
-        discard(try intern(table, name.view()))
+        _ = try intern(table, name.view())
 
 pub func write_names(out: Buffer*, table: const StringTable*, names: const List[Buffer]*) -> !:
     try out.uint((u64)names.count, 4)
@@ -96,26 +96,26 @@ pub func write_binary(document: const DocumentData*, compressed: bool = false) -
     var table = StringTable()
     defer table.close()
     for element in document.elements.span():
-        discard(try intern(&table, element.path.view()))
-        discard(try intern(&table, element.kind.view()))
+        _ = try intern(&table, element.path.view())
+        _ = try intern(&table, element.kind.view())
         for prop in element.properties.span():
-            discard(try intern(&table, prop.name.view()))
+            _ = try intern(&table, prop.name.view())
         for meta in element.metadata.span():
-            discard(try intern(&table, meta.key.view()))
-            discard(try intern(&table, meta.value.view()))
+            _ = try intern(&table, meta.key.view())
+            _ = try intern(&table, meta.value.view())
         try intern_names(&table, &element.removed_properties)
         try intern_names(&table, &element.removed_metadata)
     for connection in document.connections.span():
-        discard(try intern(&table, connection.value.view()))
-        discard(try intern(&table, connection.key.view()))
+        _ = try intern(&table, connection.value.view())
+        _ = try intern(&table, connection.key.view())
     try intern_names(&table, &document.deletions)
     try intern_names(&table, &document.disconnections)
     for order in document.reorders.span():
-        discard(try intern(&table, order.parent.view()))
+        _ = try intern(&table, order.parent.view())
         try intern_names(&table, &order.children)
     for glob in document.globs.span():
-        discard(try intern(&table, glob.key.view()))
-        discard(try intern(&table, glob.value.view()))
+        _ = try intern(&table, glob.key.view())
+        _ = try intern(&table, glob.value.view())
     var body: Buffer
     defer body.close()
     try body.uint((u64)table.strings.count, 4)

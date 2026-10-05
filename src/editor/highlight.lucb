@@ -44,10 +44,10 @@ pub struct TokenSpans:
                 return span.kind
         return TokenClass.normal
 
-    mutating func add(start: usize, end: usize, kind: TokenClass) -> !:
+    func add(start: usize, end: usize, kind: TokenClass) -> !:
         try self.spans.push(TokenSpan(start, end, kind))
 
-    pub mutating func close():
+    pub func close():
         self.spans.close()
 
 pub let token_spans_type = interop.Type[TokenSpans]("Prism token spans", TokenSpans.close, closeable = true)

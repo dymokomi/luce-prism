@@ -14,7 +14,7 @@ func reject(bytes: const u8[]) -> !:
 func old_text_version_loads_and_upgrades_on_resave() -> !:
     for version in 1..=4:
         var scratch: u8[128]
-        let doc = try prism.Document.parse(try format(scratch, f"#prisma {version}.0\ndef object \"a\" {{ float v = 3 }}"))
+        let doc = try prism.Document.parse(try strings.format(scratch, f"#prisma {version}.0\ndef object \"a\" {{ float v = 3 }}"))
         defer doc.release()
         let encoded = try doc.value().encode(prism.Encoding.text)
         defer encoded.release()
@@ -45,7 +45,7 @@ func tampered_or_truncated_binary_is_rejected_cleanly() -> !:
     let binary = try doc.value().encode()
     defer binary.release()
     let raw = binary.value().bytes()
-    let bytes = try alloc u8[raw.length + 1] in memory.heap
+    let bytes = try new u8[raw.length + 1] --- in memory.heap
     defer free(bytes) in memory.heap
     memory.copy(bytes, raw, raw.length)
     bytes[6] = 99
@@ -58,7 +58,7 @@ func tampered_or_truncated_binary_is_rejected_cleanly() -> !:
 
 func binary_crate_rejects_malformed() -> !:
     try reject(b"PRSMC\0")
-    let bytes = try alloc u8[64] in memory.heap
+    let bytes = try new u8[64] --- in memory.heap
     defer free(bytes) in memory.heap
     for i in 0..<bytes.length:
         bytes[i] = 255
@@ -70,7 +70,7 @@ func binary_parser_rejects_implausible_count_fields() -> !:
     let binary = try doc.value().encode()
     defer binary.release()
     let raw = binary.value().bytes()
-    let bytes = try alloc u8[raw.length] in memory.heap
+    let bytes = try new u8[raw.length] --- in memory.heap
     defer free(bytes) in memory.heap
     memory.copy(bytes, raw, raw.length)
     # String table count immediately follows the uncompressed 10-byte header.
@@ -123,15 +123,15 @@ func connection_fanout_survives_round_trip() -> !:
     for i in 0..<100:
         var path: u8[32]
         var slot: u8[32]
-        try doc.value().add(try format(path, f"/n{i}"), "object")
-        try doc.value().connect("/mat.out", try format(slot, f"/n{i}.in"))
+        try doc.value().add(try strings.format(path, f"/n{i}"), "object")
+        try doc.value().connect("/mat.out", try strings.format(slot, f"/n{i}.in"))
     for mode in 0..<(usize)5:
         let back = try roundtrip(doc, mode)
         defer back.release()
         assert(back.value().connection_count() == 100)
         for i in 0..<100:
             var slot: u8[32]
-            assert(try back.value().source(try format(slot, f"/n{i}.in")) == "/mat.out")
+            assert(try back.value().source(try strings.format(slot, f"/n{i}.in")) == "/mat.out")
 
 func serialize_nonfinite_clamps_to_zero() -> !:
     let doc = try prism.Document.parse("#prisma 4.0\ndef \"n\" {}")

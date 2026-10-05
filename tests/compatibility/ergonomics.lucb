@@ -1,5 +1,6 @@
 from luce_prism import prism
 import interop
+import strings
 
 func document() -> interop.Reference[prism.Document]!:
     return try prism.Document.parse("#prisma 4.0\ndef object \"a\" { float radius = 2 int count = 3 bool visible = true float2 pos = (1,2) float3 rgb = (0.1,0.2,0.3) string label = \"hi\" float64 d = 3.5 }")
@@ -54,9 +55,8 @@ func lenient_getters_default_on_wrong_type() -> !:
     assert((try handle.value().get_vec3("pos", prism.Vec3(9.0,8.0,7.0))).z == 7.0)
 
 func fails_number(handle: interop.Reference[prism.ElementHandle], name: str) -> !:
-    discard(handle.value().require_number(name) catch failure:
+    _ = handle.value().require_number(name) catch failure:
         return
-    )
     assert(false)
 
 func element_require_getters_value_missing_mismatch() -> !:
@@ -75,16 +75,14 @@ func element_require_getters_value_missing_mismatch() -> !:
     assert(property.value().dtype() == prism.DType.float32)
     try fails_number(handle, "nope")
     var failed = false
-    discard(handle.value().require_vec3("radius") catch failure:
+    _ = handle.value().require_vec3("radius") catch failure:
         failed = true
         recover prism.Vec3()
-    )
     assert(failed)
     failed = false
-    discard(handle.value().require_boolean("count") catch failure:
+    _ = handle.value().require_boolean("count") catch failure:
         failed = true
         recover false
-    )
     assert(failed)
 
 func require_float_int_coerce_any_numeric_scalar() -> !:
@@ -155,7 +153,7 @@ func handle_survives_stage_reallocation() -> !:
     defer first.release()
     for i in 0..<64:
         var scratch: u8[32]
-        try doc.value().add(try format(scratch, f"/n{i}"), "object")
+        try doc.value().add(try strings.format(scratch, f"/n{i}"), "object")
     let value = try prism.Value.number(2.0)
     defer value.release()
     let edited = try first.value().set("v", value)

@@ -17,7 +17,7 @@ func copy_is_isolated_across_every_mutator() -> !:
     let before = try snapshot.value().encode()
     defer before.release()
     try doc.value().add("/s/b", "object")
-    discard(try doc.value().add_child("/s", "anon"))
+    _ = try doc.value().add_child("/s", "anon")
     let value = try prism.Value.number(9.0)
     defer value.release()
     try doc.value().set("/s/a", "c", value)
@@ -302,11 +302,10 @@ func asset_diffs_do_not_silently_drop_changes() -> !:
         else:
             try changed.value().set_asset("/other", b"added")
         var failed = false
-        discard(log.commit(changed) catch failure:
+        _ = log.commit(changed) catch failure:
             assert(failure.code == prism.unsupported)
             failed = true
             recover 0
-        )
         assert(failed and log.head_offset() == 0 and log.layer_count() == 0)
         let head = try log.head()
         defer head.release()

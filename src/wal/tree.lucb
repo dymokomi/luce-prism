@@ -18,7 +18,7 @@ pub func entry(key: const u8[], value: const u8[]) -> Entry*!:
     return out
 
 pub func hold_entry(item: Entry*):
-    discard(item.references.add(1, .relaxed))
+    _ = item.references.add(1, .relaxed)
 
 pub func drop_entry(item: Entry*):
     if item.references.sub(1, .acq_rel) == 1:
@@ -35,7 +35,7 @@ pub struct Node:
     pub var count: usize
 
 pub func hold(node: Node*?) -> Node*?:
-    if let n = node: discard(n.references.add(1, .relaxed))
+    if let n = node: _ = n.references.add(1, .relaxed)
     return node
 
 pub func drop(node: Node*?):
@@ -60,8 +60,8 @@ func make(item: Entry*, left: Node*?, right: Node*?) -> Node*!:
     let h = height(left) if height(left) > height(right) else height(right)
     let out = try new Node(item = item, left = left, right = right, height = h + 1, count = total) in memory.heap
     hold_entry(item)
-    discard(hold(left))
-    discard(hold(right))
+    _ = hold(left)
+    _ = hold(right)
     out.references.store(1, .relaxed)
     return out
 

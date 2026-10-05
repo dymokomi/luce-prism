@@ -128,7 +128,7 @@ pub struct ElementHandle:
         if let doc = self.source:
             doc.trace(visit, context)
 
-    pub mutating func close():
+    pub func close():
         if let doc = self.source:
             doc.release()
         self.source = none
@@ -144,5 +144,5 @@ pub func define(doc: interop.Reference[Document], path: str, kind: str = "") -> 
     defer final_path.close()
     let handle = try edit(doc, final_path.view())
     errdefer handle.release()
-    discard(try (try doc.get()).append(final_path.view(), kind))
+    _ = try (try doc.get()).append(final_path.view(), kind)
     return handle

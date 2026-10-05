@@ -22,7 +22,7 @@ pub struct Term:
     pub var name: Buffer
     pub var variable: bool
 
-    pub mutating func close():
+    pub func close():
         self.name.close()
 
 pub struct AtomData:
@@ -38,7 +38,7 @@ pub struct AtomData:
             try result.append(term.name.view(), term.variable)
         return result
 
-    pub mutating func append(name: str, variable: bool) -> !:
+    pub func append(name: str, variable: bool) -> !:
         var term = Term(variable = variable)
         errdefer term.close()
         term.name = try text_copy(name)
@@ -58,7 +58,7 @@ pub struct AtomData:
         try result.byte(')')
         return result
 
-    pub mutating func close():
+    pub func close():
         self.predicate.close()
         for i in 0..<self.arguments.count:
             self.arguments.items[i].close()
@@ -80,10 +80,10 @@ pub struct Atom:
     pub func negative() -> bool:
         return self.data.negative
 
-    pub mutating func constant(name: str) -> !:
+    pub func constant(name: str) -> !:
         try self.data.append(name, false)
 
-    pub mutating func variable(name: str) -> !:
+    pub func variable(name: str) -> !:
         try self.data.append(name, true)
 
     pub func count() -> usize:
@@ -99,7 +99,7 @@ pub struct Atom:
             error(invalid, "Prism atom argument index is out of bounds")
         return self.data.arguments.items[index].variable
 
-    pub mutating func close():
+    pub func close():
         self.data.close()
 
 pub let atom_type = interop.Type[Atom]("Prism atom", Atom.close, closeable = true)
@@ -113,7 +113,7 @@ pub struct Atoms:
     pub func view_data() -> const List[AtomData]*:
         return &self.atoms
 
-    pub mutating func append(atom: interop.Reference[Atom]) -> !:
+    pub func append(atom: interop.Reference[Atom]) -> !:
         var owned = try (try atom.get()).view_data().copy()
         errdefer owned.close()
         try self.atoms.push(owned)
@@ -121,7 +121,7 @@ pub struct Atoms:
     pub func count() -> usize:
         return self.atoms.count
 
-    pub mutating func close():
+    pub func close():
         for i in 0..<self.atoms.count:
             self.atoms.items[i].close()
         self.atoms.close()

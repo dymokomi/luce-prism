@@ -37,7 +37,7 @@ pub struct MergeResult:
             error(invalid, "Prism merge has unresolved conflicts")
         return try own_document(try self.merged.copy())
 
-    pub mutating func close():
+    pub func close():
         conflicts.close_conflicts(&self.items)
         self.merged.close()
 
@@ -71,7 +71,7 @@ pub struct LayerStack:
         first = DocumentData()
         self.opinions = List[delta.Layer]()
 
-    pub mutating func push(layer: interop.Reference[Document]) -> !:
+    pub func push(layer: interop.Reference[Document]) -> !:
         var snap = try snapshot_document(try layer.get())
         defer snap.close()
         var owned = try delta.from_document(&snap)
@@ -94,7 +94,7 @@ pub struct LayerStack:
         var extra = try delta.collapse(self.foundation, self.opinions.span())
         return try own_view(self.foundation, extra)
 
-    pub mutating func compact(keep: usize) -> !:
+    pub func compact(keep: usize) -> !:
         if keep >= self.opinions.count:
             return
         let fold = self.opinions.count - keep
@@ -112,7 +112,7 @@ pub struct LayerStack:
             self.opinions.items[i] = self.opinions.items[i + fold]
         self.opinions.count = keep
 
-    pub mutating func close():
+    pub func close():
         drop_data(self.foundation)
         for i in 0..<self.opinions.count:
             self.opinions.items[i].close()

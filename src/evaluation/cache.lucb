@@ -21,16 +21,16 @@ pub struct EvalCache[T]:
     pub func valid(key: EvalKey) -> bool:
         return self.cached and self.key.revision == key.revision and self.key.time == key.time
 
-    pub mutating func invalidate():
+    pub func invalidate():
         self.cached = false
 
-    mutating func finish():
+    func finish():
         self.producing = false
         if self.close_pending:
             self.close_pending = false
             self.close()
 
-    pub mutating func evaluate(key: EvalKey, producer: interop.Callback[EvalKey, interop.Reference[T]]) -> interop.Reference[T]!:
+    pub func evaluate(key: EvalKey, producer: interop.Callback[EvalKey, interop.Reference[T]]) -> interop.Reference[T]!:
         if not math.is_finite(key.time):
             error(invalid, "Prism evaluation cache time must be finite")
         if self.valid(key):
@@ -53,7 +53,7 @@ pub struct EvalCache[T]:
         if let value = self.result:
             value.trace(visit, context)
 
-    pub mutating func close():
+    pub func close():
         if self.producing:
             self.close_pending = true
             return

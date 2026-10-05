@@ -109,7 +109,7 @@ pub func distinct_rows(elements: const Element[], rows: const usize[], field: st
             if let result = try scalars.key(&value):
                 var key = result
                 defer key.close()
-                discard(try index.add(key.view(), row))
+                _ = try index.add(key.view(), row)
     return index.buckets.count
 
 pub func distinct(doc: const DocumentData*, rows: const usize[], field: str) -> usize!:

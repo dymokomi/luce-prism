@@ -1,6 +1,7 @@
 from luce_prism import prism
 import interop
 import time
+import strings
 
 func document() -> interop.Reference[prism.Document]!:
     return try prism.Document.parse("#prisma 4.0\n")
@@ -10,7 +11,7 @@ func nodeid_unique_and_nonzero() -> !:
     defer doc.release()
     try doc.value().add("/a", "x")
     try doc.value().add("/b", "x")
-    discard(try doc.value().add_child("/a", "row"))
+    _ = try doc.value().add_child("/a", "row")
     let a = doc.value().element_id("/a") else error(prism.invalid, "missing ID")
     let b = doc.value().element_id("/b") else error(prism.invalid, "missing ID")
     let c = doc.value().element_id("/a/[0]") else error(prism.invalid, "missing ID")
@@ -20,9 +21,9 @@ func nodeid_unique_and_nonzero() -> !:
 func nodeid_survives_rename() -> !:
     let doc = try document()
     defer doc.release()
-    discard(try doc.value().append("/world/sphere", "object"))
+    _ = try doc.value().append("/world/sphere", "object")
     let id = doc.value().element_id("/world/sphere") else error(prism.invalid, "missing ID")
-    discard(try doc.value().append("/world/box", "object"))
+    _ = try doc.value().append("/world/box", "object")
     assert(try doc.value().move("/world/sphere", "/world/ball") == "/world/ball")
     assert(doc.value().element_id("/world/sphere") == none)
     assert(doc.value().element_id("/world/ball") == id)
@@ -119,7 +120,7 @@ func assembly_is_linear_not_quadratic() -> !:
     let start = time.now()
     for i in 0..<(usize)50000:
         var scratch: u8[40]
-        try doc.value().add(try format(scratch, f"/e{i}"), "group")
+        try doc.value().add(try strings.format(scratch, f"/e{i}"), "group")
     let elapsed = time.since(start)
     assert(doc.value().element_count() == 50000)
     assert(doc.value().contains("/e0") and doc.value().contains("/e49999"))

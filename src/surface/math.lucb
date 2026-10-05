@@ -21,19 +21,19 @@ struct Parser:
     var offset: usize
     var nodes: List[Node]
 
-    mutating func peek() -> u8:
+    func peek() -> u8:
         while self.offset < self.source.length and whitespace(self.source.bytes[self.offset]):
             self.offset += 1
         return self.source.bytes[self.offset] if self.offset < self.source.length else 0
 
-    mutating func append(node: Node) -> usize!:
+    func append(node: Node) -> usize!:
         if self.nodes.count >= max_items:
             error(limit_exceeded, "Prism math expression is too large")
         let index = self.nodes.count
         try self.nodes.push(node)
         return index
 
-    mutating func factor(depth: usize) -> usize!:
+    func factor(depth: usize) -> usize!:
         if depth > max_depth:
             error(limit_exceeded, "Prism math expression is too deep")
         let byte = self.peek()
@@ -65,7 +65,7 @@ struct Parser:
             error(invalid, "expected an operand in Prism math")
         return try self.append(Node(kind = 'r', reference = (str)self.source.bytes[start..<self.offset]))
 
-    mutating func term(depth: usize) -> usize!:
+    func term(depth: usize) -> usize!:
         var node = try self.factor(depth)
         while self.peek() == '*' or self.peek() == '/':
             let op = self.peek()
@@ -74,7 +74,7 @@ struct Parser:
             node = try self.append(Node(kind = op, left = node, right = right))
         return node
 
-    mutating func expression(depth: usize) -> usize!:
+    func expression(depth: usize) -> usize!:
         var node = try self.term(depth)
         while self.peek() == '+' or self.peek() == '-':
             let op = self.peek()
@@ -117,7 +117,7 @@ func emit(doc: DocumentData*, nodes: const Node[], index: usize, root: str, coun
         path = try text_copy(root)
     else:
         var scratch: u8[32]
-        path = try joined(root, try format(scratch, f"[{counter[0]}]"))
+        path = try joined(root, try strings.format(scratch, f"[{counter[0]}]"))
         counter[0] += 1
     let kind = "neg" if node.kind == 'n' else ("add" if node.kind == '+' else ("sub" if node.kind == '-' else ("mul" if node.kind == '*' else "div")))
     try doc.insert(path.view(), kind)

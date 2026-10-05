@@ -6,7 +6,7 @@ import animation
 from names import Name
 
 pub func main(arguments: str[]) -> i32!:
-    discard(arguments)
+    _ = arguments
     var source = model.DocumentData()
     defer source.close()
     try source.add("/users", "directory")
@@ -19,7 +19,7 @@ pub func main(arguments: str[]) -> i32!:
     let frozen = try tables.from_data(&source)
     defer tables.drop_tables(frozen)
     for iteration in 0..<64:
-        discard(iteration)
+        _ = iteration
         var exported = try tables.to_data(frozen)
         defer exported.close()
         assert(exported.element_count() == 2)

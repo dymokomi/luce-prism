@@ -30,7 +30,7 @@ pub func exists(path: str) -> bool!:
     with memory.heap:
         let name = try strings.copy(path)
         defer strings.release(name)
-        discard(files.metadata((c.str)name) catch failure: return false)
+        _ = files.metadata((c.str)name) catch failure: return false
         return true
 
 pub func load(path: str, codec: codecs.Codec = codecs.Codec.auto) -> interop.Reference[Document]!:

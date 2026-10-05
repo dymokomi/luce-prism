@@ -10,7 +10,7 @@ struct Move:
     var origin: Buffer
     var destination: Buffer
 
-    mutating func close():
+    func close():
         self.origin.close()
         self.destination.close()
 
@@ -37,7 +37,7 @@ pub struct Moves:
     pub func destination_at(index: usize) -> str!:
         return (try self.at(index)).destination.view()
 
-    pub mutating func close():
+    pub func close():
         for i in 0..<self.entries.count:
             self.entries.items[i].close()
         self.entries.close()

@@ -32,7 +32,7 @@ pub struct Look:
     pub func kind() -> LookKind:
         return self.kind_value
 
-    pub mutating func close():
+    pub func close():
         self.identity_buf.close()
         self.path_buf.close()
 

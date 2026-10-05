@@ -9,11 +9,12 @@ from model import Element
 from animation import resolve_property
 from storage import List, Buffer, Reader
 from types import DType
+import strings
 
 struct Terms:
     var words: List[Buffer]
 
-    mutating func close():
+    func close():
         for i in 0..<self.words.count:
             self.words.items[i].close()
         self.words.close()
@@ -50,7 +51,7 @@ pub struct TextIndex:
         errdefer self.close()
         try self.build(doc, field)
 
-    mutating func consider(element: const Element*, field: str) -> !:
+    func consider(element: const Element*, field: str) -> !:
         let position = element.property(field) else return
         var value = try resolve_property(&element.properties.items[position], 0.0)
         defer value.close()
@@ -67,12 +68,12 @@ pub struct TextIndex:
         var frequencies: Index
         defer frequencies.close()
         for word in words.words.span():
-            discard(try frequencies.add(word.view(), 0))
+            _ = try frequencies.add(word.view(), 0)
         for word in frequencies.buckets.span():
-            discard(try self.vocabulary.add(word.key.view(), self.postings.count))
+            _ = try self.vocabulary.add(word.key.view(), self.postings.count)
             try self.postings.push(Posting(row = row, frequency = word.rows.count))
 
-    mutating func build(doc: interop.Reference[Document], field: str) -> !:
+    func build(doc: interop.Reference[Document], field: str) -> !:
         let view = try doc.get()
         if view.is_layered():
             var paths = try walk_document(view)
@@ -111,7 +112,7 @@ pub struct TextIndex:
             for index in bucket.rows.span():
                 let posting = self.postings.items[index]
                 var scratch: u8[32]
-                let candidate = try candidates.add(try format(scratch, f"{posting.row}"), posting.row)
+                let candidate = try candidates.add(try strings.format(scratch, f"{posting.row}"), posting.row)
                 if candidate == scores.count:
                     try scores.push(0.0)
                 scores.items[candidate] += (f64)posting.frequency * idf
@@ -130,7 +131,7 @@ pub struct TextIndex:
     pub func search_all(query: str) -> interop.Reference[Selection]!:
         return try self.search_terms(query, true)
 
-    pub mutating func close():
+    pub func close():
         self.rows.close()
         self.vocabulary.close()
         self.postings.close()

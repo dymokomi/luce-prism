@@ -16,7 +16,7 @@ pub struct Entry:
         self.path_buf = Buffer()
         self.kind_value = LookKind.other
 
-    pub mutating func close():
+    pub func close():
         self.name_buf.close()
         self.path_buf.close()
 
@@ -49,7 +49,7 @@ pub struct Entries:
             error(invalid, "Prism directory entry index is out of bounds")
         return self.items.items[index].kind_value
 
-    pub mutating func close():
+    pub func close():
         close_entries(&self.items)
 
 pub let entries_type = interop.Type[Entries]("Prism directory entries", Entries.close, closeable = true)

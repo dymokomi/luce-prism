@@ -147,7 +147,7 @@ func package_rejects_malformed() -> !:
     defer doc.release()
     let good = try doc.value().encode_package()
     defer good.release()
-    let padded = try alloc u8[good.value().size() + 8] in memory.heap
+    let padded = try new u8[good.value().size() + 8] --- in memory.heap
     defer free(padded) in memory.heap
     memory.copy(padded, good.value().bytes(), good.value().size())
     for i in good.value().size()..<padded.length:
@@ -213,7 +213,7 @@ func package_rejects_overlapping_blob_offsets() -> !:
     let packed = try doc.value().encode_package()
     defer packed.release()
     let data = packed.value().bytes()
-    let changed = try alloc u8[data.length] in memory.heap
+    let changed = try new u8[data.length] --- in memory.heap
     defer free(changed) in memory.heap
     memory.copy(changed, data, data.length)
     let first = offset_field(data, 0)

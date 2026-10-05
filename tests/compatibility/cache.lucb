@@ -7,7 +7,7 @@ struct Producer:
     var throws: bool
     var close_cache: prism.ValueCache*?
 
-    pub mutating func produce(key: prism.EvalKey) -> interop.Outcome[interop.Reference[prism.Value]]:
+    pub func produce(key: prism.EvalKey) -> interop.Outcome[interop.Reference[prism.Value]]:
         self.calls += 1
         if let cache = self.close_cache:
             cache.close()
@@ -17,8 +17,8 @@ struct Producer:
             return interop.Outcome[interop.Reference[prism.Value]].failure(failure.code, interop.Owned[str]("value allocation failed"))
         return interop.Outcome[interop.Reference[prism.Value]].success(interop.Owned[interop.Reference[prism.Value]](result, &result.owner.header))
 
-    pub mutating func close():
-        return
+    pub func close():
+        self.close_cache = none
 
 let producer_type = interop.Type[Producer]("Cache test producer", Producer.close, closeable = true)
 
@@ -68,10 +68,9 @@ func evalcache_throwing_producer_leaves_prior_entry_intact() -> !:
     assert(try number(&cache, prism.EvalKey(1, 0.0), callback) == 10.0)
     owner.value().throws = true
     var failed = false
-    discard(number(&cache, prism.EvalKey(2, 0.0), callback) catch failure:
+    _ = number(&cache, prism.EvalKey(2, 0.0), callback) catch failure:
         failed = true
         recover 0.0
-    )
     assert(failed and cache.valid(prism.EvalKey(1, 0.0)))
     assert(try number(&cache, prism.EvalKey(1, 0.0), callback) == 10.0)
     assert(owner.value().calls == 2)

@@ -56,8 +56,8 @@ func extract_then_instantiate_round_trips_subtree() -> !:
 func instantiate_skips_orphan_descendant() -> !:
     let fragment = try prism.Document.parse("#prisma 4.0\n")
     defer fragment.release()
-    discard(try fragment.value().append("/missing/child", "group"))
-    discard(try fragment.value().append("/kept", "group"))
+    _ = try fragment.value().append("/missing/child", "group")
+    _ = try fragment.value().append("/kept", "group")
     let destination = try prism.Document.parse("#prisma 4.0\n")
     defer destination.release()
     let roots = try destination.value().instantiate(fragment)

@@ -20,12 +20,12 @@ pub struct AppSettings:
         self.filename = try text_copy(path)
         self.data = DocumentData()
         errdefer self.close()
-        discard(try self.load())
+        _ = try self.load()
 
     pub func path() -> str:
         return self.filename.view()
 
-    pub mutating func load() -> bool!:
+    pub func load() -> bool!:
         var next = DocumentData()
         errdefer next.close()
         var loaded = true
@@ -47,7 +47,7 @@ pub struct AppSettings:
     pub func has(key: str) -> bool:
         return self.data.has_property("/settings", key)
 
-    pub mutating func set(key: str, value: interop.Reference[Value]) -> !:
+    pub func set(key: str, value: interop.Reference[Value]) -> !:
         var next = try self.data.copy()
         errdefer next.close()
         if not next.contains("/settings"):
@@ -56,7 +56,7 @@ pub struct AppSettings:
         self.data.close()
         self.data = next
 
-    pub mutating func remove(key: str) -> !:
+    pub func remove(key: str) -> !:
         if self.data.contains("/settings"):
             try self.data.remove_property("/settings", key)
 
@@ -115,7 +115,7 @@ pub struct AppSettings:
         result = Paths()
         return try own_paths(owned)
 
-    pub mutating func set_string_list(key: str, values: const str[]) -> !:
+    pub func set_string_list(key: str, values: const str[]) -> !:
         let shape: i64[1] = [(i64)values.length]
         let value = try Value.strings(shape, values)
         defer value.release()
@@ -136,7 +136,7 @@ pub struct AppSettings:
         result = Paths()
         return try own_paths(owned)
 
-    pub mutating func add_recent_file(path: str, cap: usize = 10) -> !:
+    pub func add_recent_file(path: str, cap: usize = 10) -> !:
         if path.length == 0:
             return
         let paths = try self.string_list("recent_files")
@@ -153,7 +153,7 @@ pub struct AppSettings:
                 try values.push(previous)
         try self.set_string_list("recent_files", values.span())
 
-    pub mutating func close():
+    pub func close():
         self.filename.close()
         self.data.close()
 

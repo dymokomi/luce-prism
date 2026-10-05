@@ -4,9 +4,10 @@
 import memory
 import pool
 import serialization.binary
+import strings
 
 func key(buffer: u8[], index: usize) -> str!:
-    return try format(buffer, f"/r/owner/objects/{index}")
+    return try strings.format(buffer, f"/r/owner/objects/{index}")
 
 func present(held: const pool.Pool*, index: usize) -> bool!:
     var buffer: u8[96]
@@ -16,7 +17,7 @@ func present(held: const pool.Pool*, index: usize) -> bool!:
     return false
 
 pub func main(arguments: str[]) -> i32!:
-    discard(arguments)
+    _ = arguments
     var held = pool.Pool()
     defer pool.close_pool(&held)
     let count: usize = 5000
@@ -48,7 +49,7 @@ pub func main(arguments: str[]) -> i32!:
         pool.drop_entry(&held, "root", try key(buffer, i), "size")
     assert(held.entries.count == 0)
     # The table holds views, so its strings must outlive it, as a document's do.
-    let arena = try alloc u8[count * 64] in memory.heap
+    let arena = try new u8[count * 64] --- in memory.heap
     defer free(arena) in memory.heap
     var table = binary.StringTable()
     defer table.close()

@@ -25,7 +25,7 @@ pub struct Journal:
     var filename: str
     var name_owner: memory.Allocator?
 
-    pub mutating func close():
+    pub func close():
         self.file.destroy()
         self.directory.destroy()
         self.lock_file.destroy()
@@ -35,7 +35,7 @@ pub struct Journal:
             self.filename = ""
             self.name_owner = none
 
-    pub mutating func append(frame: const u8[]) -> !:
+    pub func append(frame: const u8[]) -> !:
         if (i64)frame.length > max_journal - self.position:
             error(limit, "journal reached 256 MiB; export to a fresh database")
         try storage_io.write_all(&self.file, self.controls, frame)
@@ -43,7 +43,7 @@ pub struct Journal:
         self.position += (i64)frame.length
 
     ## Serialize with append at the engine layer; readers own independent roots.
-    pub mutating func compact(root: tree.Node*?, generation: u64) -> !:
+    pub func compact(root: tree.Node*?, generation: u64) -> !:
         let size = try checkpoint.measure(root, generation)
         try self.check_identity()
         var candidate: u8[64]
@@ -60,7 +60,7 @@ pub struct Journal:
             for i in 0..<16:
                 encoded_name[i * 2] = digits[random[i] >> 4]
                 encoded_name[i * 2 + 1] = digits[random[i] & 15]
-            name = try format(candidate, f".luce-db-{(str)encoded_name}")
+            name = try strings.format(candidate, f".luce-db-{(str)encoded_name}")
             replacement = self.controls.create(self.controls.context, &self.directory, (c.str)name) catch failure:
                 if failure.code == files.already_exists: continue
                 error(failure.code, failure.message)
@@ -90,7 +90,7 @@ pub struct Journal:
                 error(uncertain, "checkpoint published but could not be reopened; reopen")
             let positioned = replacement.seek(size) catch failure:
                 error(uncertain, "checkpoint published but append position could not be restored; reopen")
-            discard(positioned)
+            _ = positioned
         ## Success means publication regardless of whether a custom hook set its flag.
         let published_metadata = self.directory.entry_metadata((c.str)self.filename, follow_symlinks = false) catch failure:
             error(uncertain, "checkpoint published pathname cannot be verified; reopen")
@@ -127,7 +127,7 @@ func cleanup_owned(directory: files.Directory*, controls: storage_io.Controls, f
 func cleanup_if_owned(directory: files.Directory*, controls: storage_io.Controls, file: files.File*, name: str*, owned: bool*):
     if *owned:
         cleanup_owned(directory, controls, file, *name) catch failure:
-            discard(failure) ## Original error wins; an owned orphan may remain.
+            _ = failure ## Original error wins; an owned orphan may remain.
 
 pub func open(path: str, controls: storage_io.Controls = storage_io.Controls()) -> Journal!:
     if path.length == 0 or strings.contains(path, "\0"):
@@ -141,7 +141,7 @@ pub func open(path: str, controls: storage_io.Controls = storage_io.Controls()) 
     if file_name == "" or file_name == "." or file_name == "..":
         error(invalid, "database path needs a filename")
     var scratch: u8[4096]
-    let lock_name = try format(scratch, f"{file_name}.lock")
+    let lock_name = try strings.format(scratch, f"{file_name}.lock")
     var directory = try files.Directory.open((c.str)directory_name, follow_symlinks = false)
     errdefer directory.destroy()
     var lock_file = try storage_io.open_lock_file(&directory, (c.str)lock_name)
@@ -160,7 +160,7 @@ pub func open(path: str, controls: storage_io.Controls = storage_io.Controls()) 
         error(invalid, "database must be a regular file with one link")
     if created:
         try storage_io.write_all(&file, controls, header.bytes)
-    discard(try file.seek(0))
+    _ = try file.seek(0)
     return Journal(file = file, lock_file = lock_file, directory = directory, controls = controls, filename = file_name, name_owner = name_owner)
 
 func release_name(name: str, owner: memory.Allocator):
@@ -268,4 +268,4 @@ pub func replay(log: Journal*, root: tree.Node*?*, generation: u64*) -> !:
     ## publishing recovered state, even when the existing journal has no torn tail.
     try log.controls.sync(log.controls.context, &log.file)
     try log.controls.directory_sync(log.controls.context, &log.directory)
-    discard(try log.file.seek(log.position))
+    _ = try log.file.seek(log.position)

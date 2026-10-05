@@ -138,10 +138,10 @@ pub func run(directory: str) -> !:
     var q: u8[4096]
     var r: u8[4096]
     var s: u8[4096]
-    let path = try format(p, f"{directory}/settings.prisma")
-    let a = try format(q, f"{directory}/recent-a.md")
-    let b = try format(r, f"{directory}/recent-b.prism")
-    let gone = try format(s, f"{directory}/missing.prism")
+    let path = try strings.format(p, f"{directory}/settings.prisma")
+    let a = try strings.format(q, f"{directory}/recent-a.md")
+    let b = try strings.format(r, f"{directory}/recent-b.prism")
+    let gone = try strings.format(s, f"{directory}/missing.prism")
     try appsettings_defaults_when_file_missing(path)
     try appsettings_round_trips_typed_values(path)
     try appsettings_set_overwrites_and_remove_deletes(path)

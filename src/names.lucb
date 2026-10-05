@@ -17,7 +17,7 @@ pub struct Name:
     var entry: Entry*?
 
     ## The name `text`, shared with every other holder of the same text.
-    pub static func of(text: str) -> Name!:
+    pub func of(text: str) -> Name!:
         if text.length == 0:
             return Name()
         return Name(entry = try intern(text))
@@ -41,10 +41,10 @@ pub struct Name:
     ## like the copies it replaces.
     pub func copy() -> Name!:
         if let held = self.entry:
-            discard(held.references.add(1, .relaxed))
+            _ = held.references.add(1, .relaxed)
         return Name(entry = self.entry)
 
-    pub mutating func close():
+    pub func close():
         if let held = self.entry:
             release(held)
         self.entry = none
@@ -80,7 +80,7 @@ func grow(minimum: usize) -> !:
     var capacity: usize = 64
     while capacity < minimum * 2:
         capacity *= 2
-    let fresh = try alloc (Entry*?)[capacity] in memory.heap
+    let fresh = try new (Entry*?)[capacity] --- in memory.heap
     for i in 0..<capacity:
         fresh[i] = none
     let previous = slots
@@ -97,7 +97,7 @@ func intern(text: str) -> Entry*!:
     defer lock.unlock()
     if slots.length > 0:
         if let held = slots[slot_of(digest, text)]:
-            discard(held.references.add(1, .relaxed))
+            _ = held.references.add(1, .relaxed)
             return held
     # The entry comes first: a table grown for an entry that then failed would stay
     # allocated with nothing in it.

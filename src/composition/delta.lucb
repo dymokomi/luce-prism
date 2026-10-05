@@ -25,7 +25,7 @@ pub struct Key:
     pub var cell: Cell
     pub var name: Buffer
 
-    pub mutating func close():
+    pub func close():
         self.path.close()
         self.name.close()
 
@@ -39,7 +39,7 @@ pub struct Op:
     pub var children: List[Buffer]
     pub var samples: List[Sample]
 
-    pub mutating func close():
+    pub func close():
         self.type_name.close()
         self.value.close()
         self.text.close()
@@ -52,7 +52,7 @@ pub struct Entry:
     pub var key: Key
     pub var op: Op
 
-    mutating func close():
+    func close():
         self.key.close()
         self.op.close()
 
@@ -106,7 +106,7 @@ pub struct Layer:
     pub func count() -> usize:
         return self.items.count
 
-    pub mutating func close():
+    pub func close():
         for i in 0..<self.items.count:
             self.items.items[i].close()
         self.items.close()
@@ -125,7 +125,7 @@ pub struct Layer:
         let row = self.find(path, cell, name) else return none
         return &self.items.items[row].op
 
-    pub mutating func put(path: str, cell: Cell, name: str, op: Op) -> !:
+    pub func put(path: str, cell: Cell, name: str, op: Op) -> !:
         var owned = op
         errdefer owned.close()
         if let row = self.find(path, cell, name):
@@ -143,7 +143,7 @@ pub struct Layer:
         owned = Op()
         errdefer entry.close()
         try self.items.reserve(self.items.count + 1)
-        discard(try self.index.add(encoded.view(), self.items.count))
+        _ = try self.index.add(encoded.view(), self.items.count)
         try self.items.push(entry)
 
     pub func copy() -> Layer!:
@@ -162,7 +162,7 @@ pub struct Layer:
             key = Key()
             op = Op()
             errdefer copied_entry.close()
-            discard(try out.index.add(encoded.view(), out.items.count))
+            _ = try out.index.add(encoded.view(), out.items.count)
             try out.items.push(copied_entry)
         return out
 

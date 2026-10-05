@@ -5,7 +5,7 @@ import memory
 struct NativeCodec:
     var calls: usize
     var projection: prism.TextProjection*?
-    pub mutating func encode(doc: interop.Reference[prism.Document]) -> interop.Outcome[interop.Reference[prism.Blob]]:
+    pub func encode(doc: interop.Reference[prism.Document]) -> interop.Outcome[interop.Reference[prism.Blob]]:
         self.calls += 1
         if let projection = self.projection:
             projection.close()
@@ -13,14 +13,14 @@ struct NativeCodec:
             return interop.Outcome[interop.Reference[prism.Blob]].failure(failure.code, interop.Owned[str]("native codec encode failed"))
         return interop.Outcome[interop.Reference[prism.Blob]].success(interop.Owned[interop.Reference[prism.Blob]](result, &result.owner.header))
 
-    pub mutating func decode(blob: interop.Reference[prism.Blob]) -> interop.Outcome[interop.Reference[prism.Document]]:
+    pub func decode(blob: interop.Reference[prism.Blob]) -> interop.Outcome[interop.Reference[prism.Document]]:
         self.calls += 1
         let result = prism.Document.decode(blob.value().bytes()) catch failure:
             return interop.Outcome[interop.Reference[prism.Document]].failure(failure.code, interop.Owned[str]("native codec decode failed"))
         return interop.Outcome[interop.Reference[prism.Document]].success(interop.Owned[interop.Reference[prism.Document]](result, &result.owner.header))
 
-    pub mutating func close():
-        return
+    pub func close():
+        self.calls = 0
 
 let native_codec_type = interop.Type[NativeCodec]("Test native text codec", NativeCodec.close, closeable = true)
 

@@ -14,7 +14,7 @@ struct Tracker: memory.Allocator:
     var allocations: usize
     var remaining: usize?
 
-    pub mutating func allocate(size: usize, alignment: usize) -> u8[]?:
+    pub func allocate(size: usize, alignment: usize) -> u8[]?:
         if let remaining = self.remaining:
             if remaining == 0:
                 return none
@@ -24,10 +24,10 @@ struct Tracker: memory.Allocator:
         self.allocations += 1
         return bytes
 
-    pub mutating func resize(bytes: u8[], size: usize) -> bool:
+    pub func resize(bytes: u8[], size: usize) -> bool:
         return self.upstream.resize(bytes, size)
 
-    pub mutating func release(bytes: u8[]):
+    pub func release(bytes: u8[]):
         assert(self.live > 0)
         self.live -= 1
         self.upstream.release(bytes)
@@ -77,10 +77,9 @@ func exercise(kind: usize) -> !:
         defer second.release()
         var log = try prism.EventLog(first)
         defer log.close()
-        discard(log.commit(second) catch failure:
+        _ = log.commit(second) catch failure:
             assert(log.head_offset() == 0)
             error(failure.code, failure.message)
-        )
         let changes = try log.since(0)
         defer changes.release()
         let snapshot = try log.at(1)
@@ -116,7 +115,7 @@ func exercise(kind: usize) -> !:
     if kind == 3:
         var bundle = try prism.Bundle()
         defer bundle.close()
-        discard(try bundle.add_file("/bundle", "page.html", b"<p>hello</p>"))
+        _ = try bundle.add_file("/bundle", "page.html", b"<p>hello</p>")
         let bytes = try bundle.materialize("/bundle/page_html")
         defer bytes.release()
         return
@@ -168,8 +167,8 @@ func exercise(kind: usize) -> !:
         defer selection.release()
         let document = try selection.value().document()
         defer document.release()
-        discard(try query.value().aggregate("x", prism.Aggregate.median))
-        discard(try query.value().distinct_count("x"))
+        _ = try query.value().aggregate("x", prism.Aggregate.median)
+        _ = try query.value().distinct_count("x")
         let groups = try query.value().aggregate_by(["type"], "x", prism.Aggregate.sum)
         defer groups.release()
         let group_rows = try groups.value().rows(0)
@@ -197,7 +196,7 @@ func exercise(kind: usize) -> !:
         defer column.close()
         let rows = try column.filter("x", prism.Comparison.greater, 0.0)
         defer rows.release()
-        discard(try column.aggregate("y", prism.Aggregate.average, rows))
+        _ = try column.aggregate("y", prism.Aggregate.average, rows)
     elif kind == 10:
         let registry = try interop.Reference[prism.NodeRegistry].adopt(try new prism.NodeRegistry() in memory.heap, prism.registry_type, memory.heap)
         defer registry.release()
@@ -232,11 +231,10 @@ func exercise(kind: usize) -> !:
     elif kind == 14:
         try exercise_callback()
     elif kind == 15:
-        discard(base.value().append("/c", "node") catch failure:
+        _ = base.value().append("/c", "node") catch failure:
             assert(base.value().element_count() == 2 and base.value().child_count() == 2)
             assert(not base.value().contains("/c") and base.value().contains("/a") and base.value().contains("/b"))
             error(failure.code, failure.message)
-        )
     elif kind == 16:
         let identifier = base.value().element_id("/a") else error(prism.invalid, "missing ID")
         base.value().rename("/a", "/c") catch failure:

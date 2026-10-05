@@ -644,8 +644,8 @@ pub func append_layer(journal: Journal*, identity: str, generation: u64, layer: 
     defer prefix.close()
     put_chunked(&tx, &prefix, blob.bytes(), true) catch failure:
         error(prism_wal_code(failure.code), failure.message)
-    discard(tx.commit(wait_ms) catch failure:
-        error(prism_wal_code(failure.code), failure.message))
+    _ = tx.commit(wait_ms) catch failure:
+        error(prism_wal_code(failure.code), failure.message)
 
 func remove_prefix_keys(tx: wal.Transaction*, snap: wal.View*, identity: str, through: u64) -> !:
     let records = (i64)wal_tree.count(snap.root)
@@ -740,8 +740,8 @@ pub func reclaim(journal: Journal*, identity: str, owned: tables.Tables*, throug
         error(prism_wal_code(failure.code), failure.message)
     remove_prefix_keys(&tx, &snap, identity, through) catch failure:
         error(prism_wal_code(failure.code), failure.message)
-    discard(tx.commit(wait_ms) catch failure:
-        error(prism_wal_code(failure.code), failure.message))
+    _ = tx.commit(wait_ms) catch failure:
+        error(prism_wal_code(failure.code), failure.message)
     wal.checkpoint(store, wait_ms) catch failure:
         error(prism_wal_code(failure.code), failure.message)
     if old_file.used > 0 and (new_name.used == 0 or old_file.view() != new_name.view()):
@@ -750,7 +750,7 @@ pub func reclaim(journal: Journal*, identity: str, owned: tables.Tables*, throug
         var path = try join_path(dir.view(), old_file.view())
         defer path.close()
         file_io.remove(path.view()) catch failure:
-            discard(failure)
+            _ = failure
 
 pub func snap_basename(identity: str, through: u64) -> Buffer!:
     var out: Buffer

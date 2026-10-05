@@ -116,11 +116,10 @@ func query_one_throws_on_zero_or_many() -> !:
         let query = try filtered(doc, try prism.Predicate.by_type(kind))
         defer query.release()
         var rejected = false
-        discard(query.value().one() catch failure:
+        _ = query.value().one() catch failure:
             assert(failure.code == prism.invalid)
             rejected = true
             recover ""
-        )
         assert(rejected)
 
 func query_group_by() -> !:
@@ -176,14 +175,14 @@ struct Counter:
     var notes_only: bool
     var retained: interop.Reference[prism.Row]?
 
-    pub mutating func invoke(row: interop.Reference[prism.Row]) -> interop.Outcome[bool]:
+    pub func invoke(row: interop.Reference[prism.Row]) -> interop.Outcome[bool]:
         self.scans += 1
         if let previous = self.retained:
             previous.release()
         self.retained = row.clone()
         return interop.Outcome[bool].success(interop.Owned[bool](not self.notes_only or row.value().type_name() == "note"))
 
-    pub mutating func close():
+    pub func close():
         if let row = self.retained:
             row.release()
         self.retained = none
@@ -227,7 +226,7 @@ func query_is_lazy_and_short_circuits() -> !:
     counter.value().scans = 0
     let ordered = try query.value().order_by("weight")
     defer ordered.release()
-    discard(try ordered.value().first())
+    _ = try ordered.value().first()
     assert(counter.value().scans == 6)
     counter.value().scans = 0
     let limited = try query.value().limit(2)

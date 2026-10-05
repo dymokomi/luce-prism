@@ -14,7 +14,7 @@ struct View:
     var text: Buffer
     var canonical: Buffer
 
-    mutating func close():
+    func close():
         self.name.close()
         self.text.close()
         self.canonical.close()
@@ -86,24 +86,24 @@ pub struct TextProjection:
     pub func column() -> usize:
         return self.error_column
 
-    mutating func enter() -> !:
+    func enter() -> !:
         if self.busy:
             error(invalid, "Prism projection callback cannot mutate its active projection")
         self.busy = true
 
-    mutating func leave():
+    func leave():
         self.busy = false
         if self.close_pending:
             self.close_pending = false
             self.close()
 
-    mutating func clear_error():
+    func clear_error():
         self.message.close()
         self.error_line = 0
         self.error_column = 0
         self.parsed = true
 
-    mutating func replace(doc: interop.Reference[Document], text: Buffer):
+    func replace(doc: interop.Reference[Document], text: Buffer):
         if let previous = self.source:
             previous.release()
         self.source = doc
@@ -111,7 +111,7 @@ pub struct TextProjection:
         self.buffer = text
         self.clear_error()
 
-    pub mutating func set_document(document: interop.Reference[Document], view: codecs.Codec = codecs.Codec.auto) -> bool!:
+    pub func set_document(document: interop.Reference[Document], view: codecs.Codec = codecs.Codec.auto) -> bool!:
         try self.enter()
         defer self.leave()
         let next = try (try document.get()).copy()
@@ -134,7 +134,7 @@ pub struct TextProjection:
         clear_views(&self.views)
         return represented
 
-    mutating func switch_view(codec: codecs.Codec, adapter: interop.Reference[CodecAdapter]?) -> bool!:
+    func switch_view(codec: codecs.Codec, adapter: interop.Reference[CodecAdapter]?) -> bool!:
         let doc = self.source else error(invalid, "Prism text projection is closed")
         var output = render(doc, codec, adapter) catch failure:
             if failure.code == memory.exhausted:
@@ -179,19 +179,19 @@ pub struct TextProjection:
         self.clear_error()
         return true
 
-    pub mutating func set_codec(codec: codecs.Codec) -> bool!:
+    pub func set_codec(codec: codecs.Codec) -> bool!:
         if codec == codecs.Codec.auto:
             return false
         try self.enter()
         defer self.leave()
         return try self.switch_view(codecs.Codec.prisma if codec == codecs.Codec.prism else codec, none)
 
-    pub mutating func set_adapter(adapter: interop.Reference[CodecAdapter]) -> bool!:
+    pub func set_adapter(adapter: interop.Reference[CodecAdapter]) -> bool!:
         try self.enter()
         defer self.leave()
         return try self.switch_view(codecs.Codec.auto, adapter)
 
-    pub mutating func set_text(text: str) -> bool!:
+    pub func set_text(text: str) -> bool!:
         try self.enter()
         defer self.leave()
         var next_text = try text_copy(text)
@@ -241,7 +241,7 @@ pub struct TextProjection:
             next = none
         return self.parsed
 
-    pub mutating func set_source(bytes: str, codec: codecs.Codec) -> bool!:
+    pub func set_source(bytes: str, codec: codecs.Codec) -> bool!:
         if codec == codecs.Codec.auto or codec == codecs.Codec.prism:
             return false
         try self.enter()
@@ -260,7 +260,7 @@ pub struct TextProjection:
         clear_views(&self.views)
         return true
 
-    pub mutating func amend(document: interop.Reference[Document]) -> !:
+    pub func amend(document: interop.Reference[Document]) -> !:
         try self.enter()
         defer self.leave()
         let next = try (try document.get()).copy()
@@ -281,7 +281,7 @@ pub struct TextProjection:
         if let adapter = self.custom:
             adapter.trace(visit, context)
 
-    pub mutating func close():
+    pub func close():
         if self.busy:
             self.close_pending = true
             return

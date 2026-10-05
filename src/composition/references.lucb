@@ -18,7 +18,7 @@ struct Source:
     var id: Buffer
     var document: DocumentData = DocumentData()
 
-    mutating func close():
+    func close():
         self.id.close()
         self.document.close()
 
@@ -137,7 +137,7 @@ struct Context:
     var stack: List[Buffer]
     var cache: List[Source]
 
-    mutating func close():
+    func close():
         close_names(&self.stack)
         close_sources(&self.cache)
 
@@ -169,7 +169,7 @@ struct Context:
             try read_document(bytes.value, &output)
             return output
 
-    mutating func compose(id: str) -> DocumentData!:
+    func compose(id: str) -> DocumentData!:
         if has_name(&self.stack, id):
             error(invalid, "Prism reference cycle")
         for cached in self.cache.span():
@@ -221,7 +221,7 @@ struct Context:
         try self.cache.push(cached)
         return output
 
-    mutating func pop():
+    func pop():
         self.stack.items[self.stack.count - 1].close()
         self.stack.count -= 1
 
@@ -232,7 +232,7 @@ pub struct ReferenceLibrary:
         return
 
     ## Snapshot an authored document under a relative or absolute library name.
-    pub mutating func add(name: str, document: interop.Reference[Document]) -> !:
+    pub func add(name: str, document: interop.Reference[Document]) -> !:
         var source = Source()
         errdefer source.close()
         source.id = try identifier(name)
@@ -258,7 +258,7 @@ pub struct ReferenceLibrary:
     pub func materialize(name: str) -> interop.Reference[Document]!:
         return try self.compose(name)
 
-    pub mutating func close():
+    pub func close():
         close_sources(&self.sources)
 
 pub let library_type = interop.Type[ReferenceLibrary]("Prism reference library", ReferenceLibrary.close, closeable = true)

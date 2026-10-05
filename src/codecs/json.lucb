@@ -7,6 +7,7 @@ from model import DocumentData
 from path import path_name
 from value import ValueData, scalar_bits
 from types import DType, invalid, limit_exceeded
+import strings
 
 func scalar(node: const syntax.Node*) -> ValueData!:
     if node.kind == syntax.Kind.boolean:
@@ -36,7 +37,7 @@ func build(doc: DocumentData*, path: str, tree: const syntax.Tree*, index: usize
         let child = &tree.nodes.items[entry.node]
         if child.kind != syntax.Kind.array and child.kind != syntax.Kind.object:
             var digits: u8[32]
-            let key = try format(digits, f"{i}") if node.kind == syntax.Kind.array else entry.key.view()
+            let key = try strings.format(digits, f"{i}") if node.kind == syntax.Kind.array else entry.key.view()
             var value = try scalar(child)
             defer value.close()
             try put(doc, path, key, &value)
@@ -45,7 +46,7 @@ func build(doc: DocumentData*, path: str, tree: const syntax.Tree*, index: usize
         let child = &tree.nodes.items[entry.node]
         if child.kind == syntax.Kind.array or child.kind == syntax.Kind.object:
             var digits: u8[32]
-            let key = try format(digits, f"{i}") if node.kind == syntax.Kind.array else entry.key.view()
+            let key = try strings.format(digits, f"{i}") if node.kind == syntax.Kind.array else entry.key.view()
             if not segment(key):
                 error(invalid, "JSON child key is not a representable element name")
             var next = try child_path(path, key)
@@ -151,7 +152,7 @@ func emit(doc: const DocumentData*, path: str, output: Buffer*, depth: usize) ->
                 try output.byte(',')
             let index = indices.items[i] if sparse else i
             var scratch: u8[32]
-            let name = try format(scratch, f"{index}")
+            let name = try strings.format(scratch, f"{index}")
             if let value = get_value(doc, path, name):
                 try write_value(output, value)
             else:

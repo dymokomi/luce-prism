@@ -39,8 +39,8 @@ func run_client() -> !:
     let text = try prism.Value.text("hello")
     defer text.release()
     try tx.value().set("/notes", "text", text)
-    discard(try tx.value().commit())
-    discard(try store.value().bake())
+    _ = try tx.value().commit()
+    _ = try store.value().bake()
     let snap = try store.value().snapshot()
     defer snap.release()
     assert(try snap.value().contains("/notes"))
@@ -57,7 +57,7 @@ func run_client() -> !:
         var intact = true
         var size: usize = 16
         while size <= 4096:
-            let scrub = try alloc u8[size] in memory.heap
+            let scrub = try new u8[size] --- in memory.heap
             for i in 0..<scrub.length: scrub[i] = '?'
             if failure.message != "Prism property does not exist": intact = false
             free(scrub) in memory.heap

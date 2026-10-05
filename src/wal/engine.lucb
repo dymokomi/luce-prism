@@ -31,7 +31,7 @@ pub func open(path: str, controls: storage_io.Controls = storage_io.Controls()) 
     return store
 
 pub func hold(store: Store*):
-    discard(store.references.add(1, .relaxed))
+    _ = store.references.add(1, .relaxed)
 
 pub func drop(store: Store*):
     if store.references.sub(1, .acq_rel) == 1:
@@ -69,12 +69,12 @@ pub struct View:
     pub var root: tree.Node*?
     pub var generation: u64
 
-    pub mutating func close():
+    pub func close():
         let store = self.store else return
         tree.drop(self.root)
         self.root = none
         self.store = none
-        discard(store.views.sub(1, .acq_rel))
+        _ = store.views.sub(1, .acq_rel)
         drop(store)
 
     pub func ensure_open() -> !:
@@ -88,12 +88,12 @@ pub struct View:
 
 pub func snapshot(store: Store*) -> View!:
     if store.views.add(1, .acq_rel) >= 1024:
-        discard(store.views.sub(1, .acq_rel))
+        _ = store.views.sub(1, .acq_rel)
         error(limit, "database has 1024 active snapshots/transactions")
     store.head_lock.lock()
     defer store.head_lock.unlock()
     if store.poisoned:
-        discard(store.views.sub(1, .acq_rel))
+        _ = store.views.sub(1, .acq_rel)
         error(uncertain, "database needs reopen after uncertain I/O")
     hold(store)
     return View(store = store, root = tree.hold(store.root), generation = store.generation)
@@ -103,11 +103,11 @@ pub struct Transaction:
     var payload: Buffer
     var operations: usize
 
-    pub mutating func close():
+    pub func close():
         self.payload.close()
         self.view.close()
 
-    pub mutating func put(key: str, value: const u8[], only_new: bool = false) -> !:
+    pub func put(key: str, value: const u8[], only_new: bool = false) -> !:
         try self.view.ensure_open()
         try valid_key(key)
         if value.length > max_value: error(limit, "value exceeds 1 MiB")
@@ -124,7 +124,7 @@ pub struct Transaction:
         self.view.root = root
         self.operations += 1
 
-    pub mutating func remove(key: str) -> !:
+    pub func remove(key: str) -> !:
         try self.view.ensure_open()
         try valid_key(key)
         if self.operations >= 65536 or self.payload.count + 9 + key.length > max_frame - 32:
@@ -136,7 +136,7 @@ pub struct Transaction:
         self.view.root = root
         self.operations += 1
 
-    pub mutating func commit(wait_ms: i64 = 0) -> u64!:
+    pub func commit(wait_ms: i64 = 0) -> u64!:
         let store = self.view.store else error(closed, "transaction is closed")
         ## Retain through queue release, even after closing the last view.
         hold(store)
@@ -149,7 +149,7 @@ pub struct Transaction:
         store.head_lock.unlock()
         if poisoned: error(uncertain, "database needs reopen after uncertain I/O")
         if current != self.view.generation:
-            discard(store.conflicted_commits.add(1, .relaxed))
+            _ = store.conflicted_commits.add(1, .relaxed)
             error(conflict, "snapshot changed; restart the transaction")
         if self.operations == 0:
             self.close()

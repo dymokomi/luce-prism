@@ -9,6 +9,7 @@ from model import Element
 from animation import resolve_property
 from storage import List
 from types import DType, invalid
+import strings
 
 struct Point32:
     pub var x: f32
@@ -53,7 +54,7 @@ pub struct SpatialIndex:
             error(invalid, "spatial coordinate exceeds the supported grid")
         return (i64)coordinate
 
-    mutating func consider(element: const Element*, field: str) -> !:
+    func consider(element: const Element*, field: str) -> !:
         let position = element.property(field) else return
         var value = try resolve_property(&element.properties.items[position], 0.0)
         defer value.close()
@@ -64,11 +65,11 @@ pub struct SpatialIndex:
         let y = try self.coordinate((f64)point.y)
         let z = try self.coordinate((f64)point.z)
         var scratch: u8[100]
-        discard(try self.grid.add(try format(scratch, f"{x}:{y}:{z}"), self.points.count))
+        _ = try self.grid.add(try strings.format(scratch, f"{x}:{y}:{z}"), self.points.count)
         try self.points.push(point)
         try self.rows.append(element)
 
-    mutating func build(doc: interop.Reference[Document], field: str) -> !:
+    func build(doc: interop.Reference[Document], field: str) -> !:
         let view = try doc.get()
         if view.is_layered():
             var paths = try walk_document(view)
@@ -105,7 +106,7 @@ pub struct SpatialIndex:
             for y in minimum[1]..=maximum[1]:
                 for z in minimum[2]..=maximum[2]:
                     var scratch: u8[100]
-                    if let position = self.grid.find(try format(scratch, f"{x}:{y}:{z}")):
+                    if let position = self.grid.find(try strings.format(scratch, f"{x}:{y}:{z}")):
                         for row in self.grid.buckets.items[position].rows.span():
                             try result.push(row)
         return result
@@ -165,7 +166,7 @@ pub struct SpatialIndex:
                 try hits.push(ranked.Hit(row = row))
         return try ranked.select(self.rows.view_data(), hits.span(), hits.count)
 
-    pub mutating func close():
+    pub func close():
         self.rows.close()
         self.points.close()
         self.grid.close()

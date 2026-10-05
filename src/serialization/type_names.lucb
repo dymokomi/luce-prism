@@ -11,7 +11,7 @@ pub struct TypeSpec:
     pub var tuple_width: usize
     pub var label: str = ""
 
-    pub mutating func close():
+    pub func close():
         self.shape.close()
 
 pub func dtype_name(dtype: DType) -> str:

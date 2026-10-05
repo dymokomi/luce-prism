@@ -40,7 +40,7 @@ struct Node:
             output.callback = callback.clone()
         return output
 
-    mutating func close():
+    func close():
         self.name.close()
         self.inputs.close()
         self.outputs.close()
@@ -65,7 +65,7 @@ struct Registry:
             try output.nodes.push(try node.copy())
         return output
 
-    mutating func insert(node: Node) -> !:
+    func insert(node: Node) -> !:
         if let index = self.find(node.name.view()):
             self.nodes.items[index].close()
             self.nodes.items[index] = node
@@ -83,7 +83,7 @@ struct Registry:
             if let callback = node.callback:
                 callback.trace(visit, context)
 
-    mutating func close():
+    func close():
         for i in 0..<self.nodes.count:
             self.nodes.items[i].close()
         self.nodes.close()
@@ -94,18 +94,18 @@ pub struct NodeRegistry:
     pub func init():
         return
 
-    pub mutating func add(name: str, callback: interop.Callback[interop.View[BakeContext], unit]) -> !:
+    pub func add(name: str, callback: interop.Callback[interop.View[BakeContext], unit]) -> !:
         var node: Node
         errdefer node.close()
         node.name = try text_copy(name)
         node.callback = callback.clone()
         try self.data.insert(node)
 
-    pub mutating func declare_input(type_name: str, name: str, fallback: interop.Reference[Value]) -> !:
+    pub func declare_input(type_name: str, name: str, fallback: interop.Reference[Value]) -> !:
         let index = self.data.find(type_name) else error(missing, "node type is not registered")
         try set_value(&self.data.nodes.items[index].inputs, name, (try fallback.get()).view_data())
 
-    pub mutating func declare_output(type_name: str, name: str, fallback: interop.Reference[Value]) -> !:
+    pub func declare_output(type_name: str, name: str, fallback: interop.Reference[Value]) -> !:
         let index = self.data.find(type_name) else error(missing, "node type is not registered")
         try set_value(&self.data.nodes.items[index].outputs, name, (try fallback.get()).view_data())
 
@@ -131,7 +131,7 @@ pub struct NodeRegistry:
             error(invalid, "node input index is out of bounds")
         return properties.items[index].name.view()
 
-    pub mutating func add_math() -> !:
+    pub func add_math() -> !:
         let names: str[13] = ["add", "sub", "mul", "div", "min", "max", "eq", "ne", "lt", "le", "gt", "ge", "neg"]
         for i in 0..<names.length:
             var node = Node(operation = i + 1)
@@ -145,7 +145,7 @@ pub struct NodeRegistry:
             try set_value(&node.outputs, "out", &fallback)
             try self.data.insert(node)
 
-    pub mutating func close():
+    pub func close():
         self.data.close()
 
     func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):
@@ -156,8 +156,10 @@ pub let registry_type = interop.Type[NodeRegistry]("Prism node registry", NodeRe
 # A private lease owner keeps retained callback views checkable after the bake.
 struct Scope:
     var reserved: u8
-    pub mutating func close():
-        return
+    ## Ends the scope; it holds nothing to release. Writing its field keeps `close` a method
+    ## with a receiver, the disposer `interop.Type` takes (base.md §9.5).
+    pub func close():
+        self.reserved = 0
 
 let scope_type = interop.Type[Scope]("Prism bake scope", Scope.close, closeable = true)
 
@@ -209,10 +211,10 @@ struct Engine:
                 return i
         return none
 
-    mutating func leave_bake():
+    func leave_bake():
         self.active.count -= 1
 
-    mutating func bake(path: str, depth: usize) -> usize?!:
+    func bake(path: str, depth: usize) -> usize?!:
         if depth > 128:
             error(limit_exceeded, "Prism evaluation depth exceeds 128")
         if let index = self.cached(path):
@@ -278,11 +280,11 @@ struct Engine:
                 defer view.release()
                 let result = callback.invoke(view)
                 defer result.release()
-                discard(try result.get())
+                _ = try result.get()
         try self.memo.push(outputs)
         return self.memo.count - 1
 
-    mutating func output(slot: str, depth: usize) -> ValueData!:
+    func output(slot: str, depth: usize) -> ValueData!:
         let path = element_path(slot)
         let name = slot_name(slot)
         if name.length == 0:
@@ -297,7 +299,7 @@ struct Engine:
                 return try resolve_property(&element.properties.items[prop], self.time)
         return try zero()
 
-    mutating func input(index: usize, name: str, depth: usize) -> ValueData!:
+    func input(index: usize, name: str, depth: usize) -> ValueData!:
         let element = &self.doc.elements.items[index]
         var target = try element.path.copy()
         defer target.close()
@@ -313,13 +315,13 @@ struct Engine:
                 return try inputs.properties.items[property].value.copy()
         return try zero()
 
-    mutating func clear():
+    func clear():
         for i in 0..<self.memo.count:
             self.memo.items[i].close()
         self.memo.close()
         self.active.close()
 
-    mutating func close():
+    func close():
         self.clear()
         self.doc.close()
         self.registry.close()
@@ -336,38 +338,38 @@ pub struct Evaluator:
         self.engine.registry = try (try registry.get()).data.copy()
         self.engine.time = time
 
-    pub mutating func output(slot: str) -> interop.Reference[Value]!:
+    pub func output(slot: str) -> interop.Reference[Value]!:
         return try own_value(try self.engine.output(slot, 0))
 
-    pub mutating func input(path: str, name: str) -> interop.Reference[Value]!:
+    pub func input(path: str, name: str) -> interop.Reference[Value]!:
         let index = self.engine.doc.find(path) else return try own_value(try zero())
         return try own_value(try self.engine.input(index, name, 0))
 
     pub func cached_count() -> usize:
         return self.engine.memo.count
 
-    pub mutating func bake(path: str) -> usize!:
+    pub func bake(path: str) -> usize!:
         let index = try self.engine.bake(element_path(path), 0) else return 0
         return self.engine.memo.items[index].properties.count
 
-    pub mutating func output_name(path: str, index: usize) -> str!:
+    pub func output_name(path: str, index: usize) -> str!:
         let position = try self.engine.bake(element_path(path), 0) else error(missing, "baked node is absent")
         let properties = &self.engine.memo.items[position].properties
         if index >= properties.count:
             error(invalid, "baked output index is out of bounds")
         return properties.items[index].name.view()
 
-    pub mutating func set_time(time: f64) -> !:
+    pub func set_time(time: f64) -> !:
         if not math.is_finite(time):
             error(invalid, "evaluation time must be finite")
         if time != self.engine.time:
             self.engine.clear()
             self.engine.time = time
 
-    pub mutating func materialize() -> interop.Reference[Document]!:
+    pub func materialize() -> interop.Reference[Document]!:
         for element in self.engine.doc.elements.span():
             if self.engine.registry.find(element.kind.view()) != none:
-                discard(try self.engine.bake(element.path.view(), 0))
+                _ = try self.engine.bake(element.path.view(), 0)
         var doc = try self.engine.doc.copy()
         errdefer doc.close()
         for output in self.engine.memo.span():
@@ -378,7 +380,7 @@ pub struct Evaluator:
         doc = DocumentData()
         return try own_document(owned)
 
-    pub mutating func close():
+    pub func close():
         self.engine.close()
 
     func trace(visit: func(ownership.Object*, void*) -> unit, context: void*):

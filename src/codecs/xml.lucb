@@ -23,7 +23,7 @@ pub struct Token:
                 return item.value.view()
         return none
 
-    pub mutating func close():
+    pub func close():
         self.name.close()
         self.text.close()
         close_pairs(&self.attrs)
@@ -31,7 +31,7 @@ pub struct Token:
 pub struct Tokens:
     pub var values: List[Token]
 
-    pub mutating func close():
+    pub func close():
         for i in 0..<self.values.count:
             self.values.items[i].close()
         self.values.close()

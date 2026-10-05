@@ -41,7 +41,7 @@ pub func own_source(held: tables.Tables*, context: void*?, fault: func(void*?, s
     return out
 
 func hold_source(source: TableSource*):
-    discard(source.references.add(1, .relaxed))
+    _ = source.references.add(1, .relaxed)
 
 pub func drop_source(source: TableSource*):
     if source.references.sub(1, .acq_rel) == 1:
@@ -56,7 +56,7 @@ struct Matched:
     var rows: List[Element]
     var owned: bool
 
-    mutating func close():
+    func close():
         if self.owned:
             close_elements(&self.rows)
         else:
@@ -84,7 +84,7 @@ struct Wanted:
                 return true
         return false
 
-    mutating func close():
+    func close():
         close_names(&self.names)
 
 ## A view of a stored element as a document row: it borrows the element's storage
@@ -125,7 +125,7 @@ pub struct Query:
         self.source = none
 
     ## A plan over a store's tables (see TableSource), holding `source`.
-    pub static func over(source: TableSource*, pattern: str = "") -> Query!:
+    pub func over(source: TableSource*, pattern: str = "") -> Query!:
         let placeholder = try own_document(DocumentData())
         defer placeholder.release()
         var output = try Query(placeholder, pattern)
@@ -474,7 +474,7 @@ pub struct Query:
         defer positions.close()
         return try grouping.build_rows(found.rows.span(), positions.span(), fields, value_field, operation)
 
-    pub mutating func close():
+    pub func close():
         self.document.release()
         if let source = self.source:
             drop_source(source)

@@ -17,7 +17,7 @@ struct Cursor:
     var stack: tree.Node*?[64]
     var depth: usize
 
-    mutating func next() -> tree.Entry*?!:
+    func next() -> tree.Entry*?!:
         while let node = self.pending:
             if self.depth == self.stack.length: error(limit, "checkpoint index depth exceeds bound")
             self.stack[self.depth] = node
@@ -56,12 +56,12 @@ struct Sink:
     var total: i64
     var crc: Crc32 = Crc32()
 
-    mutating func flush() -> !:
+    func flush() -> !:
         if self.used == 0: return
         try storage.write_all(self.file, self.controls, self.buffer[..<self.used])
         self.used = 0
 
-    mutating func put(data: const u8[], included: bool = true) -> !:
+    func put(data: const u8[], included: bool = true) -> !:
         if included: self.crc.update(data)
         self.total += (i64)data.length
         var offset: usize
@@ -77,7 +77,7 @@ func uint(out: u8[], offset: usize, value: u64, width: usize):
     for i in 0..<width: out[offset + i] = (u8)(value >> (i * 8))
 
 pub func write(file: files.File*, controls: storage.Controls, root: tree.Node*?, generation: u64, size: i64) -> !:
-    let buffer = try alloc u8[buffer_size] in memory.heap
+    let buffer = try new u8[buffer_size] --- in memory.heap
     defer free(buffer) in memory.heap
     var sink = Sink(file = file, controls = controls, buffer = buffer)
     try sink.put(header.bytes)

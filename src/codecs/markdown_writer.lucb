@@ -3,6 +3,7 @@ from codecs.common import get_text, get_number, type_of
 from storage import Buffer
 from model import DocumentData
 from types import invalid, limit_exceeded
+import strings
 
 func repeat(output: Buffer*, byte: u8, count: usize) -> !:
     if count > 1048576:
@@ -148,7 +149,7 @@ func blocks(doc: const DocumentData*, parent: str, output: Buffer*, depth: usize
             for i in 0..<items.count:
                 let number = i + 1
                 var scratch: u8[32]
-                let marker = try format(scratch, f"{number}. ") if ordered else "- "
+                let marker = try strings.format(scratch, f"{number}. ") if ordered else "- "
                 var spaces: Buffer
                 defer spaces.close()
                 try repeat(&spaces, ' ', marker.length)

@@ -71,7 +71,7 @@ pub struct CodecAdapter:
         if let callback = self.decoder:
             callback.trace(visit, context)
 
-    pub mutating func close():
+    pub func close():
         self.label.close()
         if let callback = self.encoder:
             callback.release()

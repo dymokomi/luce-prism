@@ -24,7 +24,7 @@ pub struct Node:
     pub var boolean: bool
     pub var children: List[Entry]
 
-    pub mutating func close():
+    pub func close():
         self.text.close()
         for i in 0..<self.children.count:
             self.children.items[i].key.close()
@@ -33,7 +33,7 @@ pub struct Node:
 pub struct Tree:
     pub var nodes: List[Node]
 
-    pub mutating func close():
+    pub func close():
         for i in 0..<self.nodes.count:
             self.nodes.items[i].close()
         self.nodes.close()
@@ -43,25 +43,25 @@ struct Parser:
     var pos: usize
     var tree: Tree
 
-    mutating func space():
+    func space():
         while self.pos < self.text.length:
             let c = self.text.bytes[self.pos]
             if c != ' ' and c != '\t' and c != '\n' and c != '\r':
                 return
             self.pos += 1
 
-    mutating func take(byte: u8) -> bool:
+    func take(byte: u8) -> bool:
         self.space()
         if self.pos < self.text.length and self.text.bytes[self.pos] == byte:
             self.pos += 1
             return true
         return false
 
-    mutating func expect(byte: u8) -> !:
+    func expect(byte: u8) -> !:
         if not self.take(byte):
             error(invalid, "malformed JSON delimiter")
 
-    mutating func hex4() -> u32!:
+    func hex4() -> u32!:
         if self.text.length - self.pos < 4:
             error(invalid, "truncated JSON Unicode escape")
         var output: u32 = 0
@@ -80,7 +80,7 @@ struct Parser:
             output = output * 16 + digit
         return output
 
-    mutating func string() -> Buffer!:
+    func string() -> Buffer!:
         try self.expect('"')
         var output: Buffer
         errdefer output.close()
@@ -88,7 +88,7 @@ struct Parser:
             let c = self.text.bytes[self.pos]
             self.pos += 1
             if c == '"':
-                discard(try str(output.bytes()))
+                _ = try str(output.bytes())
                 return output
             if c == '\\':
                 if self.pos == self.text.length:
@@ -125,7 +125,7 @@ struct Parser:
                 try output.byte(c)
         error(invalid, "unterminated JSON string")
 
-    mutating func literal(text: str) -> bool:
+    func literal(text: str) -> bool:
         if self.text.length - self.pos < text.length:
             return false
         if (str)self.text.bytes[self.pos..<self.pos + text.length] != text:
@@ -133,7 +133,7 @@ struct Parser:
         self.pos += text.length
         return true
 
-    mutating func value(depth: usize) -> usize!:
+    func value(depth: usize) -> usize!:
         if depth > 200:
             error(limit_exceeded, "JSON nesting exceeds 200")
         self.space()
@@ -211,7 +211,7 @@ struct Parser:
 pub func parse(text: str) -> Tree!:
     var parser = Parser(text = text)
     errdefer parser.tree.close()
-    discard(try parser.value(0))
+    _ = try parser.value(0)
     parser.space()
     if parser.pos != text.length:
         error(invalid, "trailing JSON input")
@@ -247,6 +247,6 @@ pub func number(output: Buffer*, value: f64) -> !:
         try output.byte('0')
     elif value == math.floor(value) and math.abs(value) < 1000000000000000.0:
         let integer = (i64)value
-        try output.text(try format(scratch, f"{integer}"))
+        try output.text(try strings.format(scratch, f"{integer}"))
     else:
         try output.text(try strings.format_f64(value, scratch))

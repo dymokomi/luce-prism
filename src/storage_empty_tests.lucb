@@ -2,7 +2,7 @@
 import storage
 
 pub func main(arguments: str[]) -> i32!:
-    discard(arguments)
+    _ = arguments
     var items: storage.List[i64]
     defer items.close()
     assert(items.span().length == 0)

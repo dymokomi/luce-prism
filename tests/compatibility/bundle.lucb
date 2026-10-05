@@ -5,10 +5,10 @@ func populated() -> prism.Bundle!:
     var bundle = try prism.Bundle()
     errdefer bundle.close()
     assert(try bundle.add_folder("/bundle", "site") == "/bundle/site")
-    discard(try bundle.add_file("/bundle/site", "index.html", b"<h1>Home</h1><p>hi</p>"))
-    discard(try bundle.add_folder("/bundle/site", "assets"))
-    discard(try bundle.add_file("/bundle/site/assets", "diagram.svg", b"<svg viewBox=\"0 0 4 4\"><rect x=\"1\"/></svg>"))
-    discard(try bundle.add_file("/bundle/site/assets", "style.css", b"body{color:red}"))
+    _ = try bundle.add_file("/bundle/site", "index.html", b"<h1>Home</h1><p>hi</p>")
+    _ = try bundle.add_folder("/bundle/site", "assets")
+    _ = try bundle.add_file("/bundle/site/assets", "diagram.svg", b"<svg viewBox=\"0 0 4 4\"><rect x=\"1\"/></svg>")
+    _ = try bundle.add_file("/bundle/site/assets", "style.css", b"body{color:red}")
     return bundle
 
 func bundle_builds_a_typed_filesystem_tree() -> !:
@@ -35,7 +35,7 @@ func bundle_blob_is_byte_exact_through_binary() -> !:
     var input: u8[256]
     for i in 0..<input.length:
         input[i] = (u8)i
-    discard(try bundle.add_file("/bundle", "logo.png", input))
+    _ = try bundle.add_file("/bundle", "logo.png", input)
     let doc = try bundle.document()
     defer doc.release()
     for encoding in [prism.Encoding.text, prism.Encoding.binary, prism.Encoding.package]:
@@ -55,7 +55,7 @@ func bundle_blob_is_byte_exact_through_binary() -> !:
 func bundle_document_renders_as_html_then_markdown() -> !:
     var bundle = try prism.Bundle()
     defer bundle.close()
-    discard(try bundle.add_file("/bundle", "page.html", b"<h1>Title</h1><p>body</p>"))
+    _ = try bundle.add_file("/bundle", "page.html", b"<h1>Title</h1><p>body</p>")
     let html = try bundle.materialize("/bundle/page_html")
     defer html.release()
     assert(try html.value().text() == "<h1>Title</h1>\n<p>body</p>\n")
@@ -67,7 +67,7 @@ func bundle_document_renders_as_html_then_markdown() -> !:
 func bundle_svg_file_is_structural() -> !:
     var bundle = try prism.Bundle()
     defer bundle.close()
-    discard(try bundle.add_file("/bundle", "d.svg", b"<svg><text>/circle</text></svg>"))
+    _ = try bundle.add_file("/bundle", "d.svg", b"<svg><text>/circle</text></svg>")
     let doc = try bundle.document()
     defer doc.release()
     assert(try doc.value().type_at("/bundle/d_svg/0") == "text")

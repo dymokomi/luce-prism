@@ -41,7 +41,7 @@ pub func compress_bytes(bytes: const u8[]) -> Buffer!:
     try output.uint((u64)bytes.length, 8)
     # One most-recent candidate per hash keeps working memory fixed (512 KiB).
     # The token format is identical to C++; compressed bytes need not be identical.
-    let positions = try alloc usize[65536] in memory.heap
+    let positions = try new usize[65536] --- in memory.heap
     defer free(positions) in memory.heap
     for i in 0..<positions.length:
         positions[i] = 0
