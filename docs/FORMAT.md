@@ -3,7 +3,7 @@
 The original specification and executable reference are kinogaki-core's
 `include/kinogaki/Serialize.h`, `src/SerializeCommon.h`, `src/SerializeBinary.cpp`,
 `src/SerializePackage.cpp`, `src/Compress.cpp`, and `src/TextParser.cpp` at the
-revision in `bootstrap/KINOGAKI_CORE`.
+revision `ce92a4b37887d4ebb14194ca2ba4084af657c34a`.
 
 ## Encodings
 

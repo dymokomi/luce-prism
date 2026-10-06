@@ -1,8 +1,7 @@
 # Package architecture and reference scope
 
 The compatibility reference is kinogaki-core commit
-`ce92a4b37887d4ebb14194ca2ba4084af657c34a`, pinned in
-`bootstrap/KINOGAKI_CORE`. This is a native implementation; no C++ library is linked
+`ce92a4b37887d4ebb14194ca2ba4084af657c34a`. This is a native implementation; no C++ library is linked
 into applications. Import `prism` from the `luce_prism` package in Base or Luce.
 
 | Modules under `src/luce_prism` | Responsibility |

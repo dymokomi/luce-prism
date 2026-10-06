@@ -1,7 +1,7 @@
 # Compatibility and API differences
 
 Prism v4 crate/package bytes and legacy text syntax are the interchange contract.
-The independent oracle is pinned in `bootstrap/KINOGAKI_CORE`. The package preserves
+The independent oracle is kinogaki-core at `ce92a4b37887d4ebb14194ca2ba4084af657c34a`. The package preserves
 the legacy model and services through native Luce APIs; it does not export the
 C++ classes, global token table, or C ABI.
 

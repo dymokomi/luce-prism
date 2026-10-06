@@ -1,7 +1,7 @@
 # Legacy behavioral compatibility tests
 
 `inventory.json` records all 417 named tests from kinogaki-core at
-`bootstrap/KINOGAKI_CORE`. `coverage.py` maps called native test functions and
+`ce92a4b37887d4ebb14194ca2ba4084af657c34a`. `coverage.py` maps called native test functions and
 independent fixtures to their original names. It fails for a stale mapping or
 unmapped native case. It is a case inventory, not a line/branch coverage tool.
 

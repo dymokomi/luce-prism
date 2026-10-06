@@ -95,9 +95,9 @@ python3 tools/bootstrap.py
 ./test.sh --base /path/to/luce-base --luce /path/to/luce
 ```
 
-Check out sibling compilers, crypto and TLS at the commits in `bootstrap/BASE`,
-`bootstrap/LUCE`, `bootstrap/CRYPTO` and `bootstrap/TLS`. Bootstrap verifies those
-inputs and builds package-local compilers without modifying language sources.
+Check out sibling compilers, crypto and TLS beside this repository, at main (`python3
+../luce-base/tools/checkout_main.py . ../luce`). Bootstrap builds package-local compilers
+from them without modifying language sources.
 The gate runs Base and Luce consumers at native optimization levels 0–3 and both
 C comparison modes. It includes checked-in C++ fixtures, compressed and package
 round trips, malformed input, path edits and injected allocation failures. Builds

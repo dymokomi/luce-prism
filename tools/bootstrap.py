@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build pinned sibling compilers into this package; never edit their sources."""
+"""Build sibling compilers into this package; never edit their sources."""
 import os
 from pathlib import Path
 import platform
@@ -23,15 +23,6 @@ def main():
             ("Linux", "x86_64"): "x86_64-linux"}.get((platform.system(), platform.machine()))
     if not host:
         raise SystemExit("Use explicit compiler paths on this platform.")
-    crypto = ROOT.parent / "luce-crypto"
-    for source, pin in ((base, "BASE"), (luce, "LUCE"), (crypto, "CRYPTO"),
-                        (ROOT.parent / "luce-tls", "TLS")):
-        expected = (ROOT / "bootstrap" / pin).read_text(encoding="ascii").strip()
-        actual = subprocess.check_output(["git", "-C", str(source), "rev-parse", "HEAD"], text=True).strip()
-        if subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"]):
-            raise SystemExit(f"dirty source: {source}")
-        if actual != expected:
-            raise SystemExit(f"{source}: expected {expected}, found {actual}")
     run([os.environ.get("CC", "cc"), "-std=gnu11", "-O2", "-w", "-fno-strict-aliasing",
          "-I", base / "runtime", base / "bootstrap" / f"luce-base-{host}.c",
          base / "runtime/lucb_rt.c", "-lm", "-pthread", "-o", OUT / "stage0"])
