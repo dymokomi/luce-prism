@@ -1,7 +1,7 @@
 ## Authored equality includes element order, aliases, keyframes and layer records.
 from model import DocumentData, Element
 from animation import equal_properties
-from storage import List, Pair, equal_names, equal_bytes
+from storage import List, Pair, equal_names
 
 func equal_pairs(a: const List[Pair]*, b: const List[Pair]*) -> bool:
     if a.count != b.count:
@@ -29,7 +29,7 @@ pub func equal_assets(a: const DocumentData*, b: const DocumentData*) -> bool:
     for i in 0..<a.assets.count:
         let x = &a.assets.items[i]
         let y = &b.assets.items[i]
-        if x.path.view() != y.path.view() or x.mime.view() != y.mime.view() or not equal_bytes(x.bytes.bytes(), y.bytes.bytes()):
+        if x.path.view() != y.path.view() or x.mime.view() != y.mime.view() or x.bytes.bytes() != y.bytes.bytes():
             return false
     return true
 

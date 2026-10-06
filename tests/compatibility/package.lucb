@@ -9,11 +9,6 @@ func sample() -> interop.Reference[prism.Document]!:
     try doc.value().set_asset("/world/brick", png, "image/png")
     return doc
 
-func same_bytes(a: const u8[], b: const u8[]):
-    assert(a.length == b.length)
-    for i in 0..<a.length:
-        assert(a[i] == b[i])
-
 func reject(bytes: const u8[]) -> !:
     let result = prism.Document.decode(bytes) catch failure:
         assert(failure.code == prism.invalid or failure.code == prism.unsupported or failure.code == prism.limit_exceeded)
@@ -69,7 +64,7 @@ func rename_with_assetstore_reparent_keeps_blob_addressable() -> !:
     try doc.value().rename("/world", "/scene")
     let after = try doc.value().asset("/scene/brick")
     defer after.release()
-    same_bytes(before.value().bytes(), after.value().bytes())
+    assert(before.value().bytes() == after.value().bytes())
     assert(try doc.value().asset_mime("/scene/brick") == "image/png")
     assert(doc.value().contains("/scene/brick") and not doc.value().contains("/world/brick"))
     let encoded = try doc.value().encode_package()
@@ -103,11 +98,11 @@ func roundtrip(text_scene: bool) -> !:
     defer original.release()
     let restored = try back.value().asset("/world/brick")
     defer restored.release()
-    same_bytes(original.value().bytes(), restored.value().bytes())
+    assert(original.value().bytes() == restored.value().bytes())
     assert(try back.value().asset_mime("/world/brick") == "image/png")
     let again = try back.value().encode_package(text_scene)
     defer again.release()
-    same_bytes(bytes.value().bytes(), again.value().bytes())
+    assert(bytes.value().bytes() == again.value().bytes())
 
 func package_round_trip_recovers_stage_and_assets() -> !:
     try roundtrip(false)
@@ -121,7 +116,7 @@ func package_round_trip_byte_stable() -> !:
     defer back.release()
     let second = try back.value().encode_package(false, true)
     defer second.release()
-    same_bytes(first.value().bytes(), second.value().bytes())
+    assert(first.value().bytes() == second.value().bytes())
 
 func package_with_text_scene_chunk_round_trips() -> !:
     try roundtrip(true)
@@ -189,7 +184,7 @@ func zero_byte_and_nul_containing_assets_round_trip() -> !:
     let nul = try back.value().asset("/nul")
     defer nul.release()
     assert(empty.value().size() == 0)
-    same_bytes(nul.value().bytes(), b"a\0b\0c")
+    assert(nul.value().bytes() == b"a\0b\0c")
 
 func u32_at(bytes: const u8[], offset: usize) -> usize:
     var result: usize = 0

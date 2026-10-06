@@ -4,11 +4,6 @@ import strings
 from luce_std import collections
 import memory
 
-pub func same_bytes(a: const u8[], b: const u8[]):
-    assert(a.length == b.length)
-    for i in 0..<a.length:
-        assert(a[i] == b[i])
-
 pub func roundtrip(doc: interop.Reference[prism.Document], mode: usize) -> interop.Reference[prism.Document]!:
     let encoded = try doc.value().encode_package(mode == 4) if mode >= 3 else try doc.value().encode(prism.Encoding.text if mode == 0 else prism.Encoding.binary, mode == 2)
     defer encoded.release()
@@ -17,7 +12,7 @@ pub func roundtrip(doc: interop.Reference[prism.Document], mode: usize) -> inter
     assert(try back.value().equals(doc))
     let again = try back.value().encode_package(mode == 4) if mode >= 3 else try back.value().encode(prism.Encoding.text if mode == 0 else prism.Encoding.binary, mode == 2)
     defer again.release()
-    same_bytes(encoded.value().bytes(), again.value().bytes())
+    assert(encoded.value().bytes() == again.value().bytes())
     return back
 
 func scene(mode: usize) -> !:

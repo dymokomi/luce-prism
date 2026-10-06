@@ -94,7 +94,7 @@ func blob_codec_round_trips_byte_exact() -> !:
         defer doc.release()
         let output = try prism.encode(doc, prism.Codec.blob)
         defer output.release()
-        assert(equal_bytes(output.value().bytes(), input[..<size]))
+        assert(output.value().bytes() == input[..<size])
         for encoding in [prism.Encoding.text, prism.Encoding.binary, prism.Encoding.package]:
             let bytes = try doc.value().encode(encoding)
             defer bytes.release()
@@ -102,7 +102,7 @@ func blob_codec_round_trips_byte_exact() -> !:
             defer restored.release()
             let blob = try prism.encode(restored, prism.Codec.blob)
             defer blob.release()
-            assert(equal_bytes(blob.value().bytes(), input[..<size]))
+            assert(blob.value().bytes() == input[..<size])
 
 func decline(doc: interop.Reference[prism.Document], codec: prism.Codec) -> !:
     let encoded = prism.encode(doc, codec) catch failure:
@@ -185,11 +185,3 @@ pub func run() -> !:
     try svg_malformed_input_fails_closed()
     try svg_entities_round_trip_in_text_and_attrs()
     print("PASS 16 JSON, text/blob and SVG codec cases")
-
-func equal_bytes(a: const u8[], b: const u8[]) -> bool:
-    if a.length != b.length:
-        return false
-    for i in 0..<a.length:
-        if a[i] != b[i]:
-            return false
-    return true

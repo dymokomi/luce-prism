@@ -266,14 +266,6 @@ pub func set_pair(pairs: List[Pair]*, key: str, value: str) -> !:
     try pairs.push(replacement)
     sort_pairs(pairs)
 
-pub func equal_bytes(a: const u8[], b: const u8[]) -> bool:
-    if a.length != b.length:
-        return false
-    for i in 0..<a.length:
-        if a[i] != b[i]:
-            return false
-    return true
-
 pub func copy_list[T](source: const List[T]*) -> List[T]!:
     var output: List[T]
     errdefer output.close()

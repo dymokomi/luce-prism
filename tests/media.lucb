@@ -3,14 +3,6 @@ import memory
 import interop
 from luce_std import files
 
-func equal(a: const u8[], b: const u8[]) -> bool:
-    if a.length != b.length:
-        return false
-    for i in 0..<a.length:
-        if a[i] != b[i]:
-            return false
-    return true
-
 func same_value(document: prism.Document*, name: str, expected: interop.Reference[prism.Value]) -> !:
     let actual = try document.get("/image", name)
     defer actual.release()
@@ -18,7 +10,7 @@ func same_value(document: prism.Document*, name: str, expected: interop.Referenc
     assert(actual.value().rank() == expected.value().rank())
     for i in 0..<expected.value().rank():
         assert(try actual.value().dimension(i) == try expected.value().dimension(i))
-    assert(equal(actual.value().bytes(), expected.value().bytes()))
+    assert(actual.value().bytes() == expected.value().bytes())
 
 func media() -> !:
     # Every possible byte, including NUL, delimiters and invalid UTF-8, repeats

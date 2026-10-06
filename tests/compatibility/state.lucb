@@ -2,7 +2,7 @@ from luce_prism import prism
 import interop
 import memory
 import strings
-from compatibility.serialization import roundtrip, same_bytes
+from compatibility.serialization import roundtrip
 
 func seed() -> interop.Reference[prism.Document]!:
     return try prism.Document.parse("#prisma 4.0\ndef group \"s\" { def object \"a\" { float3 c = (1,0,0) string note = \"hi\" } def material \"m\" { float3 out = (1,1,1) } } connect </s/a.c> = </s/m.out>")
@@ -35,7 +35,7 @@ func copy_is_isolated_across_every_mutator() -> !:
     defer roots.release()
     let after = try snapshot.value().encode()
     defer after.release()
-    same_bytes(before.value().bytes(), after.value().bytes())
+    assert(before.value().bytes() == after.value().bytes())
     assert(try snapshot.value().equals(expected) and not try doc.value().equals(snapshot))
 
 func mutating_a_copy_leaves_the_original_intact() -> !:
@@ -51,7 +51,7 @@ func mutating_a_copy_leaves_the_original_intact() -> !:
     try copy.value().set("/s/a", "c", value)
     let after = try original.value().encode()
     defer after.release()
-    same_bytes(before.value().bytes(), after.value().bytes())
+    assert(before.value().bytes() == after.value().bytes())
     assert(not try copy.value().equals(original))
 
 func equality_and_ids_hold_across_copy() -> !:
@@ -85,8 +85,8 @@ func snapshot_chain_stays_independent() -> !:
     defer first_after.release()
     let second_after = try second.value().encode()
     defer second_after.release()
-    same_bytes(before.value().bytes(), first_after.value().bytes())
-    same_bytes(middle.value().bytes(), second_after.value().bytes())
+    assert(before.value().bytes() == first_after.value().bytes())
+    assert(middle.value().bytes() == second_after.value().bytes())
     assert(not try first.value().equals(second) and first.value().contains("/s/m") and second.value().contains("/s/x"))
 
 func referenced(asset: str, target: str) -> !:
@@ -143,7 +143,7 @@ func identical(a: interop.Reference[prism.Document], b: interop.Reference[prism.
         defer first.release()
         let second = try b.value().encode(prism.Encoding.binary, compressed)
         defer second.release()
-        same_bytes(first.value().bytes(), second.value().bytes())
+        assert(first.value().bytes() == second.value().bytes())
 
 func binary_is_deterministic_across_connection_order() -> !:
     let forward = try wired(false)
@@ -252,7 +252,7 @@ func wildcard_priority_and_root_assets() -> !:
     defer package.release()
     let root = try package.value().asset("/")
     defer root.release()
-    same_bytes(root.value().bytes(), b"root\0bytes")
+    assert(root.value().bytes() == b"root\0bytes")
 
 pub func run() -> !:
     try asset_diffs_do_not_silently_drop_changes()

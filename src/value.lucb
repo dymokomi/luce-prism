@@ -2,7 +2,7 @@
 import memory
 import interop
 from luce_std import math
-from storage import equal_bytes, Buffer, List, Reader, copied
+from storage import Buffer, List, Reader, copied
 from types import DType, invalid, limit_exceeded, max_bytes
 
 pub func dtype_width(dtype: DType) -> usize:
@@ -392,4 +392,4 @@ pub func same_shape(a: const ValueData*, b: const ValueData*) -> bool:
     return true
 
 pub func equal_values(a: const ValueData*, b: const ValueData*) -> bool:
-    return same_shape(a, b) and equal_bytes(a.payload.bytes(), b.payload.bytes())
+    return same_shape(a, b) and a.payload.bytes() == b.payload.bytes()

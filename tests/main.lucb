@@ -57,20 +57,20 @@ func roundtrips() -> !:
     let fixture_file = try files.read("tests/fixtures/core.prism")
     defer fixture_file.release()
     let fixture = fixture_file.value
-    assert(equal(expected.value().bytes(), fixture))
+    assert(expected.value().bytes() == fixture)
     for path in ["tests/fixtures/core.prism", "tests/fixtures/core-compressed.prism"]:
         let parsed = try prism.Document.load(path)
         defer parsed.release()
         let actual = try parsed.value().encode()
         defer actual.release()
-        assert(equal(actual.value().bytes(), fixture))
+        assert(actual.value().bytes() == fixture)
         let source = try parsed.value().encode(prism.Encoding.text)
         defer source.release()
         let again = try prism.Document.parse(try source.value().text())
         defer again.release()
         let binary = try again.value().encode()
         defer binary.release()
-        assert(equal(binary.value().bytes(), fixture))
+        assert(binary.value().bytes() == fixture)
     let packed = try text.value().encode(prism.Encoding.binary, true)
     defer packed.release()
     assert(packed.value().size() < expected.value().size())
@@ -78,7 +78,7 @@ func roundtrips() -> !:
     defer inflated.release()
     let same = try inflated.value().encode()
     defer same.release()
-    assert(equal(same.value().bytes(), fixture))
+    assert(same.value().bytes() == fixture)
     let resolved = try text.value().eval("/world/target.input", 5.0)
     defer resolved.release()
     assert(try resolved.value().number_at() == 10.0)
@@ -87,13 +87,13 @@ func roundtrips() -> !:
     assert(archive.value().asset_count() == 1)
     let asset = try archive.value().asset("/world/source")
     defer asset.release()
-    assert(equal(asset.value().bytes(), b"\0\xff\x01"))
+    assert(asset.value().bytes() == b"\0\xff\x01")
     let encoded_archive = try archive.value().encode(prism.Encoding.package)
     defer encoded_archive.release()
     let original_archive_file = try files.read("tests/fixtures/core-package.prism")
     defer original_archive_file.release()
     let original_archive = original_archive_file.value
-    assert(equal(encoded_archive.value().bytes(), original_archive))
+    assert(encoded_archive.value().bytes() == original_archive)
     # A plain document encode cannot silently discard package assets.
     let lost_assets: interop.Reference[prism.Blob]? = archive.value().encode() catch failure:
         assert(failure.code == prism.invalid)
@@ -219,14 +219,6 @@ pub func main(arguments: str[]) -> i32!:
     print("PASS Prism values, C++ fixtures, encodings, animation, mutation, malformed input and allocation failures")
     return 0
 
-func equal(a: const u8[], b: const u8[]) -> bool:
-    if a.length != b.length:
-        return false
-    for i in 0..<a.length:
-        if a[i] != b[i]:
-            return false
-    return true
-
 func text_edges() -> !:
     assert(not prism.valid_path("/a\0b"))
     assert(prism.detect(b"\xff\xfe\xff\xff\xff\xff") == prism.Encoding.unknown)
@@ -244,7 +236,7 @@ func text_edges() -> !:
     defer binary.release()
     let other = try decoded.value().encode()
     defer other.release()
-    assert(equal(binary.value().bytes(), other.value().bytes()))
+    assert(binary.value().bytes() == other.value().bytes())
     try rejected("#prisma 4.0\ndef x { int32[1] a = \"[\" 1 \"]\" }".bytes)
     # Names must stay valid across lookahead and later escaped-string allocations.
     let escaped = try prism.Document.parse("#prisma 4.0\ndef \"node\\ttype\" \"a\" { str \"key\\tname\" = \"first\\nvalue\" str other = \"next\\tvalue\" }")
