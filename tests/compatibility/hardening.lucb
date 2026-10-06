@@ -2,7 +2,7 @@ from luce_prism import prism
 import interop
 import memory
 import strings
-from luce_std import math
+from luce_std import collections, math
 from compatibility.serialization import roundtrip
 
 func reject(bytes: const u8[]) -> !:
@@ -85,14 +85,14 @@ func detect_sniffs_encoding_from_leading_bytes() -> !:
     assert(prism.detect(b"random") == prism.Encoding.unknown)
 
 func text_parser_caps_nesting_depth() -> !:
-    var source = try strings.Builder.create()
+    var source: collections.Buffer
     defer source.destroy()
-    try source.put("#prisma 4.0\n")
+    try source.put_text("#prisma 4.0\n")
     for i in 0..<512:
-        try source.put("def \"x\" { ")
+        try source.put_text("def \"x\" { ")
     for i in 0..<512:
-        try source.put(" } ")
-    try reject(source.view().bytes)
+        try source.put_text(" } ")
+    try reject(source.view())
 
 func root_only_and_empty_typeless_prims_round_trip() -> !:
     let doc = try prism.Document.parse("#prisma 4.0\ndef \"standalone\" {} def group \"empty\" {}")
@@ -103,14 +103,14 @@ func root_only_and_empty_typeless_prims_round_trip() -> !:
         assert(back.value().element_count() == 2 and try back.value().type_at("/standalone") == "")
 
 func deeply_nested_hierarchy_round_trips() -> !:
-    var source = try strings.Builder.create()
+    var source: collections.Buffer
     defer source.destroy()
-    try source.put("#prisma 4.0\n")
+    try source.put_text("#prisma 4.0\n")
     for i in 0..<50:
-        try source.put("def group \"x\" { ")
+        try source.put_text("def group \"x\" { ")
     for i in 0..<50:
-        try source.put(" } ")
-    let doc = try prism.Document.parse(source.view())
+        try source.put_text(" } ")
+    let doc = try prism.Document.parse(source.text())
     defer doc.release()
     for mode in 0..<(usize)5:
         let back = try roundtrip(doc, mode)

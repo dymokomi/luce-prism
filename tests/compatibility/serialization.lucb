@@ -1,6 +1,7 @@
 from luce_prism import prism
 import interop
 import strings
+from luce_std import collections
 import memory
 
 pub func same_bytes(a: const u8[], b: const u8[]):
@@ -161,12 +162,12 @@ func malformed() -> !:
 func shapes() -> !:
     let cases: str[4] = ["int64[100000000] x = [1]", "int8[4000000000,4000000000] x = []", "str[100000000] x = []", "int64[2000000000] x.timeSamples = {}"]
     for input in cases:
-        var buffer = try strings.Builder.create()
+        var buffer: collections.Buffer
         defer buffer.destroy()
-        try buffer.put("#prisma 4.0\ndef \"a\" { ")
-        try buffer.put(input)
-        try buffer.put(" }")
-        try reject(buffer.view())
+        try buffer.put_text("#prisma 4.0\ndef \"a\" { ")
+        try buffer.put_text(input)
+        try buffer.put_text(" }")
+        try reject(buffer.text())
     let small = try prism.Document.parse("#prisma 4.0\ndef \"a\" { int32[2,2] x = [[1,2],[3,4]] }")
     defer small.release()
     let value = try small.value().get("/a", "x")
