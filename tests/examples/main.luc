@@ -1,0 +1,23 @@
+# The examples build and run: referenced_media.luc writes a document whose media live in
+# files beside it, here into a scratch directory. `luc test` runs this with LUCE set.
+from luce_std import files, paths, process
+
+let failed = ErrorCode.package(1)
+
+pub func main(arguments: list[str]) -> int!:
+    let top = process.current_directory()
+    let luce = process.variable("LUCE") else "luce"
+    let build = paths.join(top, "build/tests/examples")
+    let program = paths.join(build, "referenced-media")
+    let output = paths.join(build, "referenced media")
+    if files.exists(output):
+        files.remove_tree(output)
+    files.ensure_directory(output)
+    let built = process.run(luce, ["build", paths.join(top, "examples/referenced_media.luc"), "--native", "-o", program], top)
+    if built.exit_code != 0:
+        error(failed, f"build referenced_media: {built.output}{built.error_output}")
+    let ran = process.run(program, [output], top)
+    print(ran.output.trim_end())
+    if ran.exit_code != 0:
+        error(failed, f"referenced_media: exit status {ran.exit_code}\n{ran.error_output}")
+    return 0

@@ -1,0 +1,30 @@
+# The codec driver, codec.lucb, checked by codecs.py against the fixtures' recorded
+# SHA-256s and the inventory of named legacy cases. PRISM_ORACLE may name a C++ oracle
+# built against kinogaki-core (tests/oracle.cpp) for the cross-encoding checks too.
+# `luc test` runs this with LUCE_BASE naming the compiler.
+from luce_std import files, paths, process
+
+let failed = ErrorCode.package(1)
+
+pub func main(arguments: list[str]) -> int!:
+    let top = process.current_directory()
+    let here = process.variable("LUC_TEST_DIR") else error(failed, "LUC_TEST_DIR names no test directory")
+    let base = process.variable("LUCE_BASE") else "luce-base"
+    let build = paths.join(top, "build/tests/codecs")
+    let codec = paths.join(build, "codec")
+    let scratch = paths.join(build, "data")
+    if files.exists(scratch):
+        files.remove_tree(scratch)
+    files.ensure_directory(scratch)
+    let built = process.run(base, ["build", paths.join(here, "codec.lucb"), "--native", "-o", codec], top)
+    if built.exit_code != 0:
+        error(failed, f"build codec: {built.output}{built.error_output}")
+    var words = [paths.join(here, "codecs.py"), codec, scratch]
+    if let oracle = process.variable("PRISM_ORACLE"):
+        words.append(oracle)
+    let ran = process.run("python3", words, top)
+    if ran.output != "":
+        print(ran.output.trim_end())
+    if ran.exit_code != 0:
+        error(failed, f"codecs.py: exit status {ran.exit_code}\n{ran.error_output}")
+    return 0

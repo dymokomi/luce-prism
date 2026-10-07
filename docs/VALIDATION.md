@@ -7,20 +7,18 @@ linked C++ oracle are built in a temporary toolchain directory. No sibling
 compiler or `luce-image` source is modified.
 
 ```sh
-./test.sh --base /path/to/luce-base --luce /path/to/luce
+luc test
 # Also regenerate encodings with the independently built reference executable:
-./test.sh --base /path/to/luce-base --luce /path/to/luce --oracle /path/to/oracle
-# One optimization level during development:
-./test.sh --base /path/to/luce-base --luce /path/to/luce --opt 0
+PRISM_ORACLE=/path/to/oracle luc test
 ```
 
 ## Gate and evidence
 
-The default runner builds and executes native optimization levels 0–3,
-`--backend=c`, and `--backend=c --release`. It runs Base suites, three high-level
-Luce consumers, the explicit-reference media example, and codec/oracle adapters.
-Builds and output files use temporary directories. The complete case inventory
-must pass before compilation begins.
+`luc test` builds and runs the Base suites, three high-level Luce consumers, the
+explicit-reference media example, and the codec/oracle adapters, each a test program
+under `tests/`. The complete case inventory must pass before the codec checks run. The
+"per mode" counts below were measured when the runner repeated everything at native
+levels 0–3 and both C backends; `luc test` runs one native build.
 
 | Check | Scope |
 | --- | --- |

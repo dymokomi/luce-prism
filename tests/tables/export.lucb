@@ -1,12 +1,7 @@
 ## Run under a leak checker: repeated table export must release temporary clones.
-import model
-import tables
-import storage
 import animation
-from names import Name
 
-pub func main(arguments: str[]) -> i32!:
-    _ = arguments
+test "repeated table export preserves properties and releases temporary elements":
     var source = model.DocumentData()
     defer source.close()
     try source.add("/users", "directory")
@@ -16,14 +11,12 @@ pub func main(arguments: str[]) -> i32!:
     prop.name = try Name.of("password-hash")
     prop.type_name = try Name.of("test-property")
     try source.elements.items[1].put_property(&prop)
-    let frozen = try tables.from_data(&source)
-    defer tables.drop_tables(frozen)
+    let frozen = try from_data(&source)
+    defer drop_tables(frozen)
     for iteration in 0..<64:
         _ = iteration
-        var exported = try tables.to_data(frozen)
+        var exported = try to_data(frozen)
         defer exported.close()
         assert(exported.element_count() == 2)
         assert(try exported.type_at("/users/alice") == "file")
         assert(exported.has_property("/users/alice", "password-hash"))
-    print("PASS repeated table export preserves properties and releases temporary elements")
-    return 0

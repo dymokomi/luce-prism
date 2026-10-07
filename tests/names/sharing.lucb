@@ -1,12 +1,9 @@
 ## Internal regression: names are shared by their holders, found again through
 ## collisions after removals, and the table is freed with the last name.
-import names
-from names import Name
 import strings
 
-pub func main(arguments: str[]) -> i32!:
-    _ = arguments
-    let before = names.live_names()
+test "names are shared by their holders and freed with the last name":
+    let before = live_names()
     var first = try Name.of("subject")
     var second = try Name.of("subject")
     var third = try second.copy()
@@ -16,10 +13,10 @@ pub func main(arguments: str[]) -> i32!:
     assert(empty.is_empty() and empty.view() == "")
     first.close()
     second.close()
-    assert(third.view() == "subject" and names.live_names() == before + 1)
+    assert(third.view() == "subject" and live_names() == before + 1)
     third.close()
     empty.close()
-    assert(names.live_names() == before)
+    assert(live_names() == before)
     var held: Name[300]
     for i in 0..<(usize)300:
         var scratch: u8[16]
@@ -33,10 +30,8 @@ pub func main(arguments: str[]) -> i32!:
             var again = try Name.of(try strings.format(scratch, f"n{i}"))
             assert(again.shares(&held[i]))
             again.close()
-    assert(names.live_names() == before + 100)
+    assert(live_names() == before + 100)
     for i in 0..<(usize)300:
         if i % 3 == 0:
             held[i].close()
-    assert(names.live_names() == before)
-    print("PASS names: shared holders, collision-safe removal, freed with the last name")
-    return 0
+    assert(live_names() == before)

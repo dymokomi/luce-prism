@@ -89,34 +89,24 @@ load external files when needed. See [external media](docs/REFERENCES.md) and th
 files together.
 
 ```sh
-python3 tools/bootstrap.py
-./test.sh
-# Or select already-built compilers without changing sibling checkouts:
-./test.sh --base /path/to/luce-base --luce /path/to/luce
+luc test
 ```
 
-Check out sibling compilers, crypto and TLS beside this repository, at main (`python3
-../luce-base/tools/checkout_main.py . ../luce`). Bootstrap builds package-local compilers
-from them without modifying language sources.
-The gate runs Base and Luce consumers at native optimization levels 0–3 and both
-C comparison modes. It includes checked-in C++ fixtures, compressed and package
-round trips, malformed input, path edits and injected allocation failures. Builds
-and test outputs use temporary directories; compiler caches default to
-`build/cache`. Persistent-store cases use separate runner-owned paths, and the
-runner terminates/reaps its IPC owner before removing the fixture directory.
-This IPC process-exit cleanup is not a graceful Store/TLS shutdown test.
+`luc test` runs the internal test fragments (`tests/<module>/TESTS`) and the test programs:
+the Base consumers (`tests/core`, `tests/format`, `tests/query`, ...), the Luce consumers
+(`tests/consumer`, `tests/advanced_consumer`, `tests/editor_consumer`), `tests/codecs`
+(the codec driver against checked-in C++ fixtures, with an optional C++ oracle named by
+`PRISM_ORACLE`), `tests/files` (stores on disk, IPC between an owner and a client process,
+listener shutdown and snapshot reclamation) and `tests/examples`. They include compressed
+and package round trips, malformed input, path edits and injected allocation failures.
 Media tests compare payload bytes for
 a 512×512 RGBA image, an embedded PNG, 16-bit channels and finite floating-point
 arrays in every encoding. See [validation](docs/VALIDATION.md).
 
-`python3 tests/snapshot_reclaim.py --mode all` checks the transition from
-inline snapshot chunks to an external snapshot file and reopens a committed,
-unbaked generation in a fresh process. Use `--mode sanitize` for ASan/UBSan and
-`--mode native0 --heap` on macOS to require zero leaked allocations. Existence
-checks during reclamation borrow WAL entries instead of allocating discarded
-copies of chunk payloads. The heap runner is adapted from the same author's
-dual-licensed `luce-auth` test helper; it captures output in regular files and
-cleans up only the process group it starts.
+`tests/files` also checks the transition from inline snapshot chunks to an external
+snapshot file and reopens a committed, unbaked generation in a fresh process. Existence
+checks during reclamation borrow WAL entries instead of allocating discarded copies of
+chunk payloads.
 
 Prism includes JSON, Markdown, HTML, SVG, text, and blob adapters. Image decoding
 remains in `luce-image`; Prism stores its pixels and encoded files without a

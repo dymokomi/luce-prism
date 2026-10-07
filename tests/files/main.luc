@@ -1,0 +1,55 @@
+# Stores on disk, each driver under drivers/ in its own process over a fresh directory:
+# the store and its workers, semantics and the editor's settings and caches, a store
+# shared over IPC between an owner process and a client, a listener that removes its
+# socket on close, and snapshot reclamation across a reopen. Socket paths stay under /tmp.
+# `luc test` runs this with LUCE_BASE set.
+from luce_std import files, paths, process
+import platform
+import thread
+
+let failed = ErrorCode.package(1)
+
+func run(binary: str, words: list[str], top: str) -> unit!:
+    let ran = process.run(binary, words, top)
+    if ran.output != "":
+        print(ran.output.trim_end())
+    if ran.exit_code != 0:
+        error(failed, f"{paths.base(binary)} {words}: exit status {ran.exit_code}\n{ran.error_output}")
+
+pub func main(arguments: list[str]) -> int!:
+    let top = process.current_directory()
+    let here = process.variable("LUC_TEST_DIR") else error(failed, "LUC_TEST_DIR names no test directory")
+    let base = process.variable("LUCE_BASE") else "luce-base"
+    let binaries = paths.join(top, "build/tests/files/drivers")
+    files.ensure_directory(binaries)
+    for name in ["store", "semantics", "editor", "ipc", "listener_close", "snapshot_reclaim"]:
+        let built = process.run(base, ["build", paths.join(here, f"drivers/{name}.lucb"), "--native", "-o", paths.join(binaries, name)], top)
+        if built.exit_code != 0:
+            error(failed, f"build {name}: {built.output}{built.error_output}")
+    # a Unix socket path holds about a hundred bytes, so stay short: /tmp, not $TMPDIR
+    with files.TemporaryDirectory("" if platform.windows else "/tmp") as directory:
+        let scratch = directory.path()
+        for name in ["store", "semantics", "editor"]:
+            let place = paths.join(scratch, name)
+            files.ensure_directory(place)
+            run(paths.join(binaries, name), [place], top)
+        # IPC: the owner serves the store on a socket until the client is done
+        let database = paths.join(scratch, "root.db")
+        let socket = database + ".sock"
+        with process.Command(paths.join(binaries, "ipc"), ["owner", database, socket], top) as owner:
+            for attempt in 0..<500:
+                if files.exists(socket) or owner.is_finished():
+                    break
+                thread.sleep(20)
+            if not files.exists(socket):
+                owner.cancel()
+                error(failed, f"the IPC owner made no socket: {owner.output()}")
+            run(paths.join(binaries, "ipc"), ["client", database, socket], top)
+            owner.cancel()
+        let closing = paths.join(scratch, "store.db")
+        run(paths.join(binaries, "listener_close"), [closing], top)
+        if files.exists(closing + ".sock"):
+            error(failed, "the listener socket was not removed")
+        for phase in ["write", "read"]:
+            run(paths.join(binaries, "snapshot_reclaim"), [paths.join(scratch, "reclaim"), phase], top)
+    return 0
